@@ -1,0 +1,67 @@
+# Transcribe
+
+On-device conversation transcription for iPhone (iPhone 15 is the target device) and Mac. After a recording ends, the app separates the speakers. A voice shows as "Speaker 1 / Speaker 2" until it is named once; the app then saves a voice profile and auto-labels that person in later recordings.
+
+Status: design stage. No app code exists yet.
+
+## Design references
+
+- **Screen mockups (iPhone + Mac, glass look):** https://claude.ai/artifact/U9phTarKM5eApPJm95PCjk
+  Nine iPhone screens (library, recording, separating voices, transcript unnamed, name a speaker, transcript auto-labelled, voices, voice profile, settings) and two Mac windows.
+- **C4 architecture (Level 1 system context, Level 2 containers):** https://claude.ai/artifact/JbF7QjWTjWrAEAbfocz1Et
+
+Both artifacts are private to the owner's Claude account. Read them with the Artifact tool, not a web fetch.
+
+## Product rules
+
+- All audio processing runs on-device. The only required network use is downloading model files.
+- Speaker separation runs after the recording finishes, never live. Live text has no speaker labels.
+- Naming a speaker once saves a voice profile; matching against saved profiles is automatic afterwards, and the user can correct a wrong match.
+- Voice profiles stay on the device that recorded them. There is no iCloud sync and no sharing between iPhone and Mac; each device learns voices separately.
+
+## Proposed architecture
+
+- Native SwiftUI for both platforms, using Apple's Liquid Glass for the floating control layer only (toolbars, record dock, player bar, sheets, sidebar). Content sits on plain surfaces.
+- Two thin app targets (iPhone, Mac) over one shared Swift package, `TranscribeKit`: capture, transcribe, separate speakers, match voices. `TranscribeKit` is built on FluidAudio (see Speech stack).
+- On-device stores: recordings (transcripts and speaker turns), audio files, voice profiles (name + voice embeddings), model files.
+
+## Design tokens used in the mockups
+
+- Ground `#EEF1F5`, ink `#0E1116`, secondary text `#4A5361`.
+- Accent blue `#2457F5` (recognised state, active playback); record red `#E5484D`.
+- Speaker colours carry identity from "Speaker N" through to the named person: teal `#0E7C86`, rose `#C2255C`, amber `#B4530A` for unnamed, violet `#6741D9`.
+- Unnamed speakers use a dashed outline chip; saved voices use a filled chip.
+
+## Decisions
+
+- **Voice profiles are per-device only** (decided 2026-11-23). Reason: a voice profile depends on the microphone it was recorded with, so a profile from the iPhone mic would not transfer cleanly to the Mac mic. Do not add iCloud or any cross-device sync for voices.
+- **Minimum OS is iOS 27 and macOS 27** (decided 2026-11-23, the releases current on that date; iOS was at 27.2.1). Liquid Glass can be assumed everywhere, so write no fallback styling for older systems.
+
+## Speech stack (decided 2026-11-23)
+
+Liam confirmed FluidAudio after three independent research passes all picked it. It is still unproven on a real iPhone 15.
+
+- **One Swift package: FluidAudio** (`FluidInference/FluidAudio`, Apache-2.0, Core ML). It covers all three jobs:
+  - Transcription: Parakeet TDT v3 via `AsrManager`.
+  - Speaker separation after recording: `OfflineDiarizerManager` (pyannote Community-1 pipeline).
+  - Voice embeddings: WeSpeaker ResNet34, 256 numbers per voice, from `DiarizationResult.speakerDatabase` or `embedSpans(...)`.
+- **We write the voice matcher ourselves.** FluidAudio's `SpeakerManager` only works with its streaming diariser, not the offline one. Our matcher stores embeddings per named person and compares new speakers by cosine similarity after normalising the vectors.
+- **Runner-up: sherpa-onnx** (Apache-2.0, ONNX Runtime). Also one package, with a ready-made enrol/search manager, but CPU by default and no published accuracy figures.
+- **Ruled out:** Apple's Speech frameworks (no speaker separation), Argmax open tier (no Parakeet; Parakeet is paid with a 1,000-device minimum), Picovoice (needs online key validation), FluidAudio's CAM++ embedder (trained on Mandarin speakers).
+
+Rules that follow from the research:
+
+- Run transcription and speaker separation one after the other, never at once, and lower the diariser batch size (about 8) on iPhone to limit memory.
+- Store the embedding model name and version with every voice profile. A model change means re-enrolling everyone.
+- Keep several embeddings per person (start with up to 8), not one average. Add one only when the user confirms a name or the match is very strong.
+- Never name a single short turn on its own. Name the whole speaker for the recording; leave overlapping speech out of embeddings.
+- Three outcomes for a match: auto-label, ask "Is this Karan?", or leave as Unknown. A wrong name is worse than Unknown.
+- Starting thresholds (untested guesses to tune on real recordings): auto-label at cosine similarity 0.55 or more and 0.10 clear of the runner-up; ask between 0.40 and 0.55; need about 10 s of clean speech to create a profile and 3 s to identify.
+- The Community-1 and Parakeet models are CC-BY-4.0, so the app needs an attributions screen.
+
+To check first on a real iPhone 15: that Parakeet TDT v3 loads (a different Parakeet variant fails on its A16 chip), and peak memory and speed of the offline diariser. No published figures exist for either.
+
+## Open decisions
+
+- Match thresholds and minimum speech for a voice profile (tune on real recordings).
+- App name ("Transcribe" is a working name).
