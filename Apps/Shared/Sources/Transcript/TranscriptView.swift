@@ -144,7 +144,7 @@ struct TranscriptView: View {
             }
         }
         .navigationTitle(DisplayFormat.shortDate(recording.createdAt))
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .screenBackground()
     }
 
@@ -206,11 +206,11 @@ struct TranscriptView: View {
         .onChange(of: query) { hitIndex = 0 }
         .navigationTitle(recording.title ?? "Transcript")
         .navigationSubtitle(DisplayFormat.cardDate(recording.createdAt))
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar { toolbar(recording, state) }
         .alert("Rename recording", isPresented: $isRenaming) {
             TextField("Title", text: $renameText)
-                .textInputAutocapitalization(.sentences)
+                .inputCapitalization(.sentences)
                 .accessibilityIdentifier(AX.Transcript.Menu.renameField)
             Button("Save") { rename(recording) }
                 .accessibilityIdentifier(AX.Transcript.Menu.renameSave)
@@ -230,7 +230,7 @@ struct TranscriptView: View {
 
     @ToolbarContentBuilder
     private func toolbar(_ recording: Recording, _ state: TranscriptViewState) -> some ToolbarContent {
-        ToolbarItemGroup(placement: .topBarTrailing) {
+        ToolbarItemGroup(placement: .trailingBar) {
             Button {
                 withAnimation(reduceMotion ? nil : .snappy) {
                     isSearching.toggle()

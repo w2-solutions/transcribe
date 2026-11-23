@@ -25,7 +25,7 @@ struct AttributionsView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Attributions.screen)
         .navigationTitle("Acknowledgements")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .screenBackground()
     }
 

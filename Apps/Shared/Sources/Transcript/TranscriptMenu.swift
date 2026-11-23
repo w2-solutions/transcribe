@@ -77,7 +77,7 @@ struct TranscriptSearchBar: View {
                 .font(DS.Typo.subheadline)
                 .foregroundStyle(DS.Colour.ink)
                 .autocorrectionDisabled()
-                .textInputAutocapitalization(.never)
+                .inputCapitalization(.never)
                 .submitLabel(.search)
                 .focused($focused)
                 .onSubmit { if canStep { onNext() } }

@@ -37,7 +37,7 @@ struct ModelSettingsView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.ModelSettings.screen)
         .navigationTitle("Speech models")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .screenBackground()
         .task { await models.refresh() }
     }

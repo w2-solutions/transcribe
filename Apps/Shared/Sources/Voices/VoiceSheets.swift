@@ -43,7 +43,7 @@ struct VoiceEditSheet: View {
                     TextField("Name", text: $name)
                         .font(.title3.weight(.semibold))
                         .autocorrectionDisabled()
-                        .textInputAutocapitalization(.words)
+                        .inputCapitalization(.words)
                         .textContentType(.name)
                         .submitLabel(.done)
                         .focused($nameFocused)
@@ -87,7 +87,7 @@ struct VoiceEditSheet: View {
             }
             .scrollContentBackground(.hidden)
             .navigationTitle("Edit voice")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) { dismiss() }
@@ -188,7 +188,7 @@ struct VoiceMergeSheet: View {
             }
             .scrollContentBackground(.hidden)
             .navigationTitle("Merge \(sourceName)")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) { dismiss() }
@@ -261,7 +261,7 @@ struct VoiceAddSampleSheet: View {
             }
             .scrollContentBackground(.hidden)
             .navigationTitle("Add a sample")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) { dismiss() }

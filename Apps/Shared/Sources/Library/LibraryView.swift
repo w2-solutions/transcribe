@@ -59,14 +59,14 @@ struct LibraryView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Library.screen)
         .navigationTitle("Recordings")
-        .navigationBarTitleDisplayMode(.large)
+        .largeNavigationTitle()
         .toolbar { toolbar }
         .modifier(LibrarySearch(isActive: isSearchPresented, text: $query.searchText, isPresented: $isSearchPresented))
         .safeAreaBar(edge: .bottom) { bottomBar }
         .screenBackground()
         .fileImporter(isPresented: $isImporterPresented, allowedContentTypes: [.audio], allowsMultipleSelection: false) { result in
             switch result {
-            case .success(let urls): if let url = urls.first { Task { await importAudio(from: url) } }
+            case .success(let urls): if let url = urls.first { Task { await runImport(from: url) } }
             case .failure(let error): alert = LibraryAlert(title: "Couldn't import", message: LibraryErrors.message(for: error))
             }
         }
@@ -79,7 +79,7 @@ struct LibraryView: View {
         .alert("Rename recording",
                isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: Binding(get: { renaming?.title ?? "" }, set: { renaming?.title = $0 }))
-                .textInputAutocapitalization(.sentences)
+                .inputCapitalization(.sentences)
                 .accessibilityIdentifier(AX.Transcript.Menu.renameField)
             Button("Save") { saveRename() }
                 .accessibilityIdentifier(AX.Transcript.Menu.renameSave)
@@ -105,12 +105,12 @@ struct LibraryView: View {
     // MARK: Toolbar
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
-        ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItem(placement: .trailingBar) {
             Button("Search recordings", systemImage: "magnifyingglass") { isSearchPresented.toggle() }
                 .tint(DS.Colour.ink)
                 .accessibilityIdentifier(AX.Library.searchButton)
         }
-        ToolbarItem(placement: .topBarTrailing) {
+        ToolbarItem(placement: .trailingBar) {
             Button("Settings", systemImage: "slider.horizontal.3") { router.path.append(.settings) }
                 .tint(DS.Colour.ink)
                 .accessibilityIdentifier(AX.Library.settingsButton)
@@ -206,43 +206,12 @@ struct LibraryView: View {
                     .accessibilityIdentifier(AX.Library.cardDelete(i))
                 }
             }
-            .contextMenu {
-                if recording.stage != .capturing {
-                    Button("Rename", systemImage: "pencil") {
-                        renaming = Renaming(id: recording.id, title: recording.title ?? "")
-                    }
-                    Button(recording.isFavourite ? "Unfavourite" : "Favourite",
-                           systemImage: recording.isFavourite ? "star.slash" : "star") {
-                        setFavourite(recording, !recording.isFavourite)
-                    }
-                    Menu("Move to folder", systemImage: "folder") {
-                        Button {
-                            move(recording, to: nil)
-                        } label: {
-                            if recording.folder == nil { Label("No folder", systemImage: "checkmark") } else { Text("No folder") }
-                        }
-                        ForEach(folders) { folder in
-                            Button {
-                                move(recording, to: folder.id)
-                            } label: {
-                                if recording.folder?.id == folder.id {
-                                    Label(folder.name, systemImage: "checkmark")
-                                } else {
-                                    Text(folder.name)
-                                }
-                            }
-                        }
-                        Divider()
-                        Button("New folder…", systemImage: "folder.badge.plus") {
-                            folderEditor = FolderEditor(folderID: nil, name: "")
-                        }
-                    }
-                    Divider()
-                    Button("Delete", systemImage: "trash", role: .destructive) {
-                        pendingDelete = PendingDelete(id: recording.id)
-                    }
-                }
-            }
+            .modifier(RecordingRowActions(
+                recording: recording, folders: folders,
+                onRename: { renaming = Renaming(id: recording.id, title: recording.title ?? "") },
+                onNewFolder: { folderEditor = FolderEditor(folderID: nil, name: "") },
+                onDelete: { pendingDelete = PendingDelete(id: recording.id) },
+                onError: show))
             // On the row, so the iOS 27 popover points at the card being deleted (not the top of the list).
             .confirmationDialog("Delete recording?",
                                 isPresented: Binding(get: { pendingDelete?.id == recording.id },
@@ -372,35 +341,19 @@ struct LibraryView: View {
         }
     }
 
-    private func importAudio(from source: URL) async {
+    private func runImport(from source: URL) async {
         isImporting = true
         defer { isImporting = false }
-        let scoped = source.startAccessingSecurityScopedResource()
-        defer { if scoped { source.stopAccessingSecurityScopedResource() } }
-        let id = UUID()
-        let fileName = env.paths.newAudioFileName(for: id)
-        let destination = env.paths.audioURL(fileName: fileName)
-        var created = false
         do {
-            try env.paths.prepare()
-            let audio = try await AudioImporter.importAudio(from: source, to: destination)
-            try env.store.createRecording(id: id, createdAt: env.clock.now, audioFileName: fileName, source: .imported)
-            created = true
-            try env.store.finishCapture(id: id, audio: audio, language: env.settings.language)
-            await env.coordinator.enqueue(id)
+            let id = try await importAudio(from: source, env: env)
             router.showTranscript(id)
         } catch {
-            if created { try? env.store.discardRecording(id: id) } else { try? FileManager.default.removeItem(at: destination) }
             alert = LibraryAlert(title: "Couldn't import", message: LibraryErrors.message(for: error))
         }
     }
 
     private func setFavourite(_ recording: Recording, _ on: Bool) {
         do { try env.store.setFavourite(id: recording.id, on) } catch { show(error) }
-    }
-
-    private func move(_ recording: Recording, to folderID: UUID?) {
-        do { try env.store.move(recordingID: recording.id, toFolder: folderID) } catch { show(error) }
     }
 
     private func saveRename() {
@@ -473,7 +426,7 @@ private struct LibrarySearch: ViewModifier {
     func body(content: Content) -> some View {
         if isActive {
             content.searchable(text: $text, isPresented: $isPresented,
-                               placement: .navigationBarDrawer(displayMode: .always), prompt: "Search recordings")
+                               placement: .librarySearch, prompt: "Search recordings")
         } else {
             content
         }

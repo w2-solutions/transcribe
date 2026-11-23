@@ -139,7 +139,7 @@ struct SettingsView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Settings.screen)
         .navigationTitle("Settings")
-        .navigationBarTitleDisplayMode(.large)
+        .largeNavigationTitle()
         .screenBackground()
         .toast(toastText, systemImage: toastIcon, id: AX.Settings.copiedToast)
         .task { await env.models.refresh() }

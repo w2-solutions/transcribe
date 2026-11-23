@@ -72,8 +72,9 @@ targets:
     type: bundle.ui-testing
     platform: iOS
     sources:
-      - UITests
-      - Apps/Shared
+      - UITests/Shared
+      - UITests/iPhone
+      - Apps/Shared/AccessibilityID.swift
     dependencies:
       - target: Transcribe
     settings:

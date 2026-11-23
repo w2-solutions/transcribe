@@ -53,7 +53,7 @@ struct VoicesView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Voices.screen)
         .navigationTitle("Voices")
-        .navigationBarTitleDisplayMode(.large)
+        .largeNavigationTitle()
         .screenBackground()
     }
 

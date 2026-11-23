@@ -1,6 +1,5 @@
 import SwiftUI
 import TranscribeDesign
-import UIKit
 
 /// Shown when recording is attempted with the microphone permission denied (§6.1).
 struct MicDeniedSheet: View {
@@ -35,7 +34,7 @@ struct MicDeniedSheet: View {
                 .padding(.top, 6)
             Spacer(minLength: 20)
             PrimaryButton("Open Settings") {
-                if let url = URL(string: UIApplication.openSettingsURLString) { openURL(url) }
+                openURL(Platform.micSettingsURL)
             }
             .accessibilityIdentifier(AX.Library.MicDenied.openSettings)
             LinkButton("Import an audio file instead", font: .subheadline.weight(.semibold)) {

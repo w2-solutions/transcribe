@@ -370,14 +370,10 @@ private struct LiveTranscriptCard: View {
 
         /// 2 × 16 pt rounded caret with a 3 pt lead, standing on the baseline (so it never grows the line), drawn once
         /// as a template image so it can sit inside `Text`.
-        static let caret: Image = {
-            let size = CGSize(width: 5, height: 16)
-            let image = UIGraphicsImageRenderer(size: size).image { _ in
-                UIColor.black.setFill()
-                UIBezierPath(roundedRect: CGRect(x: 3, y: 0, width: 2, height: 16), cornerRadius: 1).fill()
-            }
-            return Image(uiImage: image.withRenderingMode(.alwaysTemplate))
-        }()
+        static let caret: Image = Image(size: CGSize(width: 5, height: 16)) { ctx in
+            ctx.fill(Path(roundedRect: CGRect(x: 3, y: 0, width: 2, height: 16), cornerRadius: 1, style: .circular), with: .color(.black))
+        }
+        .renderingMode(.template)
     }
 }
 

@@ -64,7 +64,7 @@ struct LanguagePickerView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Language.screen)
         .navigationTitle("Language")
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .screenBackground()
     }
 }

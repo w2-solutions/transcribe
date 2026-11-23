@@ -53,9 +53,9 @@ struct FoldersSheet: View {
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
             .navigationTitle("Folders")
-            .navigationBarTitleDisplayMode(.inline)
+            .inlineNavigationTitle()
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
+                ToolbarItem(placement: .leadingBar) {
                     Button("New folder", systemImage: "folder.badge.plus") { editor = FolderEditor(folderID: nil, name: "") }
                         .tint(DS.Colour.ink)
                         .accessibilityIdentifier(AX.Library.Folders.newFolderButton)
@@ -148,7 +148,7 @@ private struct FolderNameAlert: ViewModifier {
             .alert(editor?.title ?? "New folder",
                    isPresented: Binding(get: { editor != nil }, set: { if !$0 { editor = nil } })) {
                 TextField("Name", text: $name)
-                    .textInputAutocapitalization(.words)
+                    .inputCapitalization(.words)
                     .accessibilityIdentifier(AX.Library.Folders.nameField)
                 Button("Save") {
                     if var current = editor {

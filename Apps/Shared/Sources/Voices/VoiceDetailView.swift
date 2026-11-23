@@ -40,10 +40,10 @@ struct VoiceDetailView: View {
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.VoiceDetail.screen)
-        .navigationBarTitleDisplayMode(.inline)
+        .inlineNavigationTitle()
         .toolbar {
             if let profile = matches.first {
-                ToolbarItem(placement: .topBarTrailing) {
+                ToolbarItem(placement: .trailingBar) {
                     Button("Edit") { sheet = .edit(name: profile.name, isMe: profile.isMe) }
                         .font(.callout.weight(.semibold))
                         .tint(DS.Colour.ink)

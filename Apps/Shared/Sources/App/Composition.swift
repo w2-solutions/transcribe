@@ -18,8 +18,8 @@ import TranscribeFakes
             seeder = { seed, context, paths, clock in try Seeds.apply(seed, context: context, paths: paths, clock: clock) }
         }
         #endif
-        let identity: any DeviceIdentity = config.uiTesting ? FixedDeviceIdentity("test-device") : KeychainDeviceIdentity()
-        let background: any BackgroundTaskBridge = config.uiTesting ? NoopBackgroundTaskBridge() : ContinuedProcessingBridge()
+        let identity = PlatformServices.deviceIdentity(uiTesting: config.uiTesting)
+        let background = PlatformServices.backgroundBridge(uiTesting: config.uiTesting)
         return try! AppEnvironment(config: config, engine: engine, background: background, deviceIdentity: identity, seeder: seeder)
     }
 

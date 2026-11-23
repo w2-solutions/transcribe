@@ -184,7 +184,7 @@ private struct NameSpeakerForm: View {
                     .tracking(-0.2)
                     .foregroundStyle(DS.Colour.ink)
                     .autocorrectionDisabled()
-                    .textInputAutocapitalization(.words)
+                    .inputCapitalization(.words)
                     .textContentType(.name)
                     .submitLabel(.done)
                     .focused($nameFocused)
