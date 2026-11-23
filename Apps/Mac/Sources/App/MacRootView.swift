@@ -40,6 +40,8 @@ struct MacRootView: View {
                     .navigationDestination(for: Route.self) { route in destination(route) }
             }
         }
+        // `.contain` gives the split view its own element, so the identifier reaches the accessibility tree.
+        .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Mac.main)
         .toolbar { toolbar }
         .toolbarBackgroundVisibility(.hidden, for: .windowToolbar)

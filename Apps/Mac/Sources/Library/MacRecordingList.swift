@@ -28,6 +28,8 @@ struct MacRecordingList: View {
     @State private var errorText: String?
     @State private var isDropTargeted = false
     @FocusState private var searchFocused: Bool
+    /// The list holds keyboard focus after a click on a card, so ⌫ and the arrow keys act on the selection.
+    @FocusState private var listFocused: Bool
 
     private struct Renaming: Identifiable { let id: UUID; var title: String }
 
@@ -59,6 +61,7 @@ struct MacRecordingList: View {
                 .padding(.bottom, 16)
             }
             .focusable()
+            .focused($listFocused)
             .focusEffectDisabled()
             .onMoveCommand { direction in move(direction, in: visible, proxy: proxy) }
         }
@@ -236,6 +239,7 @@ struct MacRecordingList: View {
             return
         }
         selection.recording = recording.id
+        listFocused = true
     }
 
     private func saveRename() {

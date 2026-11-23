@@ -141,6 +141,20 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.uitests
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Transcribe
+  TranscribeMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - UITests/Shared
+      - UITests/Mac
+      - Apps/Shared/AccessibilityID.swift
+    dependencies:
+      - target: TranscribeMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.mac.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: TranscribeMac
 schemes:
   Transcribe:
     build:
@@ -164,10 +178,16 @@ schemes:
     build:
       targets:
         TranscribeMac: all
+        TranscribeMacUITests: [test]
     run:
       config: Debug
       commandLineArguments:
         "-useFakeEngine": false
         "-uiTesting": false
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - TranscribeMacUITests
     archive:
       config: Release
