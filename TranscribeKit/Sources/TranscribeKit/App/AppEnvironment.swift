@@ -22,13 +22,18 @@ public final class AppEnvironment {
     public let models: ModelManager
     public let recorder: RecorderController
     public let player: PlaybackController
+    /// iCloud sync (§8.4); nil when the app was built without a transport.
+    public let sync: SyncCoordinator?
+    /// The launch's sync start (fetch, scan, send). It runs beside the rest of the launch, so a slow network never
+    /// delays the library or the models.
+    public private(set) var syncLaunch: Task<Void, Never>?
     public private(set) var isLaunched = false
     public private(set) var launchError: String?
 
     @ObservationIgnored private let seeder: Seeder?
 
     public init(config: LaunchConfig, engine: any SpeechEngine, background: any BackgroundTaskBridge,
-                deviceIdentity: any DeviceIdentity, seeder: Seeder?) throws {
+                deviceIdentity: any DeviceIdentity, seeder: Seeder?, syncTransport: (any SyncTransport)? = nil) throws {
         self.config = config
         self.clock = config.clock
         let paths = AppPaths(config: config)
@@ -62,10 +67,15 @@ public final class AppEnvironment {
         let player = PlaybackController()
         player.isCaptureActive = { [weak recorder] in recorder?.isActive ?? false }
         self.player = player
+        let modelKey = engine.info.embeddingModel.key
+        self.sync = syncTransport.map {
+            SyncCoordinator(store: store, transport: $0, settings: settings, clock: config.clock, modelKey: modelKey)
+        }
     }
 
     /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.stampCaptureChannels → models.refresh →
-    /// coordinator.recoverOnLaunch → models.prepareIfInstalled (detached) → isLaunched = true.
+    /// coordinator.recoverOnLaunch → sync.start (its own task, when the switch is on) → models.prepareIfInstalled (detached)
+    /// → isLaunched = true.
     public func onLaunch() async {
         guard !isLaunched else { return }
         do { try paths.prepare() } catch { launchError = "Couldn't prepare storage: \(error.localizedDescription)" }
@@ -78,6 +88,7 @@ public final class AppEnvironment {
         do { _ = try store.stampCaptureChannels() } catch { launchError = "Capture channel stamping failed: \(error)" }
         await models.refresh()
         await coordinator.recoverOnLaunch()
+        if settings.syncEnabled, let sync { syncLaunch = Task { await sync.start() } }
         let models = self.models
         Task { await models.prepareIfInstalled() }
         isLaunched = true

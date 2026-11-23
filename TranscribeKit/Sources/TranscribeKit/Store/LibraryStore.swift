@@ -493,11 +493,16 @@ public final class LibraryStore: LibraryStoring {
     /// Row, speakers (cascade) and audio file. Samples keep their vectors: they hold plain ids only.
     /// The caller cancels any processing job first (`ProcessingCoordinator.cancel`).
     public func delete(id: UUID) throws {
-        let r = try recording(id)
+        removeRecordingRow(try recording(id))
+        try context.save()
+    }
+
+    /// Deletes a recording's audio file (if present), its speakers and the row; samples keep their vectors.
+    /// Shared by `delete(id:)` and a remote delete (§8.4), so both have the same side effects. Does not save.
+    func removeRecordingRow(_ r: Recording) {
         removeAudio(of: r)
         deleteSpeakers(of: r)
         context.delete(r)
-        try context.save()
     }
 
     public func createFolder(name: String) throws -> UUID {
@@ -813,29 +818,39 @@ public final class LibraryStore: LibraryStoring {
     }
 
     public func forgetProfile(_ profileID: UUID) throws {
-        let p = try profile(profileID)
+        forgetCleanup(try profile(profileID))
+        try context.save()
+    }
+
+    /// Forgets a profile: its speakers keep the name as a snapshot, suggestions of it are cleared, rejections of it
+    /// are dropped, then the profile (with its samples and negatives) is deleted. Shared by `forgetProfile` and a
+    /// remote profile delete (§8.4), so both have the same side effects. Does not save.
+    func forgetCleanup(_ p: VoiceProfile) {
+        let profileID = p.id
         var touched: [UUID: Recording] = [:]
-        for s in Array(p.speakers) {
+        // Read the links from the speakers' side: after a remote apply the profile's inverse may not have caught up.
+        let all = (try? allSpeakers()) ?? []
+        let linked = all.filter { $0.profile?.id == profileID }
+        for s in linked {
             s.nameSnapshot = p.name
             s.profile = nil
             s.label = .named
             if let r = s.recording { touched[r.id] = r }
         }
-        for s in try allSpeakers() {
+        for s in all {
             if s.suggestedProfileID == profileID {
                 s.suggestedProfileID = nil
                 s.matchScore = nil
                 s.matchMargin = nil
                 if s.label == .suggested { s.label = .unnamed }
             }
-            s.rejectedProfileIDs.removeAll { $0 == profileID }
+            if s.rejectedProfileIDs.contains(profileID) { s.rejectedProfileIDs.removeAll { $0 == profileID } }
         }
         context.delete(p)
         for r in touched.values {
             r.hasUnseenResult = r.speakers.contains { $0.label == .autoLabelled }
             rebuildSearchText(r)
         }
-        try context.save()
     }
 
     public func addSample(profileID: UUID, fromSpeaker recordingSpeakerID: UUID) throws -> NameResult {
