@@ -129,7 +129,7 @@ public struct LinkButton: View {
 #Preview("Buttons") {
     VStack(spacing: 16) {
         PrimaryButton("Save and label 2 turns") {}
-        PrimaryButton("Download (704 MB)") {}.disabled(true)
+        PrimaryButton("Continue") {}.disabled(true)
         InkPillButton("Name speakers") {}
         GlassCapsuleButton("Continue in background") {}.glassCapsuleFullWidth()
         GlassCapsuleButton("Copy", systemImage: "doc.on.doc", height: 44) {}

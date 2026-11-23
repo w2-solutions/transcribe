@@ -40,8 +40,6 @@ final class ScriptedCaptureEngine: SpeechEngine, @unchecked Sendable {
     init(base: FakeSpeechEngine, failStop: Bool) { self.base = base; self.failStop = failStop }
     var info: EngineInfo { base.info }
     func modelStatus() async -> ModelStatus { await base.modelStatus() }
-    func installModels(progress: @escaping @Sendable (ModelInstallProgress) -> Void) async throws { try await base.installModels(progress: progress) }
-    func removeModels() async throws { try await base.removeModels() }
     func prepareModels() async throws { try await base.prepareModels() }
     func microphonePermission() async -> MicPermission { .granted }
     func requestMicrophonePermission() async -> Bool { true }

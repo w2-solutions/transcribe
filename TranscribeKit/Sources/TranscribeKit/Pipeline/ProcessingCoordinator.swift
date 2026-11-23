@@ -27,7 +27,7 @@ public actor ProcessingCoordinator {
     /// Minimum spacing of progress-only snapshots (about 10 per second).
     static let progressInterval: Duration = .milliseconds(100)
 
-    enum CancelReason: Sendable { case capture, backgroundExpiry, removed, modelRemoval }
+    enum CancelReason: Sendable { case capture, backgroundExpiry, removed }
 
     // Queue state
     private var queue: [UUID] = []
@@ -122,18 +122,6 @@ public actor ProcessingCoordinator {
             await job.task.value
         }
         for id in queue where queueReasons[id] != .modelsNotReady { markQueued(id, .pausedForRecording) }
-    }
-
-    /// Before speech models are removed: stops the running job (it stays queued at its checkpoint, without
-    /// using an attempt) and holds the queue until `modelsBecameReady()`, so no engine call overlaps the removal.
-    public func suspendForModelRemoval() async {
-        waitingForModels = true
-        if let job = running {
-            if cancelReasons[job.id] == nil { cancelReasons[job.id] = .modelRemoval }
-            job.task.cancel()
-            await job.task.value
-        }
-        refreshQueuedReasons()
     }
 
     public func resumeAfterCapture() {
@@ -359,11 +347,6 @@ public actor ProcessingCoordinator {
             parkedByExpiry = true
             queue.insert(id, at: 0)
             for q in queue { markQueued(q, .pausedByBackgroundExpiry) }
-        case .modelRemoval:
-            Self.log.info("job \(id, privacy: .public): paused while speech models are removed")
-            queue.insert(id, at: 0)
-            waitingForModels = true
-            refreshQueuedReasons()
         }
     }
 

@@ -5,7 +5,8 @@ public struct AppPaths: Sendable {
     public let root: URL               // Application Support/Transcribe (real) | Application Support/Transcribe-Fake (fake engine)
                                        // | NSTemporaryDirectory()/transcribe-uitest-<pid> (-uiTesting)
     public var audioDirectory: URL { root.appendingPathComponent("Audio", isDirectory: true) }
-    public var modelsDirectory: URL { root.appendingPathComponent("Models", isDirectory: true) }  // isExcludedFromBackup = true
+    /// Where builds before bundling downloaded the models (~704 MB). Deleted at launch; never used.
+    public var legacyModelsDirectory: URL { root.appendingPathComponent("Models", isDirectory: true) }
     public var storeURL: URL { root.appendingPathComponent("Library.store") }
 
     public init(config: LaunchConfig) {
@@ -27,20 +28,23 @@ public struct AppPaths: Sendable {
     /// "<uuid>.wav"
     public func newAudioFileName(for id: UUID) -> String { "\(id.uuidString).wav" }
 
-    /// Creates directories; sets file protection .completeUntilFirstUserAuthentication (iOS) on Audio/,
-    /// and isExcludedFromBackup on Models/.
+    /// Creates the root and Audio/; sets file protection .completeUntilFirstUserAuthentication (iOS) on Audio/.
+    /// The speech models are read-only resources in the app bundle, so there is no models folder here.
     public func prepare() throws {
         let fm = FileManager.default
-        for dir in [root, audioDirectory, modelsDirectory] {
+        for dir in [root, audioDirectory] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         #if os(iOS)
         try fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
                              ofItemAtPath: audioDirectory.path)
         #endif
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        var models = modelsDirectory
-        try models.setResourceValues(values)
+    }
+
+    /// Deletes the models an older build downloaded into `Models/` (best effort). True when something was removed.
+    @discardableResult public func removeLegacyModels() -> Bool {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: legacyModelsDirectory.path) else { return false }
+        return (try? fm.removeItem(at: legacyModelsDirectory)) != nil
     }
 }

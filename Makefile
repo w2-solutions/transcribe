@@ -1,10 +1,23 @@
 DESTINATION := platform=iOS Simulator,name=iPhone 15,OS=27.0
 DERIVED     ?= $(or $(TMPDIR),/tmp)/transcribe-dd
 
-.PHONY: project build test-kit test-ui sim shots
+.PHONY: project build test-kit test-ui sim shots models check-models archive
 
 project:
 	./scripts/bootstrap.sh
+
+# The speech models shipped in the app, pinned by scripts/models.lock (about 700 MB; idempotent).
+# make models FROM=~/Library/Caches/transcribe-test-models copies files you already have instead of downloading.
+models:
+	./scripts/fetch-models.sh $(if $(FROM),--from '$(patsubst ~/%,$(HOME)/%,$(FROM))')
+
+check-models:
+	./scripts/check-models.sh --hash
+
+# Release archive for a real iPhone (needs a signing team), then a strict check of the models inside it.
+archive: models
+	xcodebuild -project Transcribe.xcodeproj -scheme Transcribe -configuration Release -destination 'generic/platform=iOS' -archivePath '$(DERIVED)/Transcribe.xcarchive' archive
+	./scripts/check-models.sh --app '$(DERIVED)/Transcribe.xcarchive/Products/Applications/Transcribe.app'
 
 build:
 	xcodebuild -project Transcribe.xcodeproj -scheme Transcribe -destination '$(DESTINATION)' -derivedDataPath '$(DERIVED)' build

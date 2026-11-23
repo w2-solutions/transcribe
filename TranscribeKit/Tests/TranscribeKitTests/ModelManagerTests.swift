@@ -4,31 +4,44 @@ import TranscribeCore
 @testable import TranscribeFakes
 @testable import TranscribeKit
 
-/// Engine whose install fails a set number of times before it succeeds.
-private actor FlakyInstallEngine: SpeechEngine {
-    nonisolated let info = EngineInfo(kind: .fake, asrDisplayName: "Parakeet", asrModelID: "flaky",
-                                      embeddingModel: .fake, speechDownloadBytes: 483_000_000, speakersDownloadBytes: 22_000_000)
+/// Engine whose prepare fails a set number of times before it succeeds (e.g. a Neural Engine compile failure).
+private actor FlakyPrepareEngine: SpeechEngine {
+    nonisolated let info = EngineInfo(kind: .fake, asrDisplayName: "Parakeet", asrModelID: "flaky", embeddingModel: .fake)
     private var failuresLeft: Int
-    private var status: ModelStatus = .notInstalled
-    private(set) var installCalls = 0
-    private(set) var removeCalls = 0
+    private var status: ModelStatus = .installed
+    private(set) var prepareCalls = 0
 
     init(failures: Int) { failuresLeft = failures }
 
     func modelStatus() async -> ModelStatus { status }
-    func installModels(progress: @escaping @Sendable (ModelInstallProgress) -> Void) async throws {
-        installCalls += 1
-        progress(ModelInstallProgress(fraction: 0.2, phase: .downloading(.speech, completedFiles: 1, totalFiles: 5)))
+    func prepareModels() async throws {
+        prepareCalls += 1
         if failuresLeft > 0 {
             failuresLeft -= 1
-            throw EngineError.failed("Network connection lost.")
+            status = .failed("ANE compile failed")
+            throw EngineError.failed("ANE compile failed")
         }
-        status = .installed
-    }
-    func removeModels() async throws { removeCalls += 1; status = .notInstalled }
-    func prepareModels() async throws {
-        guard status == .installed || status == .ready else { throw EngineError.modelsMissing }
         status = .ready
+    }
+    func microphonePermission() async -> MicPermission { .granted }
+    func requestMicrophonePermission() async -> Bool { true }
+    func startRecording(_ request: RecordingRequest) async throws -> any LiveRecording { throw EngineError.failed("unused") }
+    func transcribe(_ audio: URL, language: LanguageHint, progress: @escaping @Sendable (Double) -> Void) async throws -> [TimedWord] { [] }
+    func separateSpeakers(_ audio: URL, progress: @escaping @Sendable (Double) -> Void) async throws -> SpeakerSeparation {
+        SpeakerSeparation(segments: [], centroids: [:])
+    }
+    func embedVoice(_ audio: URL, spans: [TimeRange]) async throws -> [VoiceVector] { [] }
+}
+
+/// Engine whose bundled models are missing or damaged: status says so and prepare throws `.modelsMissing`.
+private actor MissingModelsEngine: SpeechEngine {
+    nonisolated let info = EngineInfo(kind: .fake, asrDisplayName: "Parakeet", asrModelID: "missing", embeddingModel: .fake)
+    private(set) var prepareCalls = 0
+
+    func modelStatus() async -> ModelStatus { .failed(ModelStatus.missingFromAppMessage) }
+    func prepareModels() async throws {
+        prepareCalls += 1
+        throw EngineError.modelsMissing
     }
     func microphonePermission() async -> MicPermission { .granted }
     func requestMicrophonePermission() async -> Bool { true }
@@ -48,8 +61,7 @@ final class ModelManagerReadyCounter {
 @Suite("ModelManager")
 @MainActor
 struct ModelManagerTests {
-    let info = EngineInfo(kind: .fake, asrDisplayName: "Parakeet", asrModelID: "x", embeddingModel: .fake,
-                          speechDownloadBytes: 483_000_000, speakersDownloadBytes: 22_000_000)
+    let info = EngineInfo(kind: .fake, asrDisplayName: "Parakeet", asrModelID: "x", embeddingModel: .fake)
 
     func fakeEngine(models: String) -> FakeSpeechEngine {
         let config = LaunchConfig(arguments: ["-useFakeEngine", "-uiTesting"],
@@ -57,62 +69,8 @@ struct ModelManagerTests {
         return FakeSpeechEngine(config: config, script: FakeScript.named(.newVoices))
     }
 
-    func manager(_ engine: any SpeechEngine, free: Int64? = 10_000_000_000, counter: ModelManagerReadyCounter) -> ModelManager {
-        ModelManager(engine: engine, monitorsNetwork: false, freeSpace: { free }, onReady: { counter.count += 1 })
-    }
-
-    @Test func installGoesToReadyAndCallsOnReadyOnce() async {
-        let counter = ModelManagerReadyCounter()
-        let m = manager(fakeEngine(models: "missing"), counter: counter)
-        await m.refresh()
-        #expect(m.status == .notInstalled)
-        #expect(m.canInstall)
-        #expect(m.settingsValue == "Not downloaded")
-        await m.install()
-        #expect(m.status == .ready)
-        #expect(m.isReady)
-        #expect(counter.count == 1)
-        #expect(m.settingsValue == "Parakeet")
-        #expect(!m.canInstall)
-        #expect(m.canRemove)
-    }
-
-    @Test func failureThenRetrySucceeds() async {
-        let counter = ModelManagerReadyCounter()
-        let engine = FlakyInstallEngine(failures: 1)
-        let m = manager(engine, counter: counter)
-        await m.install()
-        #expect(m.status == .failed("Network connection lost."))
-        #expect(m.failureText == "Network connection lost.")
-        #expect(m.settingsValue == "Download failed")
-        #expect(counter.count == 0)
-        #expect(m.canInstall)
-        await m.install()
-        #expect(m.status == .ready)
-        #expect(counter.count == 1)
-        #expect(await engine.installCalls == 2)
-    }
-
-    @Test func lowSpaceBlocksTheDownloadWithoutCallingTheEngine() async {
-        let counter = ModelManagerReadyCounter()
-        let engine = FlakyInstallEngine(failures: 0)
-        let m = manager(engine, free: 1_499_999_999, counter: counter)
-        #expect(!m.hasEnoughSpace)
-        #expect(!m.canInstall)
-        await m.install()
-        #expect(m.status == .failed(ModelManager.Copy.lowSpace))
-        #expect(await engine.installCalls == 0)
-        #expect(counter.count == 0)
-    }
-
-    @Test func unknownFreeSpaceDoesNotBlock() {
-        let m = manager(FlakyInstallEngine(failures: 0), free: nil, counter: ModelManagerReadyCounter())
-        #expect(m.hasEnoughSpace)
-    }
-
-    @Test func exactlyTheRequiredSpaceIsEnough() {
-        let m = manager(FlakyInstallEngine(failures: 0), free: ModelManager.requiredFreeBytes, counter: ModelManagerReadyCounter())
-        #expect(m.hasEnoughSpace)
+    func manager(_ engine: any SpeechEngine, counter: ModelManagerReadyCounter) -> ModelManager {
+        ModelManager(engine: engine, onReady: { counter.count += 1 })
     }
 
     @Test func prepareIfInstalledMakesInstalledModelsReady() async {
@@ -124,76 +82,104 @@ struct ModelManagerTests {
         #expect(m.phaseText == ModelManager.Copy.preparing)
         await m.prepareIfInstalled()
         #expect(m.status == .ready)
+        #expect(m.isReady)
+        #expect(m.settingsValue == "Parakeet")
+        #expect(m.phaseText == nil)
         #expect(counter.count == 1)
         // Already ready: nothing happens, onReady is not called again.
         await m.prepareIfInstalled()
         #expect(counter.count == 1)
     }
 
-    @Test func prepareIfInstalledLeavesMissingModelsAlone() async {
+    @Test func firstLaunchPrepareNeedsNoDownload() async {
+        // "missing" now means the first launch on this device: the models ship in the app, only the prepare is slow.
         let counter = ModelManagerReadyCounter()
         let m = manager(fakeEngine(models: "missing"), counter: counter)
+        await m.refresh()
+        #expect(m.status == .installed)
         await m.prepareIfInstalled()
-        #expect(m.status == .notInstalled)
+        #expect(m.status == .ready)
+        #expect(counter.count == 1)
+    }
+
+    @Test func failedPrepareWaitsForTryAgain() async {
+        let counter = ModelManagerReadyCounter()
+        let engine = FlakyPrepareEngine(failures: 1)
+        let m = manager(engine, counter: counter)
+        await m.prepareIfInstalled()
+        #expect(m.status == .failed("ANE compile failed"))
+        #expect(m.failureText == "ANE compile failed")
+        #expect(m.settingsValue == "Not ready")
+        #expect(m.phaseText == nil)
+        #expect(counter.count == 0)
+        // A foreground does not retry a failed prepare on its own (no repeated Neural Engine compiles).
+        await m.prepareIfInstalled()
+        #expect(await engine.prepareCalls == 1)
+        #expect(m.status == .failed("ANE compile failed"))
+        await m.retry()
+        #expect(m.status == .ready)
+        #expect(counter.count == 1)
+        #expect(await engine.prepareCalls == 2)
+    }
+
+    @Test func retryIsIgnoredUnlessFailed() async {
+        let counter = ModelManagerReadyCounter()
+        let engine = FlakyPrepareEngine(failures: 0)
+        let m = manager(engine, counter: counter)
+        await m.refresh()
+        #expect(m.status == .installed)
+        await m.retry()
+        #expect(await engine.prepareCalls == 0)
+        #expect(m.status == .installed)
+        await m.prepareIfInstalled()
+        #expect(m.status == .ready)
+        await m.retry()
+        #expect(await engine.prepareCalls == 1)
+        #expect(counter.count == 1)
+    }
+
+    @Test func missingModelsSayInstallAgain() async {
+        let counter = ModelManagerReadyCounter()
+        let engine = MissingModelsEngine()
+        let m = manager(engine, counter: counter)
+        await m.refresh()
+        #expect(m.status == .failed(ModelStatus.missingFromAppMessage))
+        await m.prepareIfInstalled()
+        #expect(await engine.prepareCalls == 0)
+        await m.retry()
+        #expect(await engine.prepareCalls == 1)
+        #expect(m.status == .failed(ModelStatus.missingFromAppMessage))
+        #expect(m.failureText == ModelStatus.missingFromAppMessage)
         #expect(counter.count == 0)
     }
 
-    @Test func removeReturnsToNotInstalled() async {
+    @Test func concurrentPreparesRunOnce() async {
         let counter = ModelManagerReadyCounter()
-        let engine = FlakyInstallEngine(failures: 0)
+        let engine = FlakyPrepareEngine(failures: 0)
         let m = manager(engine, counter: counter)
-        await m.install()
-        #expect(m.isReady)
-        await m.remove()
-        #expect(m.status == .notInstalled)
-        #expect(await engine.removeCalls == 1)
+        async let first: Void = m.prepareIfInstalled()
+        async let second: Void = m.prepareIfInstalled()
+        async let third: Void = m.retry()
+        _ = await (first, second, third)
+        #expect(m.status == .ready)
+        #expect(await engine.prepareCalls == 1)
+        #expect(counter.count == 1)
     }
 
-    @Test func removeHoldsProcessingFirst() async {
-        let counter = ModelManagerReadyCounter()
-        let engine = FlakyInstallEngine(failures: 0)
-        let m = manager(engine, counter: counter)
-        await m.install()
-        var removeCallsWhenHeld: Int?
-        m.beforeRemove = { removeCallsWhenHeld = await engine.removeCalls }
-        await m.remove()
-        #expect(removeCallsWhenHeld == 0)        // processing was held before the engine removed anything
-        #expect(await engine.removeCalls == 1)
-    }
-
-    @Test func downloadSizeText() {
-        let m = manager(fakeEngine(models: "missing"), counter: ModelManagerReadyCounter())
-        #expect(m.downloadSizeText == "505 MB")
-        #expect(m.speechSizeText == "483 MB")
-        #expect(m.speakersSizeText == "22 MB")
-    }
-
-    @Test func phaseLines() {
-        let speechHalf = ModelInstallProgress(fraction: 0.957 * 212.0 / 483.0, phase: .downloading(.speech, completedFiles: 2, totalFiles: 5))
-        #expect(ModelManager.phaseText(speechHalf, info: info) == "Downloading speech model · 212 of 483 MB")
-        let speakers = ModelInstallProgress(fraction: 0.97, phase: .downloading(.speakers, completedFiles: 1, totalFiles: 5))
-        #expect(ModelManager.phaseText(speakers, info: info) == "Speaker models · 22 MB")
-        let compiling = ModelInstallProgress(fraction: 1, phase: .compiling(.speech))
-        #expect(ModelManager.phaseText(compiling, info: info) == "Preparing for this iPhone… (one time, about a minute)")
-        #expect(ModelManager.phaseText(ModelInstallProgress(fraction: 0, phase: .checking), info: info) == ModelManager.Copy.checking)
+    @Test func errorMessages() {
+        #expect(ModelManager.message(for: EngineError.modelsMissing) == ModelStatus.missingFromAppMessage)
+        #expect(ModelManager.message(for: EngineError.failed("boom")) == "boom")
+        #expect(ModelManager.message(for: EngineError.failed("")) == ModelManager.Copy.loadFailed)
+        #expect(ModelManager.message(for: EngineError.cancelled) == ModelManager.Copy.loadFailed)
     }
 
     @Test(arguments: [
         (ModelStatus.ready, "Parakeet"),
-        (.preparing, "Preparing…"),
         (.installed, "Preparing…"),
-        (.notInstalled, "Not downloaded"),
-        (.installing(ModelInstallProgress(fraction: 0.42, phase: .checking)), "Downloading 42%"),
-        (.failed("x"), "Download failed"),
+        (.preparing, "Preparing…"),
+        (.failed("x"), "Not ready"),
     ])
     func settingsRowValue(_ status: ModelStatus, _ expected: String) {
         #expect(ModelManager.settingsValue(status, info: info) == expected)
-    }
-
-    @Test func expensiveNetworkFlag() {
-        let m = manager(FlakyInstallEngine(failures: 0), counter: ModelManagerReadyCounter())
-        #expect(!m.isExpensiveNetwork)
-        m.setExpensiveNetworkForTesting(true)
-        #expect(m.isExpensiveNetwork)
     }
 }

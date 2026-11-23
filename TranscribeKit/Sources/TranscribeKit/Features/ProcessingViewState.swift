@@ -18,7 +18,7 @@ public struct ProcessingViewState: Equatable, Sendable {
     public static let defaultHeading = "Working out who said what"
     public static let defaultMessage = "This happens on your iPhone. You can leave and come back."
     public static let modelsHeading = "Waiting for speech models"
-    public static let modelsMessage = "Processing starts once the models have downloaded."
+    public static let modelsMessage = "Processing starts once the speech models are ready on this iPhone."
     public static let recordingHeading = "Paused while you record"
     public static let recordingMessage = "Processing picks up again when you stop recording."
     public static let backgroundMessage = "Paused in the background. It picks up again when you come back."

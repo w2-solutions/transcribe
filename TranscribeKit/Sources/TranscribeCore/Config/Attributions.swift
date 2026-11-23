@@ -12,7 +12,7 @@ public struct Attribution: Sendable, Equatable, Identifiable {
     }
 }
 public enum Attributions {
-    /// Everything the app ships or downloads that needs crediting, in display order.
+    /// Everything the app ships that needs crediting, in display order.
     /// CC-BY-4.0 requires credit, a link to the licence and a note of any changes; Apache-2.0 requires the licence text.
     public static let all: [Attribution] = [
         Attribution(
@@ -28,8 +28,16 @@ public enum Attributions {
             name: "pyannote speaker-diarization-community-1",
             licence: "CC-BY-4.0",
             url: "https://huggingface.co/pyannote/speaker-diarization-community-1",
-            notes: "Speaker separation pipeline by pyannote, including the WeSpeaker ResNet34 voice embedding model. "
-                + "Converted to Core ML by FluidInference; used unmodified otherwise. "
+            // The app ships these files (BundledModels/speaker-diarization), so the credit follows the NOTICE.md of the
+            // exact repo commit in scripts/models.lock: pyannote, WeSpeaker, BUT Speech@FIT and Fluid Inference, the
+            // README's citations, and a statement that the files are modified Core ML conversions.
+            notes: "Speaker separation pipeline by pyannote (segmentation: Plaquet and Bredin, Interspeech 2023), "
+                + "including the WeSpeaker ResNet34 voice embedding model (Wang et al., ICASSP 2023) and PLDA parameters "
+                + "by Brno University of Technology / BUT Speech@FIT (VBx clustering: Landini et al., Computer Speech & Language 2022). "
+                + "Converted to Core ML by FluidInference (Fluid Inference); these are modified files: fixed and enumerated "
+                + "input shapes, mixed-precision storage, and the FBank frontend separated from the embedding backend. "
+                + "From https://huggingface.co/FluidInference/speaker-diarization-coreml; notice: "
+                + "https://huggingface.co/FluidInference/speaker-diarization-coreml/blob/df2625ac79a7ac6b65ad868fee6d80f320da4232/NOTICE.md. "
                 + "Licensed under Creative Commons Attribution 4.0 International.",
             licenceText: nil),
         Attribution(

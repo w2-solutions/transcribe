@@ -15,10 +15,6 @@ actor CentroidFreeEngine: SpeechEngine {
     init(base: FakeSpeechEngine) { self.base = base }
 
     func modelStatus() async -> ModelStatus { await base.modelStatus() }
-    func installModels(progress: @escaping @Sendable (ModelInstallProgress) -> Void) async throws {
-        try await base.installModels(progress: progress)
-    }
-    func removeModels() async throws { try await base.removeModels() }
     func prepareModels() async throws { try await base.prepareModels() }
     func microphonePermission() async -> MicPermission { await base.microphonePermission() }
     func requestMicrophonePermission() async -> Bool { await base.requestMicrophonePermission() }

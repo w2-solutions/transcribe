@@ -94,13 +94,25 @@ struct FakeEngineTests {
         LaunchConfig(arguments: ["-useFakeEngine", "-uiTesting"], environment: env)
     }
 
-    @Test func modelsInstallAndPrepare() async throws {
+    @Test func missingModelsMeanASlowFirstPrepare() async throws {
+        // "missing" = first launch on this device: the models ship in the app, so nothing downloads, but the
+        // first on-device prepare is slow (2 s at instant speed).
         let engine = FakeSpeechEngine(config: config(["TRANSCRIBE_MODELS": "missing"]), script: .named(.newVoices))
-        #expect(await engine.modelStatus() == .notInstalled)
-        await #expect(throws: EngineError.modelsMissing) { try await engine.prepareModels() }
-        try await engine.installModels { _ in }
         #expect(await engine.modelStatus() == .installed)
+        let clock = ContinuousClock()
+        let start = clock.now
         try await engine.prepareModels()
+        #expect(clock.now - start >= .milliseconds(1_500))
+        #expect(await engine.modelStatus() == .ready)
+    }
+
+    @Test func installedModelsPrepareQuickly() async throws {
+        let engine = FakeSpeechEngine(config: config(["TRANSCRIBE_MODELS": "installed"]), script: .named(.newVoices))
+        #expect(await engine.modelStatus() == .installed)
+        let clock = ContinuousClock()
+        let start = clock.now
+        try await engine.prepareModels()
+        #expect(clock.now - start < .milliseconds(1_500))
         #expect(await engine.modelStatus() == .ready)
     }
 

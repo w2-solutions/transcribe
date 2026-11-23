@@ -5,39 +5,26 @@ public enum EngineKind: String, Sendable { case fluid, fake }
 public struct EngineInfo: Sendable, Equatable {
     public let kind: EngineKind
     public let asrDisplayName: String           // "Parakeet"
-    public let asrModelID: String               // "parakeet-tdt-0.6b-v3-coreml@main" / "fake-parakeet"
+    public let asrModelID: String               // "parakeet-tdt-0.6b-v3-coreml@7dd20fe6" / "fake-parakeet"
     public let embeddingModel: EmbeddingModelID
-    public let speechDownloadBytes: Int64       // 483_000_000
-    public let speakersDownloadBytes: Int64     // 221_096_000 (community-1 22 MB + Nemotron 3 199 MB)
-    public init(kind: EngineKind, asrDisplayName: String, asrModelID: String, embeddingModel: EmbeddingModelID,
-                speechDownloadBytes: Int64, speakersDownloadBytes: Int64) {
+    public init(kind: EngineKind, asrDisplayName: String, asrModelID: String, embeddingModel: EmbeddingModelID) {
         self.kind = kind; self.asrDisplayName = asrDisplayName; self.asrModelID = asrModelID
-        self.embeddingModel = embeddingModel; self.speechDownloadBytes = speechDownloadBytes
-        self.speakersDownloadBytes = speakersDownloadBytes
+        self.embeddingModel = embeddingModel
     }
-    public var totalDownloadBytes: Int64 { speechDownloadBytes + speakersDownloadBytes }
 }
 
-public enum ModelComponent: String, Sendable, Equatable { case speech, speakers }
-
-public struct ModelInstallProgress: Sendable, Equatable {
-    public enum Phase: Sendable, Equatable {
-        case checking
-        case downloading(ModelComponent, completedFiles: Int, totalFiles: Int)
-        case compiling(ModelComponent)
-    }
-    public var fraction: Double      // 0...1 overall, byte-weighted: speech first, then the speaker models
-    public var phase: Phase
-    public init(fraction: Double, phase: Phase) { self.fraction = fraction; self.phase = phase }
-}
-
+/// The speech models ship inside the app (read-only), so there is nothing to download or remove:
+/// only the on-device prepare (load + Neural Engine compile + warm-up) runs.
 public enum ModelStatus: Sendable, Equatable {
-    case notInstalled
-    case installing(ModelInstallProgress)
-    case installed          // on disk, not loaded
+    case installed          // shipped in the app, not loaded yet
     case preparing          // loading + ANE compile + warm-up
     case ready
     case failed(String)
+}
+
+public extension ModelStatus {
+    /// The bundled model files are missing or damaged in this copy of the app.
+    static let missingFromAppMessage = "Speech models are missing from this copy of Transcribe. Install it again to fix this."
 }
 
 public enum LanguageHint: Sendable, Hashable, Codable {
@@ -115,8 +102,6 @@ public protocol SpeechEngine: Sendable {
 
     // Models
     func modelStatus() async -> ModelStatus
-    func installModels(progress: @escaping @Sendable (ModelInstallProgress) -> Void) async throws
-    func removeModels() async throws
     func prepareModels() async throws                 // load + 1 s silent warm-up; idempotent
 
     // Microphone

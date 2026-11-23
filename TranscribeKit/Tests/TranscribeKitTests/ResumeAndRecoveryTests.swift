@@ -155,26 +155,6 @@ struct ResumeAndRecoveryTests {
         #expect(try p.h.recording(id).attemptCount == 0)
     }
 
-    @Test func removingModelsStopsTheRunningJobUntilTheyAreBack() async throws {
-        let p = try await WP3Pipeline(.holdAtSeparating, seed: .empty)
-        defer { p.cleanup() }
-        let id = try p.record()
-        await p.coordinator.enqueue(id)
-        #expect(await p.waitForSeparation())
-        await p.coordinator.suspendForModelRemoval()
-        #expect(await p.coordinator.runningID == nil)
-        await p.coordinator.waitUntilIdle()
-        let r = try p.h.recording(id)
-        #expect(r.stage == .transcribed && r.queueReason == .modelsNotReady && r.attemptCount == 0)
-        #expect(await p.coordinator.queuedIDs == [id])
-
-        await p.coordinator.modelsBecameReady()
-        #expect(await wp3WaitFor { await p.engine.callCount("separateSpeakers") >= 2 })
-        #expect(await p.engine.callCount("transcribe") == 1)
-        #expect(await p.engine.maxConcurrentCalls == 1)
-        await p.coordinator.cancel(id)
-    }
-
     @Test func backgroundExpiryParksTheJobUntilTheAppIsActive() async throws {
         let p = try await WP3Pipeline(.holdAtSeparating, seed: .empty)
         defer { p.cleanup() }

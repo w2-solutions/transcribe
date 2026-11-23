@@ -8,3 +8,5 @@ xcuserdata/
 TranscribeKit/Tests/TranscribeFluidTests/Fixtures/*.wav
 .DS_Store
 TranscribeKit/Tests/TranscribeFluidTests/Fixtures/*.turns.json
+BundledModels/*
+!BundledModels/README.md

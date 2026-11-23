@@ -6,6 +6,11 @@ cd "$(dirname "$0")/.."
 
 xcodegen generate
 
+# The speech models are not downloaded here: simulator builds leave them out, and Debug device builds only warn.
+if [ -z "$(find BundledModels -mindepth 1 ! -name README.md ! -name .DS_Store -print -quit 2>/dev/null)" ]; then
+  echo "note: real-engine device builds need ./scripts/fetch-models.sh (about 704 MB; add --from ~/Library/Caches/transcribe-test-models if you have it)"
+fi
+
 CACHE="$HOME/Library/Caches/org.swift.swiftpm/artifacts/https___github_com_FluidInference_text_processing_rs_releases_download_v0_3_4_NemoTextProcessing_xcframework_zip"
 URL="https://github.com/FluidInference/text-processing-rs/releases/download/v0.3.4/NemoTextProcessing.xcframework.zip"
 if [ ! -e "$CACHE" ]; then

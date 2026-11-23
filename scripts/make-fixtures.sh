@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Generates the audio fixtures for the gated FluidAudio tests (TranscribeFluidTests, §8.1).
 # Uses macOS `say` (voices Daniel, Karen and Moira) and `afconvert`; the WAVs are 16 kHz mono 16-bit (LEI16)
-# and are gitignored. Run once, then:
-#   TRANSCRIBE_MODELS_DIR=<dir> swift test --filter TranscribeFluidTests   (from TranscribeKit/)
+# and are gitignored. Run once, then make models, then:
+#   TRANSCRIBE_MODELS_DIR=$PWD/../BundledModels swift test --filter FluidEngineTests   (from TranscribeKit/)
 #
 #   two-voices.wav  ~24 s, four alternating turns (Daniel, Karen, Daniel, Karen); contains "transcription"
 #   three-voices.wav ~30 s, nine turns by Daniel, Karen and Moira with quick (0.15 s) handovers and short replies

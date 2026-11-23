@@ -1,18 +1,19 @@
 import FluidAudio
 import Foundation
 
-/// Where the FluidAudio model files live under the app's models root, and whether they are complete.
+/// Where the FluidAudio model files live under the models root, and whether they are complete.
 ///
-/// The two FluidAudio loaders read "directory" differently (research §2):
-/// - `AsrModels.download(to:)` / `load(from:)` take the model folder itself and use `<its parent>/<Repo.folderName>`.
+/// The root is the read-only `BundledModels` folder inside the app bundle (`bundledRoot()`), filled at build time
+/// by `scripts/fetch-models.sh` from the pinned `scripts/models.lock`. Nothing is ever downloaded or written there.
+///
+/// FluidAudio's folder names drop the HF repo's "-coreml" suffix (`Repo.folderName`), so the folders are
+/// `<root>/parakeet-tdt-0.6b-v3`, `<root>/speaker-diarization` and `<root>/nemotron-3-diarization`.
+///
+/// The three loaders read "directory" differently (research §2):
+/// - `AsrModels.load(from:)` takes the model folder itself.
 /// - `OfflineDiarizerModels.load(from:)` takes the root and appends the diarizer's folder itself.
-///
-/// FluidAudio's cache folder names drop the HF repo's "-coreml" suffix (`Repo.folderName`), so on disk the
-/// folders are `<root>/parakeet-tdt-0.6b-v3`, `<root>/speaker-diarization` and `<root>/nemotron-3-diarization`
-/// (not the repo names).
-///
-/// `Nemotron3Models.loadFromHuggingFace(config:cacheDirectory:)` takes the root and keeps the repo layout:
-/// `<root>/nemotron-3-diarization/monolithic/v2/<bundle>.mlmodelc` plus the root `.bin` asset and a weights-version marker.
+/// - `Nemotron3Models.load(config:directory:)` takes a flat folder: `<dir>/<bundle>.mlmodelc` next to
+///   `<dir>/learnable_sil_emb.bin` (not the hub's `monolithic/v2/` layout).
 public struct FluidModelPaths: Sendable, Equatable {
     public let root: URL
 
@@ -28,26 +29,31 @@ public struct FluidModelPaths: Sendable, Equatable {
     /// The five files the offline (community-1) diarizer needs: four compiled models and the PLDA parameters.
     public static let diarizerRequiredFiles: [String] = ModelNames.OfflineDiarizer.requiredModels.sorted()
 
-    /// What the Nemotron 3 (fp16 `fast128`) set needs, relative to its repo folder: the compiled bundle and the root
+    /// What the Nemotron 3 (fp16 `fast128`) set needs, flat in its folder: the compiled bundle and the root
     /// assets (`learnable_sil_emb.bin`; `pre_encode_proj_t.bin` only for split-graph presets, so not here).
     public static var nemotronRequiredFiles: [String] {
         let config = NemotronSeparation.config
-        var files = ["\(config.hubSubdirectory)/\(config.modelFileName)", ModelNames.Nemotron3.silenceEmbeddingFile]
+        var files = [config.modelFileName, ModelNames.Nemotron3.silenceEmbeddingFile]
         if config.splitGraph { files.append(ModelNames.Nemotron3.preEncodeProjectionFile) }
         return files
     }
 
-    /// Download sizes reported to the UI (HF API, 2026-11-23; research §2).
-    public static let speechDownloadBytes: Int64 = 483_000_000
-    /// pyannote community-1 (segmentation, embedding, PLDA): the fallback separator and the voice embedder.
-    public static let communityOneDownloadBytes: Int64 = 22_000_000
-    /// Nemotron 3 fp16 `fast128` (HF main = revision 25a90f97 on 2026-11-23): bundle 199_094_387 + asset 2_048 bytes.
-    public static let nemotronDownloadBytes: Int64 = 199_096_000
-    /// Everything for "who spoke when" and voice vectors.
-    public static let speakersDownloadBytes: Int64 = communityOneDownloadBytes + nemotronDownloadBytes
-    public static let totalDownloadBytes: Int64 = speechDownloadBytes + speakersDownloadBytes
+    /// The folder inside the app bundle that holds the shipped models.
+    public static let bundledFolderName = "BundledModels"
 
-    /// Passed to `AsrModels.download(to:)` / `AsrModels.load(from:)`.
+    /// `<bundle resources>/BundledModels`: the models root of a shipped app.
+    public static func bundledRoot(in bundle: Bundle = .main) -> URL {
+        (bundle.resourceURL ?? bundle.bundleURL).appendingPathComponent(bundledFolderName, isDirectory: true)
+    }
+
+    /// The Parakeet set the app ships: repo plus the first 8 characters of the pinned revision in
+    /// `scripts/models.lock` (a test ties the two together).
+    public static let asrModelID = "parakeet-tdt-0.6b-v3-coreml@7dd20fe6"
+
+    /// FluidAudio's revision marker (`ModelCache.revisionMarkerName`, internal there).
+    static let revisionMarkerFile = ".fluidaudio-revision"
+
+    /// Passed to `AsrModels.load(from:)`.
     public var asrDirectory: URL { root.appendingPathComponent(Self.asrFolderName, isDirectory: true) }
 
     /// Passed to `OfflineDiarizerModels.load(from:)` (the root, not the repo folder).
@@ -56,10 +62,7 @@ public struct FluidModelPaths: Sendable, Equatable {
     /// Where the diarizer files actually land.
     public var diarizerDirectory: URL { root.appendingPathComponent(Self.diarizerFolderName, isDirectory: true) }
 
-    /// Passed to `Nemotron3Models.loadFromHuggingFace(cacheDirectory:)` (the root, not the repo folder).
-    public var nemotronLoadDirectory: URL { root }
-
-    /// Where the Nemotron 3 files land.
+    /// Passed to `Nemotron3Models.load(config:directory:)`: the bundle and its assets sit flat in this folder.
     public var nemotronDirectory: URL { root.appendingPathComponent(Self.nemotronFolderName, isDirectory: true) }
 
     /// Parakeet TDT v3 (int8 encoder) is complete and load-ready: every `.mlmodelc` has `coremldata.bin`,
@@ -70,23 +73,28 @@ public struct FluidModelPaths: Sendable, Equatable {
 
     /// FluidAudio has no public cache check for the diarizer, so this mirrors its internal rule:
     /// each required `.mlmodelc` is a directory containing `coremldata.bin` with no `*.partial` file inside,
-    /// and each plain file exists.
+    /// and each plain file exists. The folder must also carry no `.fluidaudio-revision` marker: with the "main"
+    /// override (`FluidRuntime`), a marker naming the pinned commit would make FluidAudio treat the folder as stale.
     public var diarizerInstalled: Bool {
-        Self.isComplete(directory: diarizerDirectory, requiredFiles: Self.diarizerRequiredFiles)
+        guard Self.isComplete(directory: diarizerDirectory, requiredFiles: Self.diarizerRequiredFiles) else { return false }
+        let marker = diarizerDirectory.appendingPathComponent(Self.revisionMarkerFile)
+        return !FileManager.default.fileExists(atPath: marker.path)
     }
 
-    /// Nemotron 3 is complete: the bundle (with `coremldata.bin`, no `*.partial`), the assets, and FluidAudio's
-    /// weights-version marker matching this FluidAudio release. Without the marker `loadFromHuggingFace` would
-    /// delete the folder as stale and try to download it again, so a missing marker means "not installed".
+    /// Nemotron 3 is complete in the flat layout: the bundle (with `coremldata.bin`, no `*.partial`) and
+    /// `learnable_sil_emb.bin` of exactly `preEncoderDims` floats (2,048 bytes), the size the loader checks.
+    /// There is no weights marker: `scripts/models.lock` pins the weights version instead.
     public var nemotronInstalled: Bool {
         guard Self.isComplete(directory: nemotronDirectory, requiredFiles: Self.nemotronRequiredFiles) else { return false }
-        let marker = nemotronDirectory.appendingPathComponent(ModelNames.Nemotron3.weightsVersionFile)
-        let cached = (try? String(contentsOf: marker, encoding: .utf8))?.trimmingCharacters(in: .whitespacesAndNewlines)
-        return cached == ModelNames.Nemotron3.weightsVersion
+        let sil = nemotronDirectory.appendingPathComponent(ModelNames.Nemotron3.silenceEmbeddingFile)
+        let size = (try? FileManager.default.attributesOfItem(atPath: sil.path)[.size] as? NSNumber)?.intValue
+        return size == Self.nemotronSilenceEmbeddingBytes
     }
 
-    /// Every model set is on disk. An older install without Nemotron 3 is therefore "not installed": the Library
-    /// card offers the download again, and only the missing Nemotron files are fetched (§5.10).
+    /// `learnable_sil_emb.bin`: `preEncoderDims` (512) Float32 values.
+    static var nemotronSilenceEmbeddingBytes: Int { NemotronSeparation.config.preEncoderDims * MemoryLayout<Float>.size }
+
+    /// Every model set is complete. Anything less means the app bundle is missing or damaged.
     public var allInstalled: Bool { asrInstalled && diarizerInstalled && nemotronInstalled }
 
     /// Bytes on disk for the speech (ASR) folder.
@@ -94,13 +102,6 @@ public struct FluidModelPaths: Sendable, Equatable {
 
     /// Bytes on disk for the speaker models (community-1 and Nemotron 3 folders).
     public var speakersBytesOnDisk: Int64 { Self.allocatedSize(of: diarizerDirectory) + Self.allocatedSize(of: nemotronDirectory) }
-
-    /// Files a build that shipped the 95 MB `c128-split-w8a8` variant left in the Nemotron folder; removed after a
-    /// successful install so they do not take 100 MB for nothing.
-    public static let nemotronObsoleteItems = ["split", ModelNames.Nemotron3.preEncodeProjectionFile]
-
-    /// Every model folder. Deleting these removes every model file the engine uses.
-    public var modelFolders: [URL] { [asrDirectory, diarizerDirectory, nemotronDirectory] }
 
     // MARK: Helpers (internal for tests)
 

@@ -49,7 +49,7 @@ struct FluidModelPathsTests {
         }
     }
 
-    @Test func folderLayoutMatchesBothLoaders() {
+    @Test func folderLayoutMatchesTheLoaders() {
         let paths = FluidModelPaths(root: URL(fileURLWithPath: "/models", isDirectory: true))
         // FluidAudio's cache folder names drop the repo's "-coreml" suffix (`Repo.folderName`).
         #expect(paths.asrDirectory.path == "/models/parakeet-tdt-0.6b-v3")
@@ -57,18 +57,23 @@ struct FluidModelPathsTests {
         #expect(paths.diarizerLoadDirectory.path == "/models")
         #expect(FluidModelPaths.diarizerRequiredFiles ==
                 ["Embedding.mlmodelc", "FBank.mlmodelc", "PldaRho.mlmodelc", "Segmentation.mlmodelc", "plda-parameters.json"])
-        // Nemotron3Models.loadFromHuggingFace(cacheDirectory: root) keeps the repo layout under its folder.
-        #expect(paths.nemotronLoadDirectory.path == "/models")
+        // Nemotron3Models.load(config:directory:) reads a flat folder: the bundle next to its asset.
         #expect(paths.nemotronDirectory.path == "/models/nemotron-3-diarization")
-        #expect(FluidModelPaths.nemotronRequiredFiles ==
-                ["monolithic/v2/Nemotron3Diarizer_fast128.mlmodelc", "learnable_sil_emb.bin"])
-        #expect(FluidModelPaths.nemotronObsoleteItems == ["split", "pre_encode_proj_t.bin"])
-        #expect(paths.modelFolders.map(\.lastPathComponent) == ["parakeet-tdt-0.6b-v3", "speaker-diarization", "nemotron-3-diarization"])
+        #expect(FluidModelPaths.nemotronRequiredFiles == ["Nemotron3Diarizer_fast128.mlmodelc", "learnable_sil_emb.bin"])
+        #expect(FluidModelPaths.nemotronSilenceEmbeddingBytes == 2_048)
     }
 
-    /// Lays out the Nemotron 3 files the way `loadFromHuggingFace` leaves them.
-    private func makeNemotron(in paths: FluidModelPaths, marker: String? = ModelNames.Nemotron3.weightsVersion,
-                              skipping: String? = nil, partial: Bool = false) throws {
+    @Test func bundledRootIsResourcesBundledModels() {
+        let root = FluidModelPaths.bundledRoot(in: .main)
+        #expect(root.lastPathComponent == "BundledModels")
+        #expect(FluidModelPaths.bundledFolderName == "BundledModels")
+        let resources = Bundle.main.resourceURL ?? Bundle.main.bundleURL
+        #expect(root.deletingLastPathComponent().standardizedFileURL.path == resources.standardizedFileURL.path)
+    }
+
+    /// Lays out the Nemotron 3 files flat, the way the app bundle ships them.
+    private func makeNemotron(in paths: FluidModelPaths, skipping: String? = nil, partial: Bool = false,
+                              silBytes: Int = 2_048) throws {
         let fm = FileManager.default
         for name in FluidModelPaths.nemotronRequiredFiles where name != skipping {
             let url = paths.nemotronDirectory.appendingPathComponent(name)
@@ -78,15 +83,12 @@ struct FluidModelPathsTests {
                 if partial { try Data([1]).write(to: url.appendingPathComponent("weights/weight.bin.partial")) }
             } else {
                 try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
-                try Data(repeating: 0, count: 2_048).write(to: url)
+                try Data(repeating: 0, count: silBytes).write(to: url)
             }
-        }
-        if let marker {
-            try Data((marker + "\n").utf8).write(to: paths.nemotronDirectory.appendingPathComponent(ModelNames.Nemotron3.weightsVersionFile))
         }
     }
 
-    @Test func completeNemotronFolderWithTheCurrentMarkerIsInstalled() throws {
+    @Test func completeFlatNemotronFolderIsInstalled() throws {
         let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
         #expect(!paths.nemotronInstalled)
         try makeNemotron(in: paths)
@@ -95,59 +97,49 @@ struct FluidModelPathsTests {
         #expect(!paths.allInstalled) // ASR and community-1 still missing
     }
 
-    @Test func leftoversFromTheSplitVariantDoNotMatter() throws {
-        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
-        try makeNemotron(in: paths)
-        let split = paths.nemotronDirectory.appendingPathComponent("split/Nemotron3Diarizer_c128_split_w8a8.mlmodelc")
-        try FileManager.default.createDirectory(at: split, withIntermediateDirectories: true)
-        try Data([1]).write(to: paths.nemotronDirectory.appendingPathComponent("pre_encode_proj_t.bin"))
-        #expect(paths.nemotronInstalled)
-    }
-
-    @Test func splitVariantAloneIsNotInstalled() throws {
-        // A directory holding only the earlier 95 MB c128-split-w8a8 build must download fast128.
+    @Test func hubLayoutNemotronIsNotInstalled() throws {
+        // The hub's `monolithic/v2/<bundle>` layout is not what `load(directory:)` reads.
         let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
         let fm = FileManager.default
-        let split = paths.nemotronDirectory.appendingPathComponent("split/Nemotron3Diarizer_c128_split_w8a8.mlmodelc")
-        try fm.createDirectory(at: split, withIntermediateDirectories: true)
-        try Data([1]).write(to: split.appendingPathComponent("coremldata.bin"))
-        for name in ["learnable_sil_emb.bin", "pre_encode_proj_t.bin"] {
-            try Data([1]).write(to: paths.nemotronDirectory.appendingPathComponent(name))
-        }
-        try Data((ModelNames.Nemotron3.weightsVersion + "\n").utf8)
-            .write(to: paths.nemotronDirectory.appendingPathComponent(ModelNames.Nemotron3.weightsVersionFile))
+        let bundle = paths.nemotronDirectory.appendingPathComponent("monolithic/v2/Nemotron3Diarizer_fast128.mlmodelc")
+        try fm.createDirectory(at: bundle, withIntermediateDirectories: true)
+        try Data([1]).write(to: bundle.appendingPathComponent("coremldata.bin"))
+        try Data(repeating: 0, count: 2_048).write(to: paths.nemotronDirectory.appendingPathComponent("learnable_sil_emb.bin"))
         #expect(!paths.nemotronInstalled)
     }
 
-    @Test func nemotronWithoutOrWithAStaleMarkerIsNotInstalled() throws {
-        let missing = FluidModelPaths(root: try TestAudio.temporaryDirectory())
-        try makeNemotron(in: missing, marker: nil)
-        #expect(!missing.nemotronInstalled)
-        let stale = FluidModelPaths(root: try TestAudio.temporaryDirectory())
-        try makeNemotron(in: stale, marker: "preview-2026-06-01")
-        #expect(!stale.nemotronInstalled)
+    @Test func wrongSizeSilenceEmbeddingIsNotInstalled() throws {
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeNemotron(in: paths, silBytes: 2_047)
+        #expect(!paths.nemotronInstalled)
     }
 
     @Test func nemotronMissingAnAssetOrMidDownloadIsNotInstalled() throws {
         let noSilence = FluidModelPaths(root: try TestAudio.temporaryDirectory())
         try makeNemotron(in: noSilence, skipping: "learnable_sil_emb.bin")
         #expect(!noSilence.nemotronInstalled)
+        let noBundle = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeNemotron(in: noBundle, skipping: "Nemotron3Diarizer_fast128.mlmodelc")
+        #expect(!noBundle.nemotronInstalled)
         let partial = FluidModelPaths(root: try TestAudio.temporaryDirectory())
         try makeNemotron(in: partial, partial: true)
         #expect(!partial.nemotronInstalled)
     }
 
-    @Test func olderInstallWithoutNemotronIsNotInstalled() throws {
-        // Community-1 on its own (an install from before Nemotron 3) must not count as complete.
+    @Test func bundleWithoutNemotronIsNotAllInstalled() throws {
         let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
         try makeDiarizer(in: paths)
         #expect(paths.diarizerInstalled && !paths.nemotronInstalled && !paths.allInstalled)
     }
 
-    @Test func downloadSizesAreByteAccurate() {
-        #expect(FluidModelPaths.nemotronDownloadBytes == 199_096_000)       // 199_094_387 bundle + 2_048 asset
-        #expect(FluidModelPaths.speakersDownloadBytes == 221_096_000)
-        #expect(FluidModelPaths.totalDownloadBytes == 704_096_000)
+    @Test func diarizerWithARevisionMarkerIsNotInstalled() throws {
+        // With the "main" revision override, FluidAudio would reject a folder whose marker names the pinned commit.
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeDiarizer(in: paths)
+        #expect(paths.diarizerInstalled)
+        try Data((Repo.diarizer.revision + "\n").utf8)
+            .write(to: paths.diarizerDirectory.appendingPathComponent(".fluidaudio-revision"))
+        #expect(!paths.diarizerInstalled)
     }
 
     @Test func emptyRootIsNotInstalled() throws {
@@ -182,80 +174,6 @@ struct FluidModelPathsTests {
         let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
         try makeDiarizer(in: paths, partialIn: "Segmentation.mlmodelc")
         #expect(!paths.diarizerInstalled)
-    }
-}
-
-@Suite("InstallProgressMapper")
-struct InstallProgressMapperTests {
-    /// The callback sequence `AsrModels.download` produces: the first single-model load downloads the whole
-    /// repo (0...0.5) and compiles; the next three find the cache (0.5) and compile.
-    static let asrSequence: [(Double, RawInstallPhase)] = {
-        var seq: [(Double, RawInstallPhase)] = [(0, .listing)]
-        for i in 1...10 { seq.append((0.05 * Double(i), .downloading(completedFiles: i / 2, totalFiles: 5))) }
-        seq += [(0.5, .compiling), (1.0, .compiling)]
-        for _ in 0..<3 { seq += [(0.5, .downloading(completedFiles: 0, totalFiles: 0)), (0.5, .compiling), (1.0, .compiling)] }
-        return seq
-    }()
-
-    @Test func speechProgressIsMonotonicAndStaysInItsShare() {
-        var mapper = InstallProgressMapper.speech()
-        var last = -1.0
-        for (raw, phase) in Self.asrSequence {
-            let p = mapper.map(fraction: raw, phase: phase)
-            #expect(p.fraction >= last)
-            #expect(p.fraction >= 0 && p.fraction < InstallProgressMapper.speechShare)
-            last = p.fraction
-        }
-        #expect(last > 0.95 * InstallProgressMapper.speechShare)
-        #expect(mapper.finished().fraction == InstallProgressMapper.speechShare)
-    }
-
-    @Test func downloadIsMostOfTheBar() {
-        var mapper = InstallProgressMapper.speech()
-        let half = mapper.map(fraction: 0.25, phase: .downloading(completedFiles: 2, totalFiles: 5))
-        #expect(abs(half.fraction - 0.45 * InstallProgressMapper.speechShare) < 1e-9)
-        #expect(half.phase == .downloading(.speech, completedFiles: 2, totalFiles: 5))
-    }
-
-    @Test func phasesMapToTheContract() {
-        var mapper = InstallProgressMapper.speakers()
-        #expect(mapper.map(fraction: 0, phase: .listing).phase == .checking)
-        #expect(mapper.map(fraction: 0.2, phase: .downloading(completedFiles: 1, totalFiles: 5)).phase
-                == .downloading(.speakers, completedFiles: 1, totalFiles: 5))
-        #expect(mapper.map(fraction: 0.6, phase: .compiling).phase == .compiling(.speakers))
-    }
-
-    @Test func sharesAreByteWeighted() {
-        #expect(abs(InstallProgressMapper.speechShare - 483.0 / 704.096) < 1e-9)
-        #expect(abs(InstallProgressMapper.communityOneShare - 22.0 / 704.096) < 1e-9)
-    }
-
-    @Test func communityOneFillsItsSliceAndNemotronTheRest() {
-        var c1 = InstallProgressMapper.speakers()
-        let first = c1.map(fraction: 0, phase: .listing)
-        #expect(first.fraction == InstallProgressMapper.speechShare)
-        _ = c1.map(fraction: 0.5, phase: .downloading(completedFiles: 5, totalFiles: 5))
-        let c1Done = c1.finished().fraction
-        #expect(abs(c1Done - (InstallProgressMapper.speechShare + InstallProgressMapper.communityOneShare)) < 1e-12)
-
-        var nemotron = InstallProgressMapper.nemotron()
-        let start = nemotron.map(fraction: 0, phase: .listing)
-        #expect(abs(start.fraction - c1Done) < 1e-12)
-        #expect(start.phase == .checking)
-        // A subdirectory download reports 0...1 for the download alone.
-        let half = nemotron.map(fraction: 0.5, phase: .downloading(completedFiles: 3, totalFiles: 6))
-        #expect(abs(half.fraction - (c1Done + (1 - c1Done) * 0.45)) < 1e-9)
-        #expect(half.phase == .downloading(.speakers, completedFiles: 3, totalFiles: 6))
-        let all = nemotron.map(fraction: 1, phase: .downloading(completedFiles: 6, totalFiles: 6))
-        #expect(all.fraction < 1)
-        #expect(all.phase == .compiling(.speakers))   // the first Neural Engine compile follows the last byte
-        #expect(nemotron.finished().fraction == 1)
-    }
-
-    @Test func nonFiniteFractionsAreIgnored() {
-        var mapper = InstallProgressMapper.speech()
-        let p = mapper.map(fraction: .nan, phase: .downloading(completedFiles: 0, totalFiles: 1))
-        #expect(p.fraction == 0)
     }
 }
 
@@ -492,16 +410,14 @@ struct FluidEngineNoModelsTests {
         let info = try makeEngine().info
         #expect(info.kind == .fluid)
         #expect(info.asrDisplayName == "Parakeet")
-        #expect(info.asrModelID == "parakeet-tdt-0.6b-v3-coreml@main")
+        #expect(info.asrModelID == FluidModelPaths.asrModelID)
         #expect(info.embeddingModel == .communityOneResNet34)
-        #expect(info.speechDownloadBytes == 483_000_000)
-        #expect(info.speakersDownloadBytes == 221_096_000)
-        #expect(info.totalDownloadBytes == 704_096_000)
     }
 
-    @Test func statusIsNotInstalledAndModelCallsThrowModelsMissing() async throws {
-        let engine = try makeEngine()
-        #expect(await engine.modelStatus() == .notInstalled)
+    @Test func emptyRootIsMissingFromTheAppAndModelCallsThrowModelsMissing() async throws {
+        let root = try TestAudio.temporaryDirectory()
+        let engine = FluidSpeechEngine(modelsRoot: root, captureFactory: { ScriptedCaptureSource() })
+        #expect(await engine.modelStatus() == .failed(ModelStatus.missingFromAppMessage))
         await #expect(throws: EngineError.modelsMissing) { try await engine.prepareModels() }
         let url = URL(fileURLWithPath: "/nonexistent.wav")
         await #expect(throws: EngineError.modelsMissing) { _ = try await engine.transcribe(url, language: .automatic) { _ in } }
@@ -509,8 +425,15 @@ struct FluidEngineNoModelsTests {
         await #expect(throws: EngineError.modelsMissing) {
             _ = try await engine.embedVoice(url, spans: [TimeRange(start: 0, end: 1)])
         }
-        try await engine.removeModels()
-        #expect(await engine.modelStatus() == .notInstalled)
+        #expect(await engine.modelStatus() == .failed(ModelStatus.missingFromAppMessage))
+        // Nothing is ever written into the models root.
+        #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
+    }
+
+    @Test func engineLocksFluidAudioDown() throws {
+        _ = try makeEngine()
+        #expect(ModelHub.offlineMode == true)
+        #expect(ModelRegistry.revisionOverrides[Repo.diarizer.remotePath] == "main")
     }
 
     @Test func recordingWorksWithoutModels() async throws {
@@ -583,6 +506,8 @@ struct FluidEngineNoModelsTests {
         #expect(FluidErrorMapping.engineError(CancellationError()) == .cancelled)
         #expect(FluidErrorMapping.engineError(URLError(.cancelled)) == .cancelled)
         #expect(FluidErrorMapping.engineError(EngineError.microphoneDenied) == .microphoneDenied)
+        #expect(FluidErrorMapping.engineError(DownloadError.modelMissing(repo: "x", missing: [])) == .modelsMissing)
+        #expect(FluidErrorMapping.describe(EngineError.modelsMissing) == ModelStatus.missingFromAppMessage)
         if case .failed(let message) = FluidErrorMapping.engineError(Nemotron3Error.modelLoadFailed("no ANE")) {
             #expect(message.contains("no ANE"))
         } else {

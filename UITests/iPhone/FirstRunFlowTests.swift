@@ -1,23 +1,24 @@
 import XCTest
 
-/// First run: no models yet (`firstRun`, models `missing`).
+/// First launch: models ship in the app; only the on-device prepare runs (`firstRun`, fake models `missing`
+/// means a slow first prepare, 20 s at `demo` speed, and no download).
 final class FirstRunFlowTests: FlowTestCase {
-    /// `demo` speed makes the fake install last about 6 s, so the progress state is observable.
-    @MainActor func testModelsCardDownloads() {
-        let app = UITestApp.launch(seed: "firstRun", speed: "demo", models: "missing")
-        app.waitFor(AX.Library.modelsCard, timeout: 20)
-        app.waitFor(AX.Library.emptyState)
-        app.waitFor(AX.Library.modelsDownloadButton).press()
-        app.waitFor(AX.Library.modelsProgress, timeout: 5)
-        app.waitForGone(AX.Library.modelsCard, timeout: 20)
-        app.waitFor(AX.Library.emptyState)
+    /// No models card and no download button: the models become ready on their own.
+    @MainActor func testFirstLaunchNeedsNoDownload() {
+        let app = UITestApp.launch(seed: "firstRun", speed: "demo")
+        app.waitFor(AX.Library.emptyState, timeout: 20)
+        XCTAssertFalse(app.element(AX.Library.modelsCard).exists, "No models card on first launch")
+        XCTAssertFalse(app.element(AX.Library.modelsDownloadButton).exists, "Nothing to download")
+
+        app.waitFor(AX.Library.settingsButton).press()
+        app.waitFor(AX.Settings.screen)
+        Wait.label(app.waitFor(AX.Settings.modelRow), contains: "Parakeet", timeout: 35)
     }
 
-    /// A recording made before the models are ready waits, then finishes once they are installed.
-    @MainActor func testRecordingWaitsForModels() {
-        let app = UITestApp.launch(seed: "firstRun", script: "newVoices", models: "missing")
-        app.waitFor(AX.Library.modelsCard, timeout: 20)
-        app.waitFor(AX.Library.recordButton).press()
+    /// A recording made during the first prepare waits, then finishes on its own once the models are ready.
+    @MainActor func testRecordingWaitsForFirstPrepare() {
+        let app = UITestApp.launch(seed: "firstRun", script: "newVoices", speed: "demo")
+        app.waitFor(AX.Library.recordButton, timeout: 20).press()
         app.waitFor(AX.Recording.screen)
         let elapsed = app.waitFor(AX.Recording.elapsed)
         Wait.label(elapsed, changesFrom: elapsed.label, timeout: 5)
@@ -26,13 +27,14 @@ final class FirstRunFlowTests: FlowTestCase {
         app.waitFor(AX.Transcript.screen)
         Wait.label(app.waitFor(AX.Processing.heading), contains: "Waiting for speech models")
 
-        // Back on the Library the card waits too; download from the models card.
+        // Back on the Library the card waits too, with no models card and nothing to tap.
         app.goBack()
         Wait.label(app.waitFor(AX.Library.cardStatus(0)), contains: "Waiting for speech models")
-        app.waitFor(AX.Library.modelsDownloadButton).press()
-        app.waitForGone(AX.Library.modelsCard, timeout: 10)
+        XCTAssertFalse(app.element(AX.Library.modelsCard).exists, "No models card while preparing")
+
         // The waiting recording then finishes on its own with two unnamed speakers.
-        app.waitFor(AX.Library.cardNameLink(0), timeout: 15)
+        app.waitFor(AX.Library.cardNameLink(0), timeout: 45)
+        XCTAssertFalse(app.element(AX.Library.modelsCard).exists, "The models card never appears")
         app.openCard(0)
         app.waitFor(AX.Transcript.screen)
         Wait.label(app.waitFor(AX.Transcript.newVoicesBanner), contains: "2 new voices", timeout: 10)

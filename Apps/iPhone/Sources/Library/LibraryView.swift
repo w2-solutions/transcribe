@@ -341,10 +341,7 @@ struct LibraryView: View {
     // MARK: State
 
     private var showsModelsCard: Bool {
-        switch env.models.status {
-        case .notInstalled, .installing, .failed: true
-        case .installed, .preparing, .ready: false
-        }
+        if case .failed = env.models.status { true } else { false }
     }
 
     // MARK: Actions

@@ -10,16 +10,17 @@ import TranscribeCore
 /// (fp16 `fast128`) for speaker separation with the pyannote community-1 offline pipeline as its fallback, and
 /// community-1's WeSpeaker ResNet34 embedder for voice vectors.
 ///
+/// The models ship read-only inside the app (`FluidModelPaths.bundledRoot()`); nothing is downloaded, removed or
+/// written. `FluidRuntime.lockDown()` puts FluidAudio in offline mode before any loader runs.
+///
 /// Holds `AsrManager`, `AsrModels`, `OfflineDiarizerModels` and the diarizer config. It never stores an
 /// `OfflineDiarizerManager` (not Sendable, its async methods are `@concurrent`); `makeDiarizer()` builds one
 /// per job and returns it as `sending`. Nemotron 3's models and diarizer are not Sendable either: they live only
 /// inside `NemotronSeparation.run`, loaded and released per job.
 public actor FluidSpeechEngine: SpeechEngine {
     public nonisolated let info = EngineInfo(
-        kind: .fluid, asrDisplayName: "Parakeet", asrModelID: "parakeet-tdt-0.6b-v3-coreml@main",
-        embeddingModel: .communityOneResNet34,
-        speechDownloadBytes: FluidModelPaths.speechDownloadBytes,
-        speakersDownloadBytes: FluidModelPaths.speakersDownloadBytes)
+        kind: .fluid, asrDisplayName: "Parakeet", asrModelID: FluidModelPaths.asrModelID,
+        embeddingModel: .communityOneResNet34)
 
     public nonisolated let paths: FluidModelPaths
     let modelsRoot: URL
@@ -33,16 +34,13 @@ public actor FluidSpeechEngine: SpeechEngine {
     private var asrModels: AsrModels?
     private var diarizerModels: OfflineDiarizerModels?
     private var isReady = false
-    private var isInstalling = false
     private var prepareTask: Task<Void, any Error>?
     private var loadFailure: String?
-    /// Why Nemotron 3 cannot be used on this device (it failed to load at install or prepare). Separation then
-    /// goes straight to community-1. Cleared by install and remove.
+    /// Why Nemotron 3 cannot be used on this device: set when Nemotron fails to load in this process. Separation
+    /// then goes straight to community-1.
     private var nemotronUnavailable: String?
-    /// Nemotron 3 loaded successfully in this process (install already compiled it; prepare need not again).
+    /// Nemotron 3 loaded once in this process (prepare's warm-up), so its Neural Engine compile is done.
     private var nemotronLoaded = false
-    /// Latest install progress, written from FluidAudio's callbacks (any queue), read by `modelStatus()`.
-    private let installProgress = OSAllocatedUnfairLock<ModelInstallProgress?>(initialState: nil)
 
     /// The embedding dimension of WeSpeaker ResNet34 (community-1).
     static let embeddingDimension = EmbeddingModelID.communityOneResNet34.dimension
@@ -56,6 +54,7 @@ public actor FluidSpeechEngine: SpeechEngine {
 
     /// Tests inject a scripted capture source.
     init(modelsRoot: URL, captureFactory: @escaping @Sendable () -> any CaptureSource) {
+        FluidRuntime.lockDown()
         self.modelsRoot = modelsRoot
         self.paths = FluidModelPaths(root: modelsRoot)
         self.captureFactory = captureFactory
@@ -63,7 +62,7 @@ public actor FluidSpeechEngine: SpeechEngine {
         self.diarizerConfig = Self.makeDiarizerConfig()
     }
 
-    /// ASR folder (`AsrModels.download(to:)` takes the repo folder itself).
+    /// ASR folder (`AsrModels.load(from:)` takes the repo folder itself).
     var asrDirectory: URL { paths.asrDirectory }
 
     // MARK: Configuration
@@ -98,115 +97,10 @@ public actor FluidSpeechEngine: SpeechEngine {
 
     public func modelStatus() async -> ModelStatus {
         if isReady { return .ready }
-        if isInstalling {
-            return .installing(installProgress.withLock { $0 } ?? ModelInstallProgress(fraction: 0, phase: .checking))
-        }
         if prepareTask != nil { return .preparing }
-        if let loadFailure, paths.allInstalled { return .failed(loadFailure) }
-        return paths.allInstalled ? .installed : .notInstalled
-    }
-
-    public func installModels(progress: @escaping @Sendable (ModelInstallProgress) -> Void) async throws {
-        guard !isInstalling else { throw EngineError.failed("Speech models are already being installed") }
-        isInstalling = true
-        defer {
-            isInstalling = false
-            installProgress.withLock { $0 = nil }
-        }
-        let box = installProgress
-        let report: @Sendable (ModelInstallProgress) -> Void = { p in
-            box.withLock { $0 = p }
-            progress(p)
-        }
-        report(ModelInstallProgress(fraction: 0, phase: .checking))
-        do {
-            // A previous install sets offline mode; downloading needs the network again.
-            ModelHub.offlineMode = false
-            try FileManager.default.createDirectory(at: modelsRoot, withIntermediateDirectories: true)
-            Self.excludeFromBackup(modelsRoot)
-
-            let speech = LockedInstallProgress(.speech(), sink: report)
-            _ = try await AsrModels.download(to: paths.asrDirectory, version: .v3, progressHandler: speech.handler)
-            try Task.checkCancellation()
-            speech.finish()
-
-            let speakers = LockedInstallProgress(.speakers(), sink: report)
-            let loaded = try await OfflineDiarizerModels.load(
-                from: paths.diarizerLoadDirectory, configuration: Self.makeDiarizerMLConfiguration(),
-                progressHandler: speakers.handler)
-            try Task.checkCancellation()
-            speakers.finish()
-
-            let nemotron = LockedInstallProgress(.nemotron(), sink: report)
-            try await installNemotron(progress: nemotron.handler)
-            try Task.checkCancellation()
-            nemotron.finish()
-
-            guard paths.allInstalled else { throw EngineError.failed("Model files are incomplete after download") }
-            diarizerModels = loaded
-            loadFailure = nil
-            ModelHub.offlineMode = true
-            log.info("Speech models installed at \(self.modelsRoot.path, privacy: .public)")
-        } catch {
-            log.error("Model install failed: \(FluidErrorMapping.describe(error), privacy: .public)")
-            throw FluidErrorMapping.engineError(error)
-        }
-    }
-
-    /// Downloads Nemotron 3 if needed and loads it once. A download failure fails the install (the user retries);
-    /// a load failure after a complete download does not: separation falls back to community-1 on this device.
-    private func installNemotron(progress: @escaping ProgressHandler) async throws {
-        nemotronUnavailable = nil
-        nemotronLoaded = false
-        let start = Date()
-        do {
-            try await NemotronSeparation.installAndLoad(root: paths.nemotronLoadDirectory, progress: progress)
-            nemotronLoaded = true
-            removeObsoleteNemotronFiles()
-            log.info("Nemotron 3 (\(NemotronSeparation.presetName, privacy: .public)) installed and loaded in \(Date().timeIntervalSince(start), format: .fixed(precision: 2)) s")
-        } catch {
-            if error is CancellationError || Task.isCancelled { throw error }
-            guard paths.nemotronInstalled else { throw error }
-            nemotronUnavailable = FluidErrorMapping.describe(error)
-            log.error("Nemotron 3 downloaded but failed to load; using community-1 for speaker separation: \(self.nemotronUnavailable ?? "", privacy: .public)")
-        }
-    }
-
-    /// Drops what an earlier variant left behind (best effort; the presence check ignores these files).
-    private func removeObsoleteNemotronFiles() {
-        let fm = FileManager.default
-        for name in FluidModelPaths.nemotronObsoleteItems {
-            let url = paths.nemotronDirectory.appendingPathComponent(name)
-            guard fm.fileExists(atPath: url.path) else { continue }
-            do {
-                try fm.removeItem(at: url)
-                log.info("Removed obsolete Nemotron 3 file \(name, privacy: .public)")
-            } catch {
-                log.error("Could not remove obsolete Nemotron 3 file \(name, privacy: .public): \(FluidErrorMapping.describe(error), privacy: .public)")
-            }
-        }
-    }
-
-    public func removeModels() async throws {
-        guard !isInstalling else { throw EngineError.failed("Speech models are being installed") }
-        if let prepareTask { _ = try? await prepareTask.value }
-        await asr?.cleanup()
-        asr = nil
-        asrModels = nil
-        diarizerModels = nil
-        isReady = false
-        loadFailure = nil
-        nemotronUnavailable = nil
-        nemotronLoaded = false
-        let fm = FileManager.default
-        do {
-            for folder in paths.modelFolders where fm.fileExists(atPath: folder.path) {
-                try fm.removeItem(at: folder)
-            }
-        } catch {
-            throw EngineError.failed("Could not remove the speech models: \(FluidErrorMapping.describe(error))")
-        }
-        ModelHub.offlineMode = false
+        guard paths.allInstalled else { return .failed(ModelStatus.missingFromAppMessage) }
+        if let loadFailure { return .failed(loadFailure) }
+        return .installed
     }
 
     public func prepareModels() async throws {
@@ -215,7 +109,7 @@ public actor FluidSpeechEngine: SpeechEngine {
             do { try await prepareTask.value } catch { throw FluidErrorMapping.engineError(error) }
             return
         }
-        guard !isInstalling, paths.allInstalled else { throw EngineError.modelsMissing }
+        guard paths.allInstalled else { throw EngineError.modelsMissing }
         let task = Task { try await self.loadAndWarmUp() }
         prepareTask = task
         defer { prepareTask = nil }
@@ -231,8 +125,6 @@ public actor FluidSpeechEngine: SpeechEngine {
 
     /// Load (compiling for the Neural Engine on first use), then a 1 s silent warm-up transcription.
     private func loadAndWarmUp() async throws {
-        // Installed models must never silently re-download (e.g. 480 MB on cellular after a corrupt load).
-        ModelHub.offlineMode = true
         let start = Date()
         let models = try await AsrModels.load(from: paths.asrDirectory, version: .v3)
         let manager = AsrManager(config: asrConfig)
@@ -255,7 +147,7 @@ public actor FluidSpeechEngine: SpeechEngine {
     private func warmUpNemotron() async {
         guard !nemotronLoaded, nemotronUnavailable == nil, paths.nemotronInstalled else { return }
         do {
-            let seconds = try await NemotronSeparation.warmUp(root: paths.nemotronLoadDirectory)
+            let seconds = try await NemotronSeparation.warmUp(directory: paths.nemotronDirectory)
             nemotronLoaded = true
             log.info("Nemotron 3 (\(NemotronSeparation.presetName, privacy: .public)) loaded in \(seconds, format: .fixed(precision: 2)) s")
         } catch {
@@ -368,7 +260,7 @@ public actor FluidSpeechEngine: SpeechEngine {
         } else {
             let start = Date()
             do {
-                let activities = try await NemotronSeparation.run(audio: audio, root: paths.nemotronLoadDirectory) { f in
+                let activities = try await NemotronSeparation.run(audio: audio, directory: paths.nemotronDirectory) { f in
                     report(share * f)
                 }
                 let elapsed = Date().timeIntervalSince(start)
@@ -514,12 +406,5 @@ public actor FluidSpeechEngine: SpeechEngine {
         } catch {
             throw EngineError.failed("Could not read the audio file: \(FluidErrorMapping.describe(error))")
         }
-    }
-
-    static func excludeFromBackup(_ url: URL) {
-        var values = URLResourceValues()
-        values.isExcludedFromBackup = true
-        var target = url
-        try? target.setResourceValues(values)
     }
 }

@@ -55,7 +55,7 @@ struct ProcessingViewStateTests {
         let s = ProcessingViewState(stage: .queued, queueReason: .modelsNotReady, snapshot: nil)
         #expect(s.mode == .waiting(.modelsNotReady))
         #expect(s.heading == "Waiting for speech models")
-        #expect(s.message == "Processing starts once the models have downloaded.")
+        #expect(s.message == "Processing starts once the speech models are ready on this iPhone.")
         #expect(s.isWaitingForModels)
         #expect(s.collapsedText == "Waiting for speech models")
         #expect(s.cardText == "Waiting for speech models")

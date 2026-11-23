@@ -5,14 +5,19 @@ import TranscribeKit
 /// Scripted engine for simulator runs, UI tests and pipeline tests (§7.3). No models, no microphone.
 /// It counts calls and records the peak number of model calls in flight, so tests can assert
 /// "one engine call at a time" and "resume skips transcribe".
+///
+/// Models ship in the app, so the fake starts `.installed`. `TRANSCRIBE_MODELS=missing` means "first launch on
+/// this device": a slow on-device prepare, no download.
 public actor FakeSpeechEngine: SpeechEngine {
     public nonisolated let info = EngineInfo(
-        kind: .fake, asrDisplayName: "Parakeet", asrModelID: "fake-parakeet",
-        embeddingModel: .fake, speechDownloadBytes: 483_000_000, speakersDownloadBytes: 22_000_000)
+        kind: .fake, asrDisplayName: "Parakeet", asrModelID: "fake-parakeet", embeddingModel: .fake)
 
     public nonisolated let script: FakeScript
     public nonisolated let speed: FakeSpeed
     private var status: ModelStatus
+    /// First launch on this device (`.missing`): the first prepare is slow (2 s at instant speed, 20 s at demo).
+    /// 20 s leaves a UI test time to launch, record, stop and still see "Waiting for speech models".
+    private let firstPrepare: Bool
     private var mic: MicPermission
 
     /// Calls per method name ("transcribe", "separateSpeakers", "embedVoice", …).
@@ -29,7 +34,8 @@ public actor FakeSpeechEngine: SpeechEngine {
     public init(config: LaunchConfig, script: FakeScript) {
         self.script = script
         self.speed = config.speed
-        self.status = config.models == .missing ? .notInstalled : .installed
+        self.status = .installed
+        self.firstPrepare = config.models == .missing
         self.mic = config.mic
     }
 
@@ -39,7 +45,6 @@ public actor FakeSpeechEngine: SpeechEngine {
 
     private var stepSeconds: Double { speed == .instant ? 0.15 : 1.5 }
     private var stepTicks: Int { speed == .instant ? 3 : 10 }
-    private var installSeconds: Double { speed == .instant ? 0.6 : 6 }
 
     private func sleep(_ seconds: Double) async throws {
         do { try await Task.sleep(for: .milliseconds(Int(seconds * 1000))) } catch { throw EngineError.cancelled }
@@ -64,40 +69,13 @@ public actor FakeSpeechEngine: SpeechEngine {
 
     public func modelStatus() async -> ModelStatus { status }
 
-    public func installModels(progress: @escaping @Sendable (ModelInstallProgress) -> Void) async throws {
-        enter("installModels"); defer { leave() }
-        let speechShare = 0.957
-        let files = 5
-        let tick = installSeconds / Double(files * 2 + 1)
-        progress(ModelInstallProgress(fraction: 0, phase: .checking))
-        status = .installing(ModelInstallProgress(fraction: 0, phase: .checking))
-        for f in 1...files {
-            try await sleep(tick)
-            let p = ModelInstallProgress(fraction: speechShare * Double(f) / Double(files),
-                                         phase: .downloading(.speech, completedFiles: f, totalFiles: files))
-            status = .installing(p); progress(p)
-        }
-        for f in 1...files {
-            try await sleep(tick)
-            let p = ModelInstallProgress(fraction: speechShare + (1 - speechShare) * Double(f) / Double(files),
-                                         phase: .downloading(.speakers, completedFiles: f, totalFiles: files))
-            status = .installing(p); progress(p)
-        }
-        try await sleep(tick)
-        let done = ModelInstallProgress(fraction: 1, phase: .compiling(.speech))
-        status = .installing(done); progress(done)
-        status = .installed
-    }
-
-    public func removeModels() async throws { status = .notInstalled }
-
     public func prepareModels() async throws {
         switch status {
         case .ready: return
-        case .notInstalled, .failed, .installing: throw EngineError.modelsMissing
+        case .failed: throw EngineError.modelsMissing
         case .installed, .preparing:
             status = .preparing
-            try await sleep(speed == .instant ? 0.05 : 0.5)
+            try await sleep(firstPrepare ? (speed == .instant ? 2 : 20) : (speed == .instant ? 0.05 : 0.5))
             status = .ready
         }
     }

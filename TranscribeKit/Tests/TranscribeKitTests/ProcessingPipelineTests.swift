@@ -248,7 +248,6 @@ struct ProcessingPipelineTests {
         await p.coordinator.waitUntilIdle()
         #expect(try p.h.recording(second).queueReason == .modelsNotReady)
 
-        try await p.engine.installModels { _ in }
         try await p.engine.prepareModels()
         await p.coordinator.modelsBecameReady()
         let done = try #require(await p.settle(id))

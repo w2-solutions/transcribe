@@ -17,12 +17,16 @@ import TranscribeCore
 /// GPU work there). FluidAudio's ANE profile places `fast128` 98% on the Neural Engine and 2% on the CPU. The
 /// `offline` preset is never used: its graph fails the Neural Engine compile and silently runs on the GPU.
 ///
+/// The weights ship in the app bundle, flat: `<dir>/<bundle>.mlmodelc` plus `<dir>/learnable_sil_emb.bin`, loaded with
+/// `Nemotron3Models.load(config:directory:)`, which only reads. Never FluidAudio's Hugging Face loader: it deletes the folder
+/// when its weights marker does not match and always writes a marker, and the bundle is read-only.
+///
 /// `Nemotron3Models` / `Nemotron3Diarizer` are not Sendable. Nothing here is stored: every job loads the models,
 /// runs and releases them inside one `@concurrent` function, so nothing crosses an isolation boundary and the
 /// ~190 MB of weights are not resident while Parakeet or WeSpeaker run.
 enum NemotronSeparation {
     /// `Nemotron3Config.fast128`, spelled out so a preset change upstream is a test failure rather than a silent
-    /// model swap. Loaded from the repo's `monolithic/v2/` (the fp16-I/O re-exports that compile for the ANE).
+    /// model swap. Shipped from the repo's `monolithic/v2/` (the fp16-I/O re-exports that compile for the ANE), flattened.
     static let presetName = "fast128"
     static let config = Nemotron3Config(
         chunkLen: 128, chunkRightContext: 4, fifoLen: 40, spkcacheUpdatePeriod: 40,
@@ -44,7 +48,7 @@ enum NemotronSeparation {
     }
 
     enum FallbackReason: String, Sendable, Equatable {
-        case notInstalled       // the Nemotron files are not on disk
+        case notInstalled       // the Nemotron files are missing or damaged in this build
         case unavailable        // the model failed to load on this device earlier
         case failed             // load or inference threw
         case noSpeech           // no channel was active anywhere
@@ -110,20 +114,11 @@ enum NemotronSeparation {
 
     // MARK: Models
 
-    /// Downloads the preset (if needed) into `<root>/nemotron-3-diarization`, writes FluidAudio's weights marker,
-    /// and loads it once (the first Neural Engine compile). Download errors throw `DownloadError`; a load failure
-    /// after a complete download throws something else (the caller tells them apart with `nemotronInstalled`).
+    /// Loads the bundled preset once and releases it (warms the Neural Engine compile cache). Returns seconds.
     @concurrent
-    static func installAndLoad(root: URL, progress: ProgressHandler?) async throws {
-        _ = try await Nemotron3Models.loadFromHuggingFace(
-            config: config, cacheDirectory: root, computeUnits: computeUnits, progressHandler: progress)
-    }
-
-    /// Loads the installed preset once and releases it (warms the Neural Engine compile cache). Returns seconds.
-    @concurrent
-    static func warmUp(root: URL) async throws -> TimeInterval {
+    static func warmUp(directory: URL) async throws -> TimeInterval {
         let start = Date()
-        _ = try await Nemotron3Models.loadFromHuggingFace(config: config, cacheDirectory: root, computeUnits: computeUnits)
+        _ = try await Nemotron3Models.load(config: config, directory: directory, computeUnits: computeUnits)
         return Date().timeIntervalSince(start)
     }
 
@@ -132,12 +127,12 @@ enum NemotronSeparation {
 
     // MARK: Inference
 
-    /// Loads the models, streams the file through them and returns every channel's activity. The models are
+    /// Loads the models from the flat `directory`, streams the file through them and returns every channel's activity. The models are
     /// released when this returns. `progress` gets 0...1 (feeds done / total). Throws `CancellationError`.
     @concurrent
-    static func run(audio: URL, root: URL, config: Nemotron3Config = NemotronSeparation.config,
+    static func run(audio: URL, directory: URL, config: Nemotron3Config = NemotronSeparation.config,
                     progress: @escaping @Sendable (Double) -> Void) async throws -> [Activity] {
-        let models = try await Nemotron3Models.loadFromHuggingFace(config: config, cacheDirectory: root, computeUnits: computeUnits)
+        let models = try await Nemotron3Models.load(config: config, directory: directory, computeUnits: computeUnits)
         try Task.checkCancellation()
         let (source, _) = try AudioSourceFactory().makeDiskBackedSource(from: audio, targetSampleRate: feedSamples)
         defer { source.cleanup() }

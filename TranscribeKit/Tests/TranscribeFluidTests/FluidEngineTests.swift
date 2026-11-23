@@ -5,12 +5,19 @@ import TranscribeCore
 @testable import TranscribeFluid
 
 /// Real FluidAudio models on the Mac host (§8.1). Run only when `TRANSCRIBE_MODELS_DIR` is set and the fixtures
-/// from `scripts/make-fixtures.sh` exist. The first run downloads about 704 MB into that directory (an older
-/// directory with only Parakeet and community-1 fetches just Nemotron 3 fast128, about 199 MB); test 9 also fetches
-/// the 102 MB c128-split-w8a8 build once, for comparison only.
+/// from `scripts/make-fixtures.sh` exist. `TRANSCRIBE_MODELS_DIR` must be a complete `BundledModels` folder, the
+/// one the app ships; nothing is downloaded into it. Test 9 alone fetches the 102 MB c128-split-w8a8 build once,
+/// for comparison only, into `~/Library/Caches/transcribe-nemotron-compare`.
 ///
+///   make models        (or ./scripts/fetch-models.sh --from ~/Library/Caches/transcribe-test-models)
 ///   ./scripts/make-fixtures.sh
-///   cd TranscribeKit && TRANSCRIBE_MODELS_DIR=/path/to/models swift test --filter "Fluid engine"
+///   cd TranscribeKit && TRANSCRIBE_MODELS_DIR=$PWD/../BundledModels swift test --filter FluidEngineTests
+///
+/// The old `~/Library/Caches/transcribe-test-models` folder no longer loads directly: its `.fluidaudio-revision`
+/// marker conflicts with the diarizer's "main" revision override (`FluidRuntime`).
+///
+/// Run this suite on its own (with `--filter`): test 9 briefly turns `ModelHub.offlineMode` off, which would race
+/// `engineLocksFluidAudioDown` if both suites ran at once.
 ///
 /// Peak memory is logged, not asserted. None of this says anything about the iPhone 15 (A16, no Mac RAM).
 @Suite("Fluid engine (gated)", .serialized,
@@ -19,22 +26,14 @@ struct FluidEngineTests {
     static var modelsDirectory: String? { FluidGate.modelsDirectory }
     static func fixture(_ name: String) -> URL { FluidGate.fixture(name) }
 
-    /// One engine for the whole suite: install (if needed) and prepare once.
+    /// One engine for the whole suite: prepare once.
     static let shared = Task<FluidSpeechEngine, any Error> {
         let root = URL(fileURLWithPath: modelsDirectory ?? NSTemporaryDirectory(), isDirectory: true)
         let engine = FluidSpeechEngine(modelsRoot: root)
-        let clock = ContinuousClock()
-        if await engine.modelStatus() == .notInstalled {
-            let start = clock.now
-            let lastLogged = LockedDouble()
-            try await engine.installModels { p in
-                if p.fraction - lastLogged.value >= 0.1 || p.fraction == 1 {
-                    lastLogged.value = p.fraction
-                    log("install \(Int(p.fraction * 100))% \(p.phase)")
-                }
-            }
-            log("install finished in \(clock.now - start)")
+        guard engine.paths.allInstalled else {
+            throw EngineError.failed("TRANSCRIBE_MODELS_DIR is not a complete BundledModels folder: run scripts/fetch-models.sh")
         }
+        let clock = ContinuousClock()
         let start = clock.now
         try await engine.prepareModels()
         log("prepare (load + compile + 1 s warm-up) took \(clock.now - start); footprint \(Memory.footprintMB().rounded()) MB")
@@ -254,16 +253,9 @@ struct FluidEngineTests {
         let url = Self.fixture("\(fixture).wav")
         let truth = try TrueTurns.load(Self.fixture("\(fixture).turns.json"))
         let duration = try FluidSpeechEngine.audioDuration(url)
-        let root = engine.paths.nemotronLoadDirectory
-        // The comparison build is not part of the app's install: fetch it once (about 102 MB) into the same folder.
-        let w8a8Present = FileManager.default.fileExists(atPath: engine.paths.nemotronDirectory
-            .appendingPathComponent("split/\(Self.splitW8A8.modelFileName)/coremldata.bin").path)
-        if !w8a8Present {
-            ModelHub.offlineMode = false
-            defer { ModelHub.offlineMode = true }
-            _ = try await Nemotron3Models.loadFromHuggingFace(config: Self.splitW8A8, cacheDirectory: root,
-                                                              computeUnits: NemotronSeparation.computeUnits)
-        }
+        // The comparison build is not part of the app: fetch it once (about 102 MB) into its own cache, never into
+        // the models folder, then lay it out flat (bundle + both assets) the way `NemotronSeparation.run` reads it.
+        let flat = try await Self.flatSplitW8A8()
         enum Run: CaseIterable { case fast128, w8a8, communityOne }
         var reports: [SeparatorReport] = []
         for run in Run.allCases {
@@ -272,7 +264,7 @@ struct FluidEngineTests {
                 case .fast128: return try await engine.separateSpeakers(url, only: .nemotron3) { _ in }
                 case .communityOne: return try await engine.separateSpeakers(url, only: .communityOne) { _ in }
                 case .w8a8:
-                    let activities = try await NemotronSeparation.run(audio: url, root: root, config: Self.splitW8A8) { _ in }
+                    let activities = try await NemotronSeparation.run(audio: url, directory: flat, config: Self.splitW8A8) { _ in }
                     guard case .use(let separation) = NemotronSeparation.decide(activities) else {
                         throw EngineError.failed("w8a8 would fall back")
                     }
@@ -310,6 +302,99 @@ struct FluidEngineTests {
         }
     }
 
+    /// `~/Library/Caches/transcribe-nemotron-compare/flat-c128-split-w8a8`, filled once from Hugging Face.
+    static func flatSplitW8A8() async throws -> URL {
+        let fm = FileManager.default
+        let compareRoot = fm.urls(for: .cachesDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("transcribe-nemotron-compare", isDirectory: true)
+        let flat = compareRoot.appendingPathComponent("flat-c128-split-w8a8", isDirectory: true)
+        let bundle = Self.splitW8A8.modelFileName
+        guard !fm.fileExists(atPath: flat.appendingPathComponent("\(bundle)/coremldata.bin").path) else { return flat }
+        do {
+            ModelHub.offlineMode = false
+            defer { ModelHub.offlineMode = true }
+            _ = try await Nemotron3Models.loadFromHuggingFace(config: Self.splitW8A8, cacheDirectory: compareRoot,
+                                                              computeUnits: NemotronSeparation.computeUnits)
+        }
+        let repo = compareRoot.appendingPathComponent(FluidModelPaths.nemotronFolderName, isDirectory: true)
+        if fm.fileExists(atPath: flat.path) { try fm.removeItem(at: flat) }
+        try fm.createDirectory(at: flat, withIntermediateDirectories: true)
+        for (from, name) in [(repo.appendingPathComponent("\(Self.splitW8A8.hubSubdirectory)/\(bundle)"), bundle),
+                             (repo.appendingPathComponent(ModelNames.Nemotron3.silenceEmbeddingFile), ModelNames.Nemotron3.silenceEmbeddingFile),
+                             (repo.appendingPathComponent(ModelNames.Nemotron3.preEncodeProjectionFile), ModelNames.Nemotron3.preEncodeProjectionFile)] {
+            try fm.copyItem(at: from, to: flat.appendingPathComponent(name))   // clones on APFS
+        }
+        return flat
+    }
+
+    /// A copy of the models folder in a fresh temporary directory (`copyItem` clones on APFS).
+    static func cloneModels(from root: URL) throws -> URL {
+        let clone = try TestAudio.temporaryDirectory().appendingPathComponent(FluidModelPaths.bundledFolderName, isDirectory: true)
+        try FileManager.default.copyItem(at: root, to: clone)
+        return clone
+    }
+
+    /// Every item below `root`, hidden files included: relative path → size and modification date.
+    static func snapshot(_ root: URL) throws -> [String: String] {
+        let keys: [URLResourceKey] = [.fileSizeKey, .contentModificationDateKey, .isDirectoryKey]
+        guard let enumerator = FileManager.default.enumerator(at: root, includingPropertiesForKeys: keys, options: []) else {
+            throw EngineError.failed("Cannot list \(root.path)")
+        }
+        let base = root.resolvingSymlinksInPath().path
+        var out: [String: String] = [:]
+        for case let item as URL in enumerator {
+            let values = try item.resourceValues(forKeys: Set(keys))
+            var relative = item.resolvingSymlinksInPath().path
+            if relative.hasPrefix(base) { relative.removeFirst(base.count) }
+            let date = values.contentModificationDate?.timeIntervalSinceReferenceDate ?? -1
+            out[relative] = "\(values.isDirectory == true ? "dir" : "\(values.fileSize ?? -1)")@\(date)"
+        }
+        return out
+    }
+
+    static func chmod(_ mode: String, _ url: URL) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/chmod")
+        process.arguments = ["-R", mode, url.path]
+        try process.run()
+        process.waitUntilExit()
+        guard process.terminationStatus == 0 else { throw EngineError.failed("chmod -R \(mode) failed") }
+    }
+
+    @Test("10. Nothing writes into the models folder")
+    func nothingWritesIntoTheModelsFolder() async throws {
+        let shared = try await Self.shared.value
+        let clone = try Self.cloneModels(from: shared.paths.root)
+        defer { try? FileManager.default.removeItem(at: clone.deletingLastPathComponent()) }
+        let before = try Self.snapshot(clone)
+        #expect(!before.isEmpty)
+        let engine = FluidSpeechEngine(modelsRoot: clone)
+        try await engine.prepareModels()
+        let url = Self.fixture("two-voices.wav")
+        _ = try await engine.transcribe(url, language: .language("en")) { _ in }
+        _ = try await engine.separateSpeakers(url, only: .nemotron3) { _ in }
+        _ = try await engine.separateSpeakers(url, only: .communityOne) { _ in }
+        _ = try await engine.embedVoice(url, spans: [TimeRange(start: 0, end: 3)])
+        let after = try Self.snapshot(clone)
+        #expect(after == before, "added or changed: \(after.filter { before[$0.key] != $0.value }.keys.sorted()); removed: \(Set(before.keys).subtracting(after.keys).sorted())")
+    }
+
+    @Test("11. Loads from a read-only copy")
+    func loadsFromAReadOnlyCopy() async throws {
+        let shared = try await Self.shared.value
+        let clone = try Self.cloneModels(from: shared.paths.root)
+        try Self.chmod("a-w", clone)
+        defer {
+            try? Self.chmod("u+w", clone)
+            try? FileManager.default.removeItem(at: clone.deletingLastPathComponent())
+        }
+        let engine = FluidSpeechEngine(modelsRoot: clone)
+        try await engine.prepareModels()
+        #expect(await engine.modelStatus() == .ready)
+        let separation = try await engine.separateSpeakers(Self.fixture("two-voices.wav"), only: .nemotron3) { _ in }
+        #expect(separation.separator == .nemotron3)
+    }
+
     static func rtf(_ elapsed: Duration, _ audioSeconds: Double) -> String {
         let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         return String(format: "%.3f", seconds / Swift.max(audioSeconds, 0.001))
@@ -334,13 +419,4 @@ final class ProgressLog: @unchecked Sendable {
     private var storage: [Double] = []
     func append(_ v: Double) { lock.withLock { storage.append(v) } }
     var values: [Double] { lock.withLock { storage } }
-}
-
-final class LockedDouble: @unchecked Sendable {
-    private let lock = NSLock()
-    private var storage = 0.0
-    var value: Double {
-        get { lock.withLock { storage } }
-        set { lock.withLock { storage = newValue } }
-    }
 }

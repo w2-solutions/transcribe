@@ -51,19 +51,11 @@ final class SettingsFlowTests: FlowTestCase {
         let app = launchSettings()
         app.scrollTo(AX.Settings.modelRow).press()
         app.waitFor(AX.ModelSettings.screen)
-        app.waitFor(AX.ModelSettings.speechRow)
+        Wait.label(app.waitFor(AX.ModelSettings.speechRow), contains: "Included")
         app.waitFor(AX.ModelSettings.speakersRow)
-    }
-
-    @MainActor func testRemoveAndDownloadModels() {
-        let app = UITestApp.launch(seed: "library", route: "models")
-        app.waitFor(AX.ModelSettings.screen, timeout: 20)
-        app.scrollTo(AX.ModelSettings.removeButton).press()
-        app.waitFor(AX.ModelSettings.removeConfirm).press()
-        app.waitForGone(AX.ModelSettings.removeButton)
-        app.scrollTo(AX.ModelSettings.downloadButton).press()
-        app.waitForGone(AX.ModelSettings.downloadButton, timeout: 15)
-        app.waitFor(AX.ModelSettings.removeButton, timeout: 15)
+        // The models ship in the app: nothing to download or remove.
+        XCTAssertFalse(app.element(AX.ModelSettings.downloadButton).exists, "No download button")
+        XCTAssertFalse(app.element(AX.ModelSettings.removeButton).exists, "No remove button")
     }
 
     @MainActor func testLanguagePicker() {

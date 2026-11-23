@@ -38,6 +38,23 @@ struct AttributionsTests {
         #expect(community.notes.contains("WeSpeaker ResNet34"))
     }
 
+    /// The bundled speaker-diarization files carry a NOTICE.md (FluidInference/speaker-diarization-coreml at the commit
+    /// pinned in scripts/models.lock) asking credit for pyannote, WeSpeaker, BUT Speech@FIT and Fluid Inference, and a
+    /// statement that the files are modified Core ML conversions.
+    @Test func communityOneFollowsItsNotice() throws {
+        let community = try #require(Attributions.all.first { $0.id == "community-1" })
+        for credit in ["pyannote", "WeSpeaker", "BUT Speech@FIT", "Brno University of Technology", "Fluid Inference"] {
+            #expect(community.notes.contains(credit), "credits \(credit)")
+        }
+        for citation in ["Plaquet and Bredin", "Wang et al.", "Landini et al."] {
+            #expect(community.notes.contains(citation), "keeps the README citation \(citation)")
+        }
+        #expect(community.notes.contains("modified files"))
+        #expect(!community.notes.contains("unmodified"), "the files are modified conversions")
+        #expect(community.notes.contains(
+            "https://huggingface.co/FluidInference/speaker-diarization-coreml/blob/df2625ac79a7ac6b65ad868fee6d80f320da4232/NOTICE.md"))
+    }
+
     @Test func fluidAudioCarriesTheFullApacheLicence() throws {
         let fluid = try #require(Attributions.all.first { $0.id == "fluidaudio" })
         #expect(fluid.licence == "Apache-2.0")

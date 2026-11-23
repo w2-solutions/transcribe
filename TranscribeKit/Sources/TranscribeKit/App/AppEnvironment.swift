@@ -53,12 +53,7 @@ public final class AppEnvironment {
         let coordinator = ProcessingCoordinator(engine: engine, store: store, monitor: monitor, settings: settings,
                                                 paths: paths, background: background)
         self.coordinator = coordinator
-        // UI tests must not depend on the host's network: a tethered or Low Data Mode Mac reports an
-        // "expensive" path, which puts the mobile-data confirmation in front of every download.
-        let models = ModelManager(engine: engine, monitorsNetwork: !config.uiTesting,
-                                  freeSpace: { ModelManager.systemFreeBytes() },
-                                  onReady: { Task { await coordinator.modelsBecameReady() } })
-        models.beforeRemove = { await coordinator.suspendForModelRemoval() }
+        let models = ModelManager(engine: engine, onReady: { Task { await coordinator.modelsBecameReady() } })
         self.models = models
         let recorder = RecorderController(engine: engine, store: store, coordinator: coordinator, models: models,
                                           paths: paths, settings: settings, clock: config.clock)
@@ -68,11 +63,14 @@ public final class AppEnvironment {
         self.player = player
     }
 
-    /// Order: paths.prepare → seed (if config.seed) → store.reconcileDevice → models.refresh →
+    /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.reconcileDevice → models.refresh →
     /// coordinator.recoverOnLaunch → models.prepareIfInstalled (detached) → isLaunched = true.
     public func onLaunch() async {
         guard !isLaunched else { return }
         do { try paths.prepare() } catch { launchError = "Couldn't prepare storage: \(error.localizedDescription)" }
+        // Builds before bundling downloaded ~704 MB of models into Models/; they now ship in the app.
+        let paths = self.paths
+        Task.detached(priority: .utility) { paths.removeLegacyModels() }
         if let seed = config.seed, let seeder {
             do { try seeder(seed, container.mainContext, paths, clock) } catch { launchError = "Seed \(seed.rawValue) failed: \(error)" }
         }
