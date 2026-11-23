@@ -68,8 +68,10 @@ public struct CapturedAudio: Sendable, Equatable {
     public var duration: TimeInterval
     public var marks: [TimeInterval]      // audio-timeline offsets
     public var peaks: [Float]             // <= 200 bins, 0...1
-    public init(url: URL, duration: TimeInterval, marks: [TimeInterval], peaks: [Float]) {
-        self.url = url; self.duration = duration; self.marks = marks; self.peaks = peaks
+    /// The hardware and input route it was captured with (log-only); nil when unknown.
+    public var detail: CaptureDetail?
+    public init(url: URL, duration: TimeInterval, marks: [TimeInterval], peaks: [Float], detail: CaptureDetail? = nil) {
+        self.url = url; self.duration = duration; self.marks = marks; self.peaks = peaks; self.detail = detail
     }
 }
 

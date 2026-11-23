@@ -8,7 +8,7 @@ import TranscribeCore
 
 // MARK: - WP3 test harness (shared by the WP3 suites)
 
-/// One in-memory store with its own temp folder and a fixed device id.
+/// One in-memory store with its own temp folder, a fixed device id and a fixed capture channel.
 @MainActor
 struct WP3Harness {
     let container: ModelContainer
@@ -16,13 +16,14 @@ struct WP3Harness {
     let store: LibraryStore
     var context: ModelContext { container.mainContext }
 
-    init(device: String = "device-A", now: Date = Seeds.Dates.d, container: ModelContainer? = nil, paths: AppPaths? = nil) throws {
+    init(device: String = "device-A", now: Date = Seeds.Dates.d, container: ModelContainer? = nil, paths: AppPaths? = nil,
+         channel: String = CaptureChannel.iphone) throws {
         self.container = try container ?? ModelContainerFactory.make(inMemory: true, url: nil)
         self.paths = paths ?? AppPaths(root: FileManager.default.temporaryDirectory
             .appendingPathComponent("wp3-\(UUID().uuidString)", isDirectory: true))
         try self.paths.prepare()
         store = LibraryStore(context: self.container.mainContext, paths: self.paths,
-                             deviceIdentity: FixedDeviceIdentity(device), clock: .frozen(now))
+                             deviceIdentity: FixedDeviceIdentity(device), clock: .frozen(now), localChannel: channel)
     }
 
     func seed(_ seed: SeedName) throws {

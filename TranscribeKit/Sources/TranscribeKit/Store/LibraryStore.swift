@@ -13,9 +13,13 @@ public final class LibraryStore: LibraryStoring {
     let clock: AppClock
     let policy: MatchPolicy
     let alignment: AlignmentConfig
+    /// This device's capture channel (`CaptureChannel.current`, or `LaunchConfig.channel` in the fake engine and UI
+    /// tests). New recordings get it, and `stampCaptureChannels()` gives it to rows that have none.
+    public let localChannel: String
 
-    /// Key of the install id the store was last reconciled with (§5.5). It lives in a small plist next to
-    /// the store file, so it travels with the store (backup/restore) but never with the Keychain item.
+    /// Key of the install id first recorded with this store. It lives in a small plist next to the store file, so it
+    /// travels with the store (backup/restore) but never with the Keychain item. Informational only: nothing is
+    /// ever deleted because it differs from the current install id.
     public static let storeDeviceIDKey = "transcribe.storeDeviceID"
 
     /// A `ModelContext` does not keep its container alive, and SwiftData traps on any fetch once the container
@@ -23,10 +27,12 @@ public final class LibraryStore: LibraryStoring {
     /// it keeps the container alive itself.
     private let container: ModelContainer
 
-    public init(context: ModelContext, paths: AppPaths, deviceIdentity: any DeviceIdentity, clock: AppClock) {
+    public init(context: ModelContext, paths: AppPaths, deviceIdentity: any DeviceIdentity, clock: AppClock,
+                localChannel: String) {
         self.context = context; self.container = context.container
         self.paths = paths; self.deviceIdentity = deviceIdentity; self.clock = clock
         self.policy = .default; self.alignment = .default
+        self.localChannel = localChannel
     }
 
     // MARK: Lookup helpers
@@ -138,7 +144,7 @@ public final class LibraryStore: LibraryStoring {
                       clip: TimeRange?, quote: String?) -> Bool {
         let live = profile.samples.filter { $0.embeddingModelKey == profile.embeddingModelKey }
         if live.isEmpty && profile.embeddingModelKey != modelKey {
-            // A profile with no usable samples (device wipe or model change) re-enrols on the new model.
+            // A profile with no usable samples (all removed, or a model change) re-enrols on the new model.
             // Its negatives were measured on the old model too, so they go with the samples.
             for stale in profile.samples { context.delete(stale) }
             profile.samples.removeAll()
@@ -217,7 +223,7 @@ public final class LibraryStore: LibraryStoring {
         }
     }
 
-    // MARK: Device (per-device voices)
+    // MARK: Device
 
     var deviceFileURL: URL { paths.root.appendingPathComponent("StoreDevice.plist", isDirectory: false) }
 
@@ -234,41 +240,12 @@ public final class LibraryStore: LibraryStoring {
         try data.write(to: deviceFileURL, options: .atomic)
     }
 
-    public func reconcileDevice() throws -> Bool {
-        let current = deviceIdentity.installID()
-        guard !current.isEmpty else { return false }            // identity unavailable (e.g. Keychain locked): never wipe
-        guard let stored = storedDeviceID() else {
-            try writeDeviceID(current)                          // first launch with this store
-            return false
-        }
-        guard stored != current else { return false }
-        // Restored onto another device: voices were learnt with another microphone (CLAUDE.md), so wipe them.
-        for sample in try context.fetch(FetchDescriptor<VoiceSample>()) { context.delete(sample) }
-        for negative in try context.fetch(FetchDescriptor<VoiceNegative>()) { context.delete(negative) }
-        for p in try context.fetch(FetchDescriptor<VoiceProfile>()) {
-            p.samples.removeAll()
-            p.negatives.removeAll()
-            p.needsResample = true
-        }
-        // Speaker vectors in existing recordings came from the old device's microphone too: drop them (and the
-        // numbers measured from them) so a profile can only re-enrol from recordings made on this device.
-        for s in try context.fetch(FetchDescriptor<RecordingSpeaker>()) {
-            s.vectorData = nil
-            s.embeddingModelKey = nil
-            s.vectorCoherence = nil
-            s.matchTraceData = nil
-        }
-        for r in try context.fetch(FetchDescriptor<Recording>()) { r.movedSpeakerTracesData = nil }
-        try context.save()
-        try writeDeviceID(current)
-        return true
-    }
-
     // MARK: Recording lifecycle
 
     public func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws {
         let recording = Recording(id: id, createdAt: createdAt, audioFileName: audioFileName, source: source)
         context.insert(recording)
+        recording.captureChannel = localChannel   // imports too: imported audio counts as heard on this device (D9)
         try context.save()
     }
 
@@ -277,6 +254,7 @@ public final class LibraryStore: LibraryStoring {
         r.duration = audio.duration
         r.marks = audio.marks
         r.peaks = audio.peaks
+        if let detail = audio.detail { r.captureDetailJSON = detail.json() }
         if case .language(let code) = language { r.languageRaw = code } else { r.languageRaw = nil }
         r.stage = .queued
         r.queueReasonRaw = nil

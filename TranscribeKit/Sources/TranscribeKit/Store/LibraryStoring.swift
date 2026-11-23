@@ -6,11 +6,11 @@ import TranscribeCore
 public protocol LibraryStoring: AnyObject, Sendable {
     var context: ModelContext { get }
 
-    // MARK: Device (per-device voices)
-    /// Compares the stored install id with DeviceIdentity. On mismatch: deletes every VoiceSample and VoiceNegative,
-    /// sets needsResample on every profile, drops speaker vectors, coherence and match traces, stores the new id.
-    /// Returns true if a wipe happened.
-    func reconcileDevice() throws -> Bool
+    // MARK: Capture channels
+    /// Idempotent launch backfill (§6.4): recordings with no capture channel get this device's channel; samples and
+    /// negatives with none take their source recording's channel when it still exists, else this device's. One save,
+    /// only when something changed. Never deletes anything. Returns the number of rows stamped.
+    func stampCaptureChannels() throws -> Int
 
     // MARK: Recording lifecycle
     func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws   // stage .capturing

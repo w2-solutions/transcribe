@@ -35,7 +35,7 @@ final class NamingSpyStore: LibraryStoring {
         calls.append(.moveAll(recordingID, source, target))
     }
 
-    func reconcileDevice() throws -> Bool { false }
+    func stampCaptureChannels() throws -> Int { 0 }
     func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws {}
     func finishCapture(id: UUID, audio: CapturedAudio, language: LanguageHint) throws {}
     func discardRecording(id: UUID) throws {}

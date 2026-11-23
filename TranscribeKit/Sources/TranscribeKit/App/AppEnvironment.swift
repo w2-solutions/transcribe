@@ -48,7 +48,8 @@ public final class AppEnvironment {
         self.settings = settings
         let monitor = ProcessingMonitor()
         self.monitor = monitor
-        let store = LibraryStore(context: container.mainContext, paths: paths, deviceIdentity: deviceIdentity, clock: config.clock)
+        let store = LibraryStore(context: container.mainContext, paths: paths, deviceIdentity: deviceIdentity, clock: config.clock,
+                                 localChannel: config.channel ?? CaptureChannel.current)
         self.store = store
         let coordinator = ProcessingCoordinator(engine: engine, store: store, monitor: monitor, settings: settings,
                                                 paths: paths, background: background)
@@ -63,7 +64,7 @@ public final class AppEnvironment {
         self.player = player
     }
 
-    /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.reconcileDevice → models.refresh →
+    /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.stampCaptureChannels → models.refresh →
     /// coordinator.recoverOnLaunch → models.prepareIfInstalled (detached) → isLaunched = true.
     public func onLaunch() async {
         guard !isLaunched else { return }
@@ -74,7 +75,7 @@ public final class AppEnvironment {
         if let seed = config.seed, let seeder {
             do { try seeder(seed, container.mainContext, paths, clock) } catch { launchError = "Seed \(seed.rawValue) failed: \(error)" }
         }
-        do { _ = try store.reconcileDevice() } catch { launchError = "Device check failed: \(error)" }
+        do { _ = try store.stampCaptureChannels() } catch { launchError = "Capture channel stamping failed: \(error)" }
         await models.refresh()
         await coordinator.recoverOnLaunch()
         let models = self.models
