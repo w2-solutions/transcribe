@@ -5,6 +5,7 @@ public enum SeedName: String, Sendable, CaseIterable {
 }
 public enum FakeScriptName: String, Sendable, CaseIterable {
     case newVoices, knownVoices, askKaran, noSpeech, failSeparation, holdAtSeparating
+    case longTalk          // 90 s of unbroken speech: fills the live transcript on the recording screen
 }
 public enum FakeSpeed: String, Sendable, CaseIterable { case instant, demo, frozen }
 public enum FakeModelState: String, Sendable, CaseIterable { case installed, missing }

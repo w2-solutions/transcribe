@@ -67,6 +67,23 @@ public enum SeedContent {
         return turns
     }()
 
+    /// Long talk: the meeting lines back to back for 90 s, alternating speakers, with no gaps to speak of.
+    public static let longTalkDuration: TimeInterval = 90
+    public static let longTalk: [ScriptTurn] = {
+        var turns: [ScriptTurn] = []
+        var start: TimeInterval = 0.5
+        var k = 0
+        while true {
+            let line = k == 0 ? meetingOpener : meetingLines[(k - 1) % meetingLines.count]
+            let length = Double(line.split(separator: " ").count) * 0.36 + 0.4
+            guard start + length <= longTalkDuration - 0.5 else { break }
+            turns.append(ScriptTurn(key: k % 2 == 0 ? "S1" : "S2", segment: TimeRange(start: start, end: start + length), text: line))
+            k += 1
+            start += length + 0.15
+        }
+        return turns
+    }()
+
     // MARK: Builders
 
     /// Words timed evenly from segment start + 0.1 to segment end − 0.1.

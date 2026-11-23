@@ -27,7 +27,7 @@ public struct FakeScript: Sendable {
                   _ behaviour: Behaviour) -> FakeScript {
             FakeScript(name: name, duration: duration, turns: turns, words: SeedContent.allWords(turns),
                        segments: SeedContent.segments(turns), vectors: vectors, persons: bPersons,
-                       liveTimeline: liveTimeline, behaviour: behaviour)
+                       liveTimeline: liveTimeline(for: turns, duration: duration), behaviour: behaviour)
         }
         let newVoicesVectors: [SpeakerKey: VoiceVector] = [
             "S1": SyntheticVoices.vector(near: .liam, cosine: 0.90, variant: 1),
@@ -53,19 +53,30 @@ public struct FakeScript: Sendable {
             return make(b, SeedContent.conversationBDuration, [:], .failSeparation)
         case .holdAtSeparating:
             return make(b, SeedContent.conversationBDuration, newVoicesVectors, .holdAtSeparating)
+        case .longTalk:
+            return make(SeedContent.longTalk, SeedContent.longTalkDuration, newVoicesVectors, .normal)
         }
     }
 
-    /// Cumulative live text following the Recording mockup.
-    public static let liveTimeline: [(at: TimeInterval, text: LiveText)] = {
-        let first = SeedContent.conversationB[0].text
-        return [
-            (at: 1.0, text: LiveText(confirmed: "", volatile: "Hey, Karan.")),
-            (at: 3.0, text: LiveText(confirmed: first, volatile: "")),
-            (at: 8.0, text: LiveText(confirmed: first + " Uh yes, testing the transcription app. This is the first take",
-                                     volatile: "that we're taking. Okay, I got the")),
-        ]
-    }()
+    /// Seconds between live text updates, as with the real engine's live windows.
+    public static let liveStep: TimeInterval = 2.0
+
+    /// Cumulative live text as the real engine produces it: every `liveStep` seconds the words spoken so far
+    /// arrive, the newest step's words volatile and everything before them confirmed.
+    public static func liveTimeline(for turns: [ScriptTurn], duration: TimeInterval) -> [(at: TimeInterval, text: LiveText)] {
+        let words = SeedContent.allWords(turns)
+        func text(_ slice: [TimedWord]) -> String { slice.map(\.text).joined(separator: " ") }
+        var timeline: [(at: TimeInterval, text: LiveText)] = []
+        var t = liveStep
+        while t < duration + liveStep {
+            let confirmed = words.filter { $0.range.end <= t - liveStep }
+            let volatile = words.filter { $0.range.end > t - liveStep && $0.range.end <= t }
+            let entry = LiveText(confirmed: text(confirmed), volatile: text(volatile))
+            if !entry.isEmpty, entry != timeline.last?.text { timeline.append((at: t, text: entry)) }
+            t += liveStep
+        }
+        return timeline
+    }
 
     /// The latest timeline entry at or before `t`.
     public func liveText(at t: TimeInterval) -> LiveText? {

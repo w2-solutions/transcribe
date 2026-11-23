@@ -35,6 +35,28 @@ final class RecordingFlowTests: FlowTestCase {
         XCTAssertEqual(app.element(AX.Transcript.turnChip(1)).textValue, "Speaker 2")
     }
 
+    /// A long recording: the live transcript keeps to the room above the controls and shows the newest words.
+    @MainActor func testLongLiveTextStaysAboveTheControls() {
+        let app = UITestApp.launch(seed: "empty", script: "longTalk")
+        app.waitFor(AX.Library.recordButton, timeout: 20).press()
+        app.waitFor(AX.Recording.screen)
+
+        // The 90 s script plays at 10× under `instant`. Once the text outgrows the card, the title makes way.
+        let card = app.element(AX.Recording.liveTranscript)
+        Wait.label(card, contains: "review meeting to Thursday?", timeout: 20)
+        app.waitForGone(AX.Recording.title, timeout: 20)
+
+        let stop = app.element(AX.Recording.stopButton)
+        let pause = app.element(AX.Recording.pauseButton)
+        XCTAssertLessThanOrEqual(card.frame.maxY, stop.frame.minY, "The live transcript runs under the stop button")
+        XCTAssertLessThanOrEqual(card.frame.maxY, pause.frame.minY, "The live transcript runs under the pause button")
+        XCTAssertGreaterThan(card.frame.height, 300, "The live transcript did not grow to use the screen")
+        XCTAssertTrue(stop.isHittable)
+
+        stop.press()
+        app.waitFor(AX.Transcript.screen)
+    }
+
     @MainActor func testMicDeniedShowsSheet() {
         let app = UITestApp.launch(seed: "empty", mic: "denied")
         app.waitFor(AX.Library.recordButton, timeout: 20).press()

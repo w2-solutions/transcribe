@@ -287,9 +287,11 @@ public actor FluidSpeechEngine: SpeechEngine {
     }
 
     /// Capture from any source (the microphone in the app, a scripted source in tests).
-    func startRecording(_ request: RecordingRequest, source: any CaptureSource) async throws -> FluidLiveRecording {
+    func startRecording(_ request: RecordingRequest, source: any CaptureSource,
+                        liveConfig: SlidingWindowAsrConfig = FluidLiveRecording.liveConfig) async throws -> FluidLiveRecording {
         let recording = FluidLiveRecording(request: request, source: source,
-                                           liveModels: { [weak self] in await self?.liveModels() })
+                                           liveModels: { [weak self] in await self?.liveModels() },
+                                           liveConfig: liveConfig)
         try await recording.start()
         return recording
     }

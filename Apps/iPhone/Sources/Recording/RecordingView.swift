@@ -12,8 +12,12 @@ struct RecordingView: View {
 
     @State private var isStopping = false
     @State private var stopError: String?
-    @State private var screenHeight: CGFloat = 852
     @State private var dockHeight: CGFloat = 160
+    /// Set once the live text has outgrown its card: the header shrinks to one line and the level meter to a
+    /// strip, handing the room to the words. It stays set for the rest of the recording so nothing jumps back.
+    @State private var isCompact = false
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var recorder: RecorderController { env.recorder }
     private var isPaused: Bool { if case .paused = recorder.state { true } else { false } }
@@ -24,18 +28,15 @@ struct RecordingView: View {
         VStack(alignment: .leading, spacing: 18) {
             topRow
             header
-            // The level meter shows when it fits above the dock; at large text sizes it gives way so it never
-            // runs under the pause, stop and mark buttons.
-            ViewThatFits(in: .vertical) {
-                VStack(alignment: .leading, spacing: 18) {
-                    liveCard
-                    LiveLevelMeter(levels: recorder.levels)
-                        .padding(.top, 10)
-                        .accessibilityIdentifier(AX.Recording.levelMeter)
-                }
-                liveCard
+            // The card takes the room that is left above the dock and never more, so the newest words are
+            // always on screen. At accessibility text sizes the level meter gives way to the text.
+            liveCard
+                .layoutPriority(1)
+            if !dynamicTypeSize.isAccessibilitySize {
+                LiveLevelMeter(levels: recorder.levels, maxHeight: isCompact ? 36 : 64, height: isCompact ? 44 : 96)
+                    .padding(.top, isCompact ? 0 : 10)
+                    .accessibilityIdentifier(AX.Recording.levelMeter)
             }
-            .layoutPriority(1)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, DS.Space.screenInset)
@@ -54,7 +55,6 @@ struct RecordingView: View {
                         topPadding: 60)   // below the status row, so the capsule stays readable
         .sensoryFeedback(.impact(weight: .light), trigger: recorder.marks.count)
         .background { AmbientBackground(drift: true) }
-        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { screenHeight = $0 }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Recording.screen)
         .onAppear { env.player.stop() }
@@ -80,7 +80,11 @@ struct RecordingView: View {
     }
 
     private var liveCard: some View {
-        LiveTranscriptCard(text: recorder.liveText, note: recorder.liveTextNote, maxHeight: screenHeight * 0.4)
+        LiveTranscriptCard(text: recorder.liveText, note: recorder.liveTextNote,
+                           steady: reduceMotion || env.config.uiTesting) {
+            guard !isCompact else { return }
+            withAnimation(reduceMotion ? nil : .snappy(duration: 0.35)) { isCompact = true }
+        }
     }
 
     // MARK: Top row
@@ -123,16 +127,18 @@ struct RecordingView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Text("New recording")
-                .font(DS.Typo.largeTitle)
-                .tracking(-0.6)
-                .foregroundStyle(DS.Colour.ink)
-                .accessibilityAddTraits(.isHeader)
-                .accessibilityIdentifier(AX.Recording.title)
-            Text(DisplayFormat.longDate(recorder.startedAt ?? env.clock.now))
-                .font(DS.Typo.subheadline)
-                .foregroundStyle(DS.Colour.secondary)
-                .accessibilityIdentifier(AX.Recording.date)
+            if !isCompact {
+                Text("New recording")
+                    .font(DS.Typo.largeTitle)
+                    .tracking(-0.6)
+                    .foregroundStyle(DS.Colour.ink)
+                    .accessibilityAddTraits(.isHeader)
+                    .accessibilityIdentifier(AX.Recording.title)
+                Text(DisplayFormat.longDate(recorder.startedAt ?? env.clock.now))
+                    .font(DS.Typo.subheadline)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .accessibilityIdentifier(AX.Recording.date)
+            }
             Label {
                 Text("Speakers are separated when you stop.")
             } icon: {
@@ -141,7 +147,7 @@ struct RecordingView: View {
             .labelStyle(HintLabelStyle())
             .scaledFont(size: 14, relativeTo: .subheadline)
             .foregroundStyle(DS.Colour.secondary)
-            .padding(.top, 6)
+            .padding(.top, isCompact ? 0 : 6)
         }
         .padding(.horizontal, 4)
     }
@@ -216,13 +222,29 @@ private struct HintLabelStyle: LabelStyle {
     }
 }
 
-/// The live transcript card (§6.2): confirmed text in ink, volatile text in secondary, then a blinking accent
-/// caret. Auto-scrolls to keep the newest lines visible, up to `maxHeight`.
+/// The live transcript card (§6.2). The words are split into short paragraphs and arrive a word at a time at
+/// about speaking pace; the paragraph being spoken is in full ink (its newest, still-settling words in
+/// secondary, then a blinking accent caret) and earlier paragraphs step back. The card grows with the text up
+/// to the room it is given, then keeps the newest lines in view while older ones fade out under its top edge.
 private struct LiveTranscriptCard: View {
     let text: TranscribeCore.LiveText
     let note: String?
-    let maxHeight: CGFloat
-    @State private var textHeight: CGFloat = 26
+    /// Show text at once and hold the caret still (Reduce Motion, UI tests).
+    let steady: Bool
+    /// Called when the text no longer fits the room the card was given.
+    let onOverflow: () -> Void
+
+    @State private var contentHeight: CGFloat = Self.lineHeight
+    @State private var viewportHeight: CGFloat = 0
+    /// Words shown so far; nil until the card first appears (text already spoken is then shown at once).
+    @State private var revealed: Int?
+
+    static let lineHeight: CGFloat = 26
+    /// Paragraphs kept on screen; older ones have scrolled away.
+    static let visibleParagraphs = 12
+
+    private var totalWords: Int { LiveTextLayout.wordCount(text) }
+    private var overflows: Bool { viewportHeight > 0 && contentHeight > viewportHeight + 1 }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -239,16 +261,25 @@ private struct LiveTranscriptCard: View {
                     .accessibilityIdentifier(AX.Recording.liveTextNote)
             } else {
                 ScrollView {
-                    LiveTextBody(text: text)
+                    LiveTextBody(paragraphs: paragraphs, steady: steady)
                         .frame(maxWidth: .infinity, alignment: .leading)
-                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { textHeight = $0 }
+                        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
                 }
-                .frame(height: Swift.min(Swift.max(textHeight, 26), Swift.max(120, maxHeight)))
+                .frame(minHeight: Self.lineHeight, maxHeight: Swift.max(Self.lineHeight, contentHeight))
+                .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { viewportHeight = $0 }
                 .scrollBounceBehavior(.basedOnSize)
                 .scrollIndicators(.hidden)
                 .defaultScrollAnchor(.bottom)
                 .defaultScrollAnchor(.bottom, for: .sizeChanges)
+                .mask { TopFade(height: overflows ? 30 : 0) }
                 .accessibilityHidden(true)
+                .task(id: overflows) {
+                    // The viewport follows the text height a frame late, so only a lasting overflow counts.
+                    guard overflows else { return }
+                    try? await Task.sleep(for: .milliseconds(250))
+                    if !Task.isCancelled { onOverflow() }
+                }
+                .task(id: totalWords) { await reveal(upTo: totalWords) }
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -256,54 +287,85 @@ private struct LiveTranscriptCard: View {
         .modifier(LiveCardAccessibility(hasNote: note != nil, spoken: spokenText))
     }
 
+    private var paragraphs: [LiveParagraph] {
+        let shown = steady ? totalWords : Swift.min(revealed ?? totalWords, totalWords)
+        return LiveTextLayout.paragraphs(LiveTextLayout.revealing(text, words: shown)).suffix(Self.visibleParagraphs)
+    }
+
+    /// Shows the waiting words one at a time, faster when more are waiting.
+    private func reveal(upTo total: Int) async {
+        guard !steady else { return }
+        var shown = Swift.min(revealed ?? total, total)
+        revealed = shown
+        while shown < total {
+            try? await Task.sleep(for: .seconds(LiveTextLayout.revealInterval(backlog: total - shown)))
+            guard !Task.isCancelled else { return }
+            shown += 1
+            revealed = shown
+        }
+    }
+
+    /// VoiceOver reads everything recognised so far, not just the words shown.
     private var spokenText: String {
         let all = [text.confirmed, text.volatile].filter { !$0.isEmpty }.joined(separator: " ")
         return all.isEmpty ? "Live transcript. Listening" : "Live transcript. \(all)"
     }
 
+    /// Fades the top `height` points to clear (lines scrolling away); fully opaque when `height` is 0.
+    private struct TopFade: View {
+        let height: CGFloat
+        var body: some View {
+            VStack(spacing: 0) {
+                LinearGradient(colors: [.clear, .black], startPoint: .top, endPoint: .bottom).frame(height: height)
+                Color.black
+            }
+        }
+    }
+
     /// The text is laid out only when it changes. The caret blinks through an animated `TextRenderer`, which
-    /// redraws without re-laying out the (growing) text; only the tail of a long session is shown, since the
-    /// card scrolls to its last lines anyway.
+    /// redraws without re-laying out the text.
     private struct LiveTextBody: View {
-        let text: TranscribeCore.LiveText
-        @Environment(\.accessibilityReduceMotion) private var reduceMotion
-        @Environment(AppEnvironment.self) private var env
+        let paragraphs: [LiveParagraph]
+        let steady: Bool
         @State private var blink = 1.0
 
-        /// Characters of confirmed text kept on screen (cut at a word boundary).
-        static let visibleCharacters = 1_500
-
         var body: some View {
-            let steady = reduceMotion || env.config.uiTesting
-            content
+            VStack(alignment: .leading, spacing: 14) {
+                if paragraphs.isEmpty {
+                    styled(Text("\(Text("Listening…").foregroundStyle(DS.Colour.secondary))\(caret)"))
+                }
+                ForEach(paragraphs) { paragraph in
+                    let isCurrent = paragraph.id == paragraphs.last?.id
+                    styled(content(paragraph, isCurrent: isCurrent))
+                        .opacity(isCurrent ? 1 : 0.5)
+                }
+            }
+            .animation(steady ? nil : .easeOut(duration: 0.4), value: paragraphs.last?.id)
+            .onAppear {
+                guard !steady else { return }
+                withAnimation(.linear(duration: 0.53).repeatForever(autoreverses: true)) { blink = 0 }
+            }
+        }
+
+        private func styled(_ text: Text) -> some View {
+            text
                 .font(DS.Typo.transcript)
                 .lineSpacing(5.7)   // 17 pt text on a 26 pt line
                 .fixedSize(horizontal: false, vertical: true)
                 .textRenderer(CaretBlinkRenderer(opacity: steady ? 1 : blink))
-                .onAppear {
-                    guard !steady else { return }
-                    withAnimation(.linear(duration: 0.53).repeatForever(autoreverses: true)) { blink = 0 }
-                }
         }
 
-        private var content: Text {
-            let caret = Text(Self.caret)
+        private var caret: Text {
+            Text(Self.caret)
                 .foregroundStyle(DS.Colour.accent)
                 .customAttribute(CaretAttribute())
-            if text.isEmpty {
-                return Text("\(Text("Listening…").foregroundStyle(DS.Colour.secondary))\(caret)")
-            }
-            let confirmed = Self.tail(text.confirmed, limit: Self.visibleCharacters)
-            let gap = !confirmed.isEmpty && !text.volatile.isEmpty ? " " : ""
-            return Text("\(Text(confirmed).foregroundStyle(DS.Colour.ink))\(Text(gap + text.volatile).foregroundStyle(DS.Colour.secondary))\(caret)")
         }
 
-        /// The last `limit` characters, starting after a space, with a leading ellipsis when cut.
-        static func tail(_ s: String, limit: Int) -> String {
-            guard s.count > limit else { return s }
-            let start = s.index(s.endIndex, offsetBy: -limit)
-            let cut = s[start...].firstIndex(of: " ").map { s.index(after: $0) } ?? start
-            return "…" + s[cut...]
+        private func content(_ paragraph: LiveParagraph, isCurrent: Bool) -> Text {
+            let gap = !paragraph.confirmed.isEmpty && !paragraph.volatile.isEmpty ? " " : ""
+            let confirmed = Text(paragraph.confirmed).foregroundStyle(DS.Colour.ink)
+            let volatile = Text(gap + paragraph.volatile).foregroundStyle(DS.Colour.secondary)
+            return isCurrent ? Text("\(confirmed)\(volatile)\(caret)") : Text("\(confirmed)\(volatile)")
         }
 
         /// 2 × 16 pt rounded caret with a 3 pt lead, standing on the baseline (so it never grows the line), drawn once

@@ -57,6 +57,7 @@ Rules that follow from the research:
 - Never name a single short turn on its own. Name the whole speaker for the recording; leave overlapping speech out of embeddings.
 - Three outcomes for a match: auto-label, ask "Is this Karan?", or leave as Unknown. A wrong name is worse than Unknown.
 - Starting thresholds (untested guesses to tune on real recordings): auto-label at cosine similarity 0.55 or more and 0.10 clear of the runner-up; ask between 0.40 and 0.55; need about 10 s of clean speech to create a profile and 3 s to identify.
+- Live text while recording is display-only and uses `FluidLiveRecording.liveConfig`: a 2 s step with 1 s of lookahead (first words at about 3 s, then every 2 s; measured on a Mac, not yet on an iPhone 15). Do not use FluidAudio's `.streaming` preset: it decodes 11 s at a time, so the first words take 13 s. Each step is one model run, so check battery and heat on the iPhone before going below 2 s.
 - The Community-1 and Parakeet models are CC-BY-4.0, so the app needs an attributions screen.
 
 To check first on a real iPhone 15: that Parakeet TDT v3 loads (a different Parakeet variant fails on its A16 chip), and peak memory and speed of the offline diariser. No published figures exist for either.

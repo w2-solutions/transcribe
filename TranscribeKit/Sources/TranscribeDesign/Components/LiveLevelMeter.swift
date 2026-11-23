@@ -1,13 +1,15 @@
 import SwiftUI
 
 public struct LiveLevelMeter: View {
-    /// 96 pt tall row of 3 pt bars, gap 3, centred; ink, last `recentCount` bars record red; heights from levels.
+    /// `height` pt tall row (96 by default) of 3 pt bars, gap 3, centred; ink, last `recentCount` bars record red;
+    /// bar heights from levels, up to `maxHeight`.
     let levels: [Float]
     let recentCount: Int
     let maxHeight: CGFloat
+    let height: CGFloat
 
-    public init(levels: [Float], recentCount: Int = 10, maxHeight: CGFloat = 64) {
-        self.levels = levels; self.recentCount = recentCount; self.maxHeight = maxHeight
+    public init(levels: [Float], recentCount: Int = 10, maxHeight: CGFloat = 64, height: CGFloat = 96) {
+        self.levels = levels; self.recentCount = recentCount; self.maxHeight = maxHeight; self.height = height
     }
 
     public var body: some View {
@@ -19,7 +21,7 @@ public struct LiveLevelMeter: View {
             }
         }
         .frame(maxWidth: .infinity)
-        .frame(height: 96)
+        .frame(height: height)
         .accessibilityHidden(true)
     }
 }

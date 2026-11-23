@@ -191,6 +191,57 @@ struct FluidEngineTests {
         Self.log("peak footprint over the suite: \(Memory.peakFootprintMB().rounded()) MB")
     }
 
+    /// Candidate live-text window layouts: (name, chunk, left, right) in seconds.
+    static let liveLayouts: [(String, Double, Double, Double)] = [
+        ("fluid .streaming 11+2+2", 11, 2, 2), ("app 2 s step", 2, 10, 1),
+    ]
+
+    @Test("8b. Live text keeps up with speech played in real time (logged per window layout)", arguments: 0..<liveLayouts.count)
+    func liveTextLatency(_ index: Int) async throws {
+        let (name, chunk, left, right) = Self.liveLayouts[index]
+        let engine = try await Self.shared.value
+        let fixture = Self.fixture("three-voices.wav")
+        let source = try FileCaptureSource(url: fixture)
+        let out = try TestAudio.temporaryDirectory().appendingPathComponent("live.wav")
+        let config = name.hasPrefix("app") ? FluidLiveRecording.liveConfig
+            : SlidingWindowAsrConfig(chunkSeconds: chunk, hypothesisChunkSeconds: 1, leftContextSeconds: left,
+                                     rightContextSeconds: right, minContextForConfirmation: 4, confirmationThreshold: 0.8)
+        let recording = try await engine.startRecording(RecordingRequest(audioURL: out, liveText: true, language: .language("en")),
+                                                       source: source, liveConfig: config)
+        let events = collectEvents(recording.events)
+        await source.play(chunkPause: .milliseconds(97))      // about real time
+        let duration = await source.duration
+        _ = try await recording.stop()
+        // Audio position (from the ticks) at which each live text update arrived.
+        var position = 0.0
+        var updates: [(at: Double, text: LiveText)] = []
+        for event in await events.value {
+            if case .tick(let elapsed, _) = event { position = elapsed }
+            if case .liveText(let text) = event { updates.append((position, text)) }
+        }
+        let during = updates.filter { $0.at < duration - 0.2 }
+        let gaps = zip(during.dropFirst(), during).map { $0.at - $1.at }
+        let live = updates.last.map { FluidLiveRecording.join($0.text.confirmed, $0.text.volatile) } ?? ""
+        let batch = try await engine.transcribe(fixture, language: .language("en")) { _ in }.map(\.text)
+        func bag(_ words: [String]) -> [String: Int] {
+            words.map { $0.lowercased().trimmingCharacters(in: .punctuationCharacters) }.filter { !$0.isEmpty }
+                .reduce(into: [:]) { $0[$1, default: 0] += 1 }
+        }
+        let liveBag = bag(live.split(separator: " ").map(String.init)), batchBag = bag(batch)
+        let shared = batchBag.reduce(0) { $0 + Swift.min($1.value, liveBag[$1.key] ?? 0) }
+        let recall = Double(shared) / Double(Swift.max(1, batchBag.values.reduce(0, +)))
+        Self.log("live layout \(name): first text at \(String(format: "%.1f", during.first?.at ?? -1)) s of \(String(format: "%.1f", duration)) s; "
+                 + "\(during.count) updates while speaking, longest wait \(String(format: "%.1f", gaps.max() ?? 0)) s; "
+                 + "\(Int((recall * 100).rounded()))% of the batch words; live words \(liveBag.values.reduce(0, +)) vs batch \(batchBag.values.reduce(0, +))")
+        Self.log("live layout \(name) text: \(live)")
+        #expect(!during.isEmpty)
+        if name.hasPrefix("app") {
+            #expect((during.first?.at ?? 99) < 6)
+            #expect((gaps.max() ?? 99) < 6)
+            #expect(recall > 0.85)
+        }
+    }
+
     /// The 95 MB split-graph W8A8 build, for comparison only (the app ships fp16 `fast128`).
     static let splitW8A8 = Nemotron3Config(
         chunkLen: 128, chunkRightContext: 4, fifoLen: 40, spkcacheUpdatePeriod: 40,

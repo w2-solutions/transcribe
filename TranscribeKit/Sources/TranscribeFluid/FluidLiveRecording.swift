@@ -12,7 +12,7 @@ import TranscribeCore
 /// - turns RMS into a 0...1 level and emits `.tick` about 20 times a second (elapsed excludes pauses);
 /// - accumulates 200 waveform peak bins;
 /// - feeds `SlidingWindowAsrManager` (sharing the engine's loaded `AsrModels`) when live text is on,
-///   rebuilding an `AVAudioPCMBuffer` inside the actor.
+///   rebuilding an `AVAudioPCMBuffer` inside the actor. `liveConfig` sets how soon words appear.
 public actor FluidLiveRecording: LiveRecording {
     public nonisolated let events: AsyncStream<RecordingEvent>
     private let eventContinuation: AsyncStream<RecordingEvent>.Continuation
@@ -22,6 +22,18 @@ public actor FluidLiveRecording: LiveRecording {
     /// Header flush and free-space check interval: 5 s of audio.
     static let flushFrames = 5 * 16_000
 
+    /// Window layout for live text: a new 2 s of speech is decoded as soon as 1 s of audio after it has
+    /// arrived, so words show about 1 to 3 s after they are spoken (plus one model run).
+    ///
+    /// FluidAudio's `.streaming` preset decodes 11 s at a time with 2 s of lookahead: the first words take
+    /// 13 s and the rest arrive in 11 s blocks (its `hypothesisChunkSeconds` is not read by the library).
+    /// Every window is padded to the model's fixed 15 s input, so a shorter step means more model runs (one
+    /// per 2 s here), not bigger ones; the long left context is free and steadies each fresh decode.
+    /// Live text is display-only. The transcript is made by the batch pass after Stop.
+    static let liveConfig = SlidingWindowAsrConfig(
+        chunkSeconds: 2.0, hypothesisChunkSeconds: 1.0, leftContextSeconds: 10.0, rightContextSeconds: 1.0,
+        minContextForConfirmation: 4.0, confirmationThreshold: 0.80)
+
     private enum State: Equatable { case idle, recording, paused(PauseReason), ended, finished }
 
     private let log = Logger(subsystem: "ai.w2solutions.transcribe", category: "FluidLiveRecording")
@@ -29,6 +41,7 @@ public actor FluidLiveRecording: LiveRecording {
     private let url: URL
     private let language: Language?
     private let liveModels: @Sendable () async -> AsrModels?
+    private let liveConfig: SlidingWindowAsrConfig
     private let freeBytes: @Sendable (URL) -> Int64?
 
     private var state: State = .idle
@@ -59,11 +72,13 @@ public actor FluidLiveRecording: LiveRecording {
     ///   - freeBytes: free space on the volume holding the URL (injectable for tests).
     init(request: RecordingRequest, source: any CaptureSource,
          liveModels: @escaping @Sendable () async -> AsrModels?,
+         liveConfig: SlidingWindowAsrConfig = FluidLiveRecording.liveConfig,
          freeBytes: @escaping @Sendable (URL) -> Int64? = FluidLiveRecording.volumeFreeBytes) {
         self.url = request.audioURL
         self.source = source
         self.language = LanguageMapping.fluid(request.language)
         self.liveModels = liveModels
+        self.liveConfig = liveConfig
         self.freeBytes = freeBytes
         self.liveTextWanted = request.liveText
         (events, eventContinuation) = AsyncStream.makeStream(of: RecordingEvent.self, bufferingPolicy: .bufferingNewest(512))
@@ -284,7 +299,7 @@ public actor FluidLiveRecording: LiveRecording {
             eventContinuation.yield(.liveTextUnavailable(.modelsNotReady))
             return
         }
-        let manager = SlidingWindowAsrManager(config: SlidingWindowAsrConfig.streaming.applying(language: language))
+        let manager = SlidingWindowAsrManager(config: liveConfig.applying(language: language))
         do {
             try await manager.loadModels(models)
             let updates = await manager.transcriptionUpdates

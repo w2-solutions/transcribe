@@ -38,7 +38,7 @@ public actor FakeLiveRecording: LiveRecording {
             // A static screenshot state: elapsed 14.0 s with a full meter history (56 bars), then nothing more.
             elapsed = Self.frozenElapsed
             for i in 0..<56 { continuation.yield(.tick(elapsed: elapsed, level: Self.level(at: i))) }
-            if liveTextEnabled, let text = script.liveTimeline.last?.text { continuation.yield(.liveText(text)) }
+            if liveTextEnabled, let text = script.liveText(at: elapsed) { continuation.yield(.liveText(text)) }
             return
         }
         ticker = Task { [weak self] in
