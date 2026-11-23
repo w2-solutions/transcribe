@@ -10,5 +10,17 @@
 	<true/>
 	<key>com.apple.security.files.user-selected.read-only</key>
 	<true/>
+	<key>com.apple.developer.icloud-container-identifiers</key>
+	<array>
+		<string>iCloud.ai.w2solutions.transcribe</string>
+	</array>
+	<key>com.apple.developer.icloud-services</key>
+	<array>
+		<string>CloudKit</string>
+	</array>
+	<key>com.apple.developer.icloud-container-environment</key>
+	<string>$(TRANSCRIBE_ICLOUD_ENV)</string>
+	<key>com.apple.developer.aps-environment</key>
+	<string>$(TRANSCRIBE_APS_ENV)</string>
 </dict>
 </plist>

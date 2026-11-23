@@ -2,6 +2,7 @@ import Foundation
 import TranscribeCore
 import TranscribeKit
 import TranscribeFluid
+import TranscribeCloudKit
 #if DEBUG
 import TranscribeFakes
 #endif
@@ -20,7 +21,23 @@ import TranscribeFakes
         #endif
         let identity = PlatformServices.deviceIdentity(uiTesting: config.uiTesting)
         let background = PlatformServices.backgroundBridge(uiTesting: config.uiTesting)
-        return try! AppEnvironment(config: config, engine: engine, background: background, deviceIdentity: identity, seeder: seeder)
+        return try! AppEnvironment(config: config, engine: engine, background: background, deviceIdentity: identity, seeder: seeder,
+                                   syncTransport: Self.syncTransport(config: config))
+    }
+
+    /// iCloud sync's transport (§8.3). The real app always gets `CloudKitTransport`, which touches nothing in iCloud
+    /// until the "Sync with iCloud" switch is on. UI tests and fake-engine runs get a `FakeTransport` on an in-memory
+    /// `FakeCloud`, so they never reach CloudKit or the user's iCloud (§8.6); a Release build has no fakes and so no
+    /// sync in those modes.
+    static func syncTransport(config: LaunchConfig) -> (any SyncTransport)? {
+        if config.uiTesting || config.useFakeEngine {
+            #if DEBUG
+            return FakeTransport(cloud: FakeCloud(), account: "uitest-account")
+            #else
+            return nil
+            #endif
+        }
+        return CloudKitTransport()
     }
 
     /// The speech models ship read-only in the app bundle (`BundledModels/`). DEBUG builds may point the real

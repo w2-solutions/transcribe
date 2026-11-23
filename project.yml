@@ -46,13 +46,16 @@ targets:
         product: TranscribeFluid
       - package: TranscribeKit
         product: TranscribeFakes
+      - package: TranscribeKit
+        product: TranscribeCloudKit
     info:
       path: Apps/iPhone/Info.plist
       properties:
         CFBundleDisplayName: Transcribe
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: "Transcribe records conversations on this iPhone to turn them into text. Audio never leaves the device."
-        UIBackgroundModes: [audio, processing]
+        # remote-notification: CKSyncEngine fetches when iCloud pushes a change (only while sync is on).
+        UIBackgroundModes: [audio, processing, remote-notification]
         BGTaskSchedulerPermittedIdentifiers: ["ai.w2solutions.transcribe.process.*"]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIFileSharingEnabled: false
@@ -69,6 +72,16 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         # Simulator builds leave the ~700 MB of models out (they use the fake engine, or TRANSCRIBE_MODELS_DIR).
         "EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]": BundledModels
+        # iCloud (CloudKit container iCloud.ai.w2solutions.transcribe) and push, for optional sync. Debug uses the
+        # Development CloudKit environment; Release uses Production. To test against the Developer ID Mac, build with
+        # TRANSCRIBE_ICLOUD_ENV=Production TRANSCRIBE_APS_ENV=production on the xcodebuild line.
+        CODE_SIGN_ENTITLEMENTS: Apps/iPhone/Transcribe.entitlements
+        TRANSCRIBE_ICLOUD_ENV: Development
+        TRANSCRIBE_APS_ENV: development
+      configs:
+        Release:
+          TRANSCRIBE_ICLOUD_ENV: Production
+          TRANSCRIBE_APS_ENV: production
   TranscribeMac:
     type: application
     platform: macOS
@@ -97,6 +110,8 @@ targets:
         product: TranscribeFluid
       - package: TranscribeKit
         product: TranscribeFakes
+      - package: TranscribeKit
+        product: TranscribeCloudKit
     info:
       path: Apps/Mac/Info.plist
       properties:
@@ -120,13 +135,23 @@ targets:
         # check-models.sh reads BundledModels, which the script sandbox would block (as for the iPhone target).
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         ENABLE_HARDENED_RUNTIME: YES
-        CODE_SIGN_ENTITLEMENTS: Apps/Mac/TranscribeMac.entitlements
+        # With a team (DEVELOPMENT_TEAM=53FBF5CS9U on the command line) the app is provisioned and gets iCloud and
+        # push. Without one (make build-mac, make test-ui-mac) it is signed to run locally, where macOS refuses to
+        # launch an app claiming iCloud, so it uses TranscribeMac.local.entitlements (sandbox and microphone only;
+        # sync then reads as "not signed in"). TRANSCRIBE_ENTITLEMENTS_SUFFIX_ is the value for an empty team.
+        TRANSCRIBE_ENTITLEMENTS_SUFFIX_: .local
+        CODE_SIGN_ENTITLEMENTS: Apps/Mac/TranscribeMac$(TRANSCRIBE_ENTITLEMENTS_SUFFIX_$(DEVELOPMENT_TEAM)).entitlements
         OTHER_CODE_SIGN_FLAGS: --timestamp
+        TRANSCRIBE_ICLOUD_ENV: Development
+        TRANSCRIBE_APS_ENV: development
       configs:
         # Debug signs to run locally when no team is passed (make build-mac); with DEVELOPMENT_TEAM=53FBF5CS9U on
         # the command line Xcode signs with Apple Development instead. Release always needs the team.
         Debug:
           OTHER_CODE_SIGN_FLAGS: ""
+        Release:
+          TRANSCRIBE_ICLOUD_ENV: Production
+          TRANSCRIBE_APS_ENV: production
   TranscribeUITests:
     type: bundle.ui-testing
     platform: iOS

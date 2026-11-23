@@ -24,6 +24,12 @@ import TranscribeKit
             MacRootView()
                 .frame(minWidth: 960, minHeight: 600)
                 .modifier(SceneEnvironment(env: env, router: router, selection: selection))
+                .onChange(of: env.settings.syncEnabled, initial: true) { _, on in
+                    if on, env.sync != nil, !env.config.uiTesting { PlatformServices.registerForRemoteNotifications() }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+                    PlatformServices.syncOnActivation(env)
+                }
         }
         .defaultSize(width: 1280, height: 820)
         .windowResizability(.contentMinSize)
