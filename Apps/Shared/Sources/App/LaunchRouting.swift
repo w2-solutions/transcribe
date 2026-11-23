@@ -39,7 +39,7 @@ enum ResolvedRoute: Equatable {
         }
     }
 
-    /// The iPhone's navigation-stack apply, called from `RootView`.
+    /// The navigation-stack apply for the phone, called from `RootView`.
     static func apply(_ route: ResolvedRoute, router: Router, env: AppEnvironment) {
         switch route {
         case .library:

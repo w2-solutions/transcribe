@@ -1,6 +1,7 @@
 import SwiftUI
 import TranscribeCore
 import TranscribeDesign
+import TranscribeKit
 
 /// Acknowledgements (§6.10): credit, licence and source for every model and library the app runs.
 struct AttributionsView: View {
@@ -9,7 +10,7 @@ struct AttributionsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
-                Text("Transcribe runs these models and libraries on your iPhone.")
+                Text(DeviceCopy().attributionsIntro)
                     .font(DS.Typo.subheadline)
                     .foregroundStyle(DS.Colour.secondary)
                     .fixedSize(horizontal: false, vertical: true)

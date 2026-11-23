@@ -28,7 +28,8 @@ struct ProcessingViewStateTests {
     }
 
     @Test func separatingPlaceholderTextsMatchTheMockup() {
-        let s = ProcessingViewState(stage: .separating, queueReason: nil, snapshot: nil, savedVoiceNames: ["Liam", "Karan"])
+        let s = ProcessingViewState(stage: .separating, queueReason: nil, snapshot: nil, savedVoiceNames: ["Liam", "Karan"],
+                                    platform: .iPhone)
         #expect(s.heading == "Working out who said what")
         #expect(s.message == "This happens on your iPhone. You can leave and come back.")
         #expect(s.steps.map(ProcessingViewState.rowTitle) == ["Transcribed", "Separating speakers", "Matching saved voices"])
@@ -52,13 +53,20 @@ struct ProcessingViewStateTests {
     }
 
     @Test func waitingForModels() {
-        let s = ProcessingViewState(stage: .queued, queueReason: .modelsNotReady, snapshot: nil)
+        let s = ProcessingViewState(stage: .queued, queueReason: .modelsNotReady, snapshot: nil, platform: .iPhone)
         #expect(s.mode == .waiting(.modelsNotReady))
         #expect(s.heading == "Waiting for speech models")
         #expect(s.message == "Processing starts once the speech models are ready on this iPhone.")
         #expect(s.isWaitingForModels)
         #expect(s.collapsedText == "Waiting for speech models")
         #expect(s.cardText == "Waiting for speech models")
+    }
+
+    @Test func macWording() {
+        let running = ProcessingViewState(stage: .separating, queueReason: nil, snapshot: nil, platform: .mac)
+        #expect(running.message == "This happens on your Mac. You can keep working.")
+        let waiting = ProcessingViewState(stage: .queued, queueReason: .modelsNotReady, snapshot: nil, platform: .mac)
+        #expect(waiting.message == "Processing starts once the speech models are ready on this Mac.")
     }
 
     @Test func queuedSnapshotReasonWinsOverTheStoredOne() {

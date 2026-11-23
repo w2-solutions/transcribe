@@ -207,6 +207,26 @@ enum AX {
         static func option(_ code: String) -> String { "language.option.\(code)" }  // "auto" for automatic
     }
 
+    /// The Mac app's own screens. Recording rows on the Mac reuse `Library.card(i)`.
+    enum Mac {
+        static let main = "screen.mac.main"
+        static let sidebarAll = "mac.sidebar.all"
+        static let sidebarFavourites = "mac.sidebar.favourites"
+        static let sidebarUnnamed = "mac.sidebar.unnamed"
+        static let sidebarVoices = "mac.sidebar.voices"
+        static let sidebarVoicesBadge = "mac.sidebar.voicesBadge"
+        static let sidebarNewRecording = "mac.sidebar.newRecording"
+        static let sidebarFooter = "mac.sidebar.footer"
+        static let recordingList = "mac.list.recordings"
+        static let voiceList = "mac.list.voices"
+        static let detailEmpty = "mac.detail.empty"
+        static let toolbarRecord = "mac.toolbar.record"
+        static let toolbarImport = "mac.toolbar.import"
+        static let toolbarRecordingPill = "mac.toolbar.recordingPill"
+        static let recordingWindow = "mac.recordingWindow"
+        static func sidebarFolder(_ i: Int) -> String { "mac.sidebar.folder.\(i)" }
+    }
+
     enum Attributions {
         static let screen = "attributions.screen"
         static func entry(_ id: String) -> String { "attributions.entry.\(id)" }    // parakeet | community-1 | fluidaudio

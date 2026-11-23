@@ -13,7 +13,7 @@ struct ModelSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                Text("These come with Transcribe. Speech and speakers are processed on this iPhone, even offline. Nothing is downloaded.")
+                Text(DeviceCopy().modelsIntro)
                     .font(DS.Typo.subheadline)
                     .lineSpacing(3)
                     .foregroundStyle(DS.Colour.secondary)
@@ -80,7 +80,7 @@ struct ModelSettingsView: View {
 
     private var statusText: String {
         switch models.status {
-        case .ready: "Ready. Everything runs on this iPhone, even offline."
+        case .ready: DeviceCopy().modelsReady
         case .installed, .preparing: ModelManager.Copy.preparing
         case .failed(let reason): reason
         }

@@ -44,7 +44,7 @@ struct TurnRow: View, Equatable {
             chipRow
             HighlightedText(text: text, highlights: highlights)
                 .font(DS.Typo.transcript)
-                .lineSpacing(5.7)   // 17 pt text on a 26 pt line
+                .lineSpacing(DS.Typo.transcriptLineSpacing)   // iPhone 17 pt on a 26 pt line; Mac 15 on 24
                 .foregroundStyle(DS.Colour.ink)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .fixedSize(horizontal: false, vertical: true)

@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: ai.w2solutions
   deploymentTarget:
     iOS: "27.0"
+    macOS: "27.0"
   xcodeVersion: "27.0"
   createIntermediateGroups: true
 settings:
@@ -68,6 +69,64 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         # Simulator builds leave the ~700 MB of models out (they use the fake engine, or TRANSCRIBE_MODELS_DIR).
         "EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]": BundledModels
+  TranscribeMac:
+    type: application
+    platform: macOS
+    sources:
+      - Apps/Mac/Sources
+      - Apps/Mac/Resources
+      - Apps/Shared
+      # The same speech models as the iPhone, copied verbatim into Transcribe.app/Contents/Resources/BundledModels
+      # in every configuration (the sandboxed app cannot read TRANSCRIBE_MODELS_DIR).
+      - path: BundledModels
+        type: folder
+        buildPhase: resources
+    preBuildScripts:
+      - name: Check bundled models
+        script: '"$SRCROOT/scripts/check-models.sh"'
+        basedOnDependencyAnalysis: false
+        showEnvVars: false
+    dependencies:
+      - package: TranscribeKit
+        product: TranscribeCore
+      - package: TranscribeKit
+        product: TranscribeKit
+      - package: TranscribeKit
+        product: TranscribeDesign
+      - package: TranscribeKit
+        product: TranscribeFluid
+      - package: TranscribeKit
+        product: TranscribeFakes
+    info:
+      path: Apps/Mac/Info.plist
+      properties:
+        CFBundleDisplayName: Transcribe
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSApplicationCategoryType: public.app-category.productivity
+        NSMicrophoneUsageDescription: "Transcribe records conversations on this Mac to turn them into text. Speech is processed on this Mac."
+        NSHumanReadableCopyright: "© 2026 W2 Solutions"
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_NAME: Transcribe
+        PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.mac
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # check-models.sh reads BundledModels, which the script sandbox would block (as for the iPhone target).
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        CODE_SIGN_ENTITLEMENTS: Apps/Mac/TranscribeMac.entitlements
+        OTHER_CODE_SIGN_FLAGS: --timestamp
+      configs:
+        # Debug signs to run locally when no team is passed (make build-mac); with DEVELOPMENT_TEAM=53FBF5CS9U on
+        # the command line Xcode signs with Apple Development instead. Release always needs the team.
+        Debug:
+          OTHER_CODE_SIGN_FLAGS: ""
   TranscribeUITests:
     type: bundle.ui-testing
     platform: iOS
@@ -101,3 +160,14 @@ schemes:
       gatherCoverageData: false
       targets:
         - TranscribeUITests
+  TranscribeMac:
+    build:
+      targets:
+        TranscribeMac: all
+    run:
+      config: Debug
+      commandLineArguments:
+        "-useFakeEngine": false
+        "-uiTesting": false
+    archive:
+      config: Release

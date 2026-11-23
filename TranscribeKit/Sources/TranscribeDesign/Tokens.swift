@@ -35,7 +35,13 @@ public enum DS {
     }
     public enum Space {
         public static let screenInset: CGFloat = 16, cardPadding: CGFloat = 18, cardGap: CGFloat = 14
-        public static let dockGap: CGFloat = 18, dockBottom: CGFloat = 30, hit: CGFloat = 44
+        public static let dockGap: CGFloat = 18, dockBottom: CGFloat = 30
+        /// Minimum hit target: 44 pt for touch, 32 pt for the pointer on the Mac.
+        #if os(macOS)
+        public static let hit: CGFloat = 32
+        #else
+        public static let hit: CGFloat = 44
+        #endif
     }
     public enum Size {
         public static let dockButton: CGFloat = 52, recordOuter: CGFloat = 84, recordInner: CGFloat = 62, stopSquare: CGFloat = 30
@@ -48,7 +54,14 @@ public enum DS {
         public static let screenTitle = Font.title.weight(.bold)                     // 28 "Who is this?", "Karan"
         public static let panelTitle = Font.title2.weight(.bold)                     // 22 "Working out who said what"
         public static let headline = Font.headline                                   // 17 semibold
+        #if os(macOS)
+        public static let transcript = Font.system(size: 15)                         // Mac mockup: 15 on a 24 pt line
+        /// Extra leading for `transcript` (iPhone 17 on 26; Mac 15 on 24).
+        public static let transcriptLineSpacing: CGFloat = 6
+        #else
         public static let transcript = Font.body                                     // 17, lineSpacing 5.7 (26 pt line)
+        public static let transcriptLineSpacing: CGFloat = 5.7
+        #endif
         public static let cardBody = Font.callout                                    // 16, lineSpacing 3.3 (23 pt line)
         public static let subheadline = Font.subheadline                             // 15
         public static let rowTitle = Font.body                                       // 17 settings rows

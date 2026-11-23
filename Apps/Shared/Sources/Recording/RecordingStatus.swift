@@ -28,7 +28,7 @@ enum RecordingStatus {
     /// Alert after the system ended a recording (shown on the recording screen, or over the app if minimised).
     static func systemStopTitle(_ reason: RecordingEndReason) -> String {
         switch reason {
-        case .lowStorage: "Recording stopped — iPhone storage is almost full"
+        case .lowStorage: DeviceCopy().lowStorageStop
         case .mediaServicesReset, .failed: "Recording stopped"
         }
     }

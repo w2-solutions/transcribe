@@ -117,8 +117,8 @@ struct VoiceDetailView: View {
         let lead: Text
         let spoken: String
         if profile.needsResample {
-            lead = Text("Needs a new sample on this iPhone").foregroundStyle(DS.Colour.unnamedText)
-            spoken = "Needs a new sample on this iPhone"
+            lead = Text(DeviceCopy().needsSample).foregroundStyle(DS.Colour.unnamedText)
+            spoken = DeviceCopy().needsSample
         } else if profile.autoLabel {
             lead = Text("\(Image(systemName: "checkmark.circle")) Recognised automatically")
                 .foregroundStyle(DS.Colour.accentText)
@@ -258,7 +258,7 @@ struct VoiceDetailView: View {
             .padding(EdgeInsets(top: 14, leading: 16, bottom: 4, trailing: 16))
 
             if appearances.isEmpty {
-                Text("Not in any recording on this iPhone yet.")
+                Text(DeviceCopy().notInAnyRecording)
                     .font(.subheadline).foregroundStyle(DS.Colour.secondary)
                     .padding(EdgeInsets(top: 6, leading: 16, bottom: 14, trailing: 16))
             }

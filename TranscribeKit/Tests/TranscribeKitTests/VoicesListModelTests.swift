@@ -130,8 +130,12 @@ struct VoicesListModelTests {
                 == "In 1 recording · named 18 Nov")
         #expect(VoicesListModel.subtitle(recordingCount: 4, isMe: true, namedAt: d, needsResample: false, locale: locale, timeZone: tz)
                 == "In 4 recordings")
-        #expect(VoicesListModel.subtitle(recordingCount: 4, isMe: false, namedAt: d, needsResample: true, locale: locale, timeZone: tz)
+        #expect(VoicesListModel.subtitle(recordingCount: 4, isMe: false, namedAt: d, needsResample: true, locale: locale, timeZone: tz,
+                                         platform: .iPhone)
                 == "Needs a new sample on this iPhone")
+        #expect(VoicesListModel.subtitle(recordingCount: 4, isMe: false, namedAt: d, needsResample: true, locale: locale, timeZone: tz,
+                                         platform: .mac)
+                == "Needs a new sample on this Mac")
     }
 
     @Test func sampleCaptions() {

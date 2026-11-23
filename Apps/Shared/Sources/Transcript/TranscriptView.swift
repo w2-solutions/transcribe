@@ -223,7 +223,7 @@ struct TranscriptView: View {
                 .accessibilityIdentifier(AX.Transcript.Menu.deleteConfirm)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text("The audio and transcript are removed from this iPhone. Saved voices are kept.")
+            Text(DeviceCopy().deleteTranscriptMessage)
         }
         .screenBackground()
     }

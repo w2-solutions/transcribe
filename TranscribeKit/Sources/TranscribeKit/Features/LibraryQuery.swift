@@ -118,11 +118,12 @@ public struct LibraryCardPreview: Equatable, Sendable {
         self.isPlaceholder = isPlaceholder
     }
 
-    public static func make(previewText: String, stage: RecordingStage, noSpeech: Bool) -> LibraryCardPreview {
+    public static func make(previewText: String, stage: RecordingStage, noSpeech: Bool,
+                            platform: DevicePlatform = .current) -> LibraryCardPreview {
         let trimmed = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return LibraryCardPreview(text: trimmed, isPlaceholder: false) }
         switch stage {
-        case .capturing: return LibraryCardPreview(text: "Tap to go back to the recording.", isPlaceholder: true)
+        case .capturing: return LibraryCardPreview(text: DeviceCopy(platform: platform).capturingPreview, isPlaceholder: true)
         case .failed: return LibraryCardPreview(text: "Couldn't finish processing this recording.", isPlaceholder: true)
         case .ready: return LibraryCardPreview(text: noSpeech ? "No speech found" : "No transcript", isPlaceholder: true)
         default: return LibraryCardPreview(text: "Transcribing…", isPlaceholder: true)

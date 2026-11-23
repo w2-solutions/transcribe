@@ -11,4 +11,6 @@ import TranscribeKit
     static func deviceIdentity(uiTesting: Bool) -> any DeviceIdentity {
         uiTesting ? FixedDeviceIdentity("test-device") : KeychainDeviceIdentity()
     }
+
+    static let platform: DevicePlatform = .iPhone
 }

@@ -95,9 +95,13 @@ public final class NameSpeakerModel {
         didSet { if !isSyncingName { syncSelectionToName() } }
     }
     @ObservationIgnored private var isSyncingName = false
+    /// Device wording ("Saved on this iPhone only", or the synced variant).
+    public let copy: DeviceCopy
 
     public init(recordingID: UUID, mode: Mode, subject: Subject, profiles: [ProfileOption],
-                speakers: [SpeakerOption], speakerProfiles: [SpeakerKey: UUID], turns: [Turn], clips: [Clip]) {
+                speakers: [SpeakerOption], speakerProfiles: [SpeakerKey: UUID], turns: [Turn], clips: [Clip],
+                platform: DevicePlatform = .current, syncOn: Bool = false) {
+        self.copy = DeviceCopy(platform: platform, syncOn: syncOn)
         self.recordingID = recordingID
         self.mode = mode
         self.subject = subject
@@ -126,7 +130,7 @@ public final class NameSpeakerModel {
 
     /// Builds the model from the stored recording and every saved profile.
     public convenience init(recording: Recording, key: SpeakerKey, mode: Mode, profiles: [VoiceProfile],
-                            config: AlignmentConfig = .default) {
+                            config: AlignmentConfig = .default, platform: DevicePlatform = .current, syncOn: Bool = false) {
         let speaker = recording.speaker(key)
         let subject = Subject(
             key: key, ordinal: speaker?.ordinal ?? 0, slot: speaker?.colourSlot ?? 0, label: speaker?.label ?? .unnamed,
@@ -148,7 +152,8 @@ public final class NameSpeakerModel {
         for s in recording.speakers { if let p = s.profile { links[s.key] = p.id } }
         self.init(recordingID: recording.id, mode: mode, subject: subject,
                   profiles: profiles.map { ProfileOption(id: $0.id, name: $0.name, slot: $0.colourSlot, isMe: $0.isMe) },
-                  speakers: speakerOptions, speakerProfiles: links, turns: turns, clips: clips)
+                  speakers: speakerOptions, speakerProfiles: links, turns: turns, clips: clips,
+                  platform: platform, syncOn: syncOn)
     }
 
     // MARK: Derived text
@@ -233,7 +238,7 @@ public final class NameSpeakerModel {
             return "Needs about 10 seconds of clear speech to remember a voice. \(subject.displayName) spoke for \(DisplayFormat.duration(subject.cleanSeconds))."
         }
         let who = isNameValid ? trimmedName : "them"
-        return "Saved on this iPhone only. Used to label \(who) automatically next time."
+        return copy.rememberHelp(who: who)
     }
 
     /// Slot colour for the dot inside the name field: the selected voice's colour, else the speaker's.

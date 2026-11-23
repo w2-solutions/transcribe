@@ -221,7 +221,7 @@ struct LibraryView: View {
                     .accessibilityIdentifier(AX.Library.deleteConfirm)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The audio and transcript are removed from this iPhone.")
+                Text(DeviceCopy().deleteRecordingMessage)
             }
     }
 
@@ -230,7 +230,7 @@ struct LibraryView: View {
             Text("No recordings yet")
                 .font(DS.Typo.headline)
                 .foregroundStyle(DS.Colour.ink)
-            Text("Tap the red button to record a conversation. Speakers are separated when you stop.")
+            Text(DeviceCopy().libraryEmptyHint)
                 .font(DS.Typo.subheadline)
                 .foregroundStyle(DS.Colour.secondary)
                 .fixedSize(horizontal: false, vertical: true)
@@ -262,7 +262,7 @@ struct LibraryView: View {
         }
         if case .folder = query.filter {
             let name = LibraryQuery.folderChipTitle(filter: query.filter, folders: folders.map { ($0.id, $0.name) })
-            return "Nothing in \(name) yet. Touch and hold a recording to move it here."
+            return DeviceCopy().emptyFolder(name)
         }
         return "Try another filter."
     }

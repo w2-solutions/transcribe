@@ -161,7 +161,7 @@ struct VoicesView: View {
                 }
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
-                Text("Voice profiles never leave this iPhone. Each device learns voices from its own microphone.")
+                Text(DeviceCopy().voicesFooter)
                     .font(DS.Typo.subheadline)
                     .lineSpacing(3)
                     .foregroundStyle(DS.Colour.secondary)

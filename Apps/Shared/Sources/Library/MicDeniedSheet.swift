@@ -1,5 +1,6 @@
 import SwiftUI
 import TranscribeDesign
+import TranscribeKit
 
 /// Shown when recording is attempted with the microphone permission denied (§6.1).
 struct MicDeniedSheet: View {
@@ -27,7 +28,7 @@ struct MicDeniedSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
                 .padding(.top, 16)
                 .accessibilityAddTraits(.isHeader)
-            Text("Transcribe needs the microphone to record. Audio stays on this iPhone.")
+            Text(DeviceCopy().micDeniedBody)
                 .font(DS.Typo.subheadline)
                 .foregroundStyle(DS.Colour.secondary)
                 .fixedSize(horizontal: false, vertical: true)

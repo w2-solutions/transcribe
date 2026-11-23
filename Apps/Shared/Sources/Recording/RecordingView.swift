@@ -3,8 +3,8 @@ import TranscribeCore
 import TranscribeDesign
 import TranscribeKit
 
-/// Screen 2 (§6.2), presented as a `fullScreenCover` over the Library. Minimise dismisses the cover while the
-/// recording carries on; Stop finalises it and replaces the stack with its transcript.
+/// Screen 2 (§6.2): a `fullScreenCover` over the Library on iPhone, its own Recording window on the Mac.
+/// Minimise dismisses it while the recording carries on; Stop finalises it and shows its transcript.
 struct RecordingView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(Router.self) private var router

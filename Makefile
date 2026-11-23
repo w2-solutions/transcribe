@@ -1,7 +1,8 @@
 DESTINATION := platform=iOS Simulator,name=iPhone 15,OS=27.0
+MAC_DESTINATION := platform=macOS
 DERIVED     ?= $(or $(TMPDIR),/tmp)/transcribe-dd
 
-.PHONY: project build test-kit test-ui sim shots models check-models archive
+.PHONY: project build build-mac test-kit test-ui test-ui-mac sim shots models check-models archive
 
 project:
 	./scripts/bootstrap.sh
@@ -22,11 +23,20 @@ archive: models
 build:
 	xcodebuild -project Transcribe.xcodeproj -scheme Transcribe -destination '$(DESTINATION)' -derivedDataPath '$(DERIVED)' build
 
+# The Mac app (Debug, signed to run locally). The models are bundled in every configuration; a Debug build
+# without them only warns.
+build-mac:
+	xcodebuild -project Transcribe.xcodeproj -scheme TranscribeMac -destination '$(MAC_DESTINATION)' -derivedDataPath '$(DERIVED)' build
+
 test-kit:
 	./scripts/test-kit.sh
 
 test-ui:
 	./scripts/test-ui.sh
+
+# Mac XCUITest: takes over the screen and mouse, so never run two at once.
+test-ui-mac:
+	PLATFORM=mac ./scripts/test-ui.sh
 
 # make sim SEED=library ROUTE=transcript:0 SCRIPT=newVoices SPEED=instant
 sim:

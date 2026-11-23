@@ -1,9 +1,10 @@
 #!/bin/bash
-# Checks a BundledModels folder against scripts/models.lock. Runs as the Transcribe target's pre-build phase.
+# Checks a BundledModels folder against scripts/models.lock. Runs as the pre-build phase of both app targets.
 #
 #   ./scripts/check-models.sh              <repo>/BundledModels; mode from Xcode's environment (below)
 #   ./scripts/check-models.sh --hash       also compare sha256 (= make check-models)
-#   ./scripts/check-models.sh --app PATH   PATH/BundledModels inside a built Transcribe.app; always strict
+#   ./scripts/check-models.sh --app PATH   BundledModels inside a built Transcribe.app (iPhone: PATH/BundledModels,
+#                                          Mac: PATH/Contents/Resources/BundledModels); always strict
 #
 # Modes (without --app):
 #   PLATFORM_NAME=iphonesimulator                 skip silently (simulator builds leave the models out)
@@ -43,7 +44,7 @@ done
 
 STRICT=0
 if [ -n "$APP" ]; then
-  DIR="$APP/BundledModels"
+  if [ -d "$APP/Contents/Resources" ]; then DIR="$APP/Contents/Resources/BundledModels"; else DIR="$APP/BundledModels"; fi
   STRICT=1
 else
   DIR="$ROOT/BundledModels"

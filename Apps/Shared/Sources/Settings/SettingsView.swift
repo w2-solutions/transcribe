@@ -99,7 +99,7 @@ struct SettingsView: View {
                     .accessibilityIdentifier(AX.Settings.acknowledgementsRow)
                     VStack(alignment: .leading, spacing: 0) {
                         Button { withAnimation(.snappy) { privacyExpanded.toggle() } } label: {
-                            ValueRow(systemImage: "lock.shield", tint: .neutral, title: "Privacy", value: "On this iPhone only",
+                            ValueRow(systemImage: "lock.shield", tint: .neutral, title: "Privacy", value: DeviceCopy().privacyValue,
                                      accessory: .none)
                         }
                         .buttonStyle(.plain)
@@ -107,7 +107,7 @@ struct SettingsView: View {
                         .accessibilityHint("Shows how your data is stored")
                         .accessibilityIdentifier(AX.Settings.privacyRow)
                         if privacyExpanded {
-                            Text("Audio, transcripts and voice profiles are stored only on this iPhone. Voice profiles are never synced or shared.")
+                            Text(DeviceCopy().privacyDetail)
                                 .font(DS.Typo.meta)
                                 .lineSpacing(3)
                                 .foregroundStyle(DS.Colour.secondary)
@@ -145,7 +145,7 @@ struct SettingsView: View {
         .task { await env.models.refresh() }
     }
 
-    /// Match scores and settings for tuning thresholds (no vectors, names, titles or text), on this iPhone's clipboard only.
+    /// Match scores and settings for tuning thresholds (no vectors, names, titles or text), on this device's clipboard only.
     private func copyLog() {
         do {
             Pasteboard.copyPrivate(try env.store.matchingLog())
