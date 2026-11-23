@@ -80,6 +80,34 @@ To check first on a real iPhone 15: that Parakeet TDT v3 loads (a different Para
 - The simulator cannot stand in for the real iPhone 15 on model loading, memory, speed or microphone behaviour.
 - Migrations are tested against a committed store written by the previous schema (`Tests/TranscribeKitTests/Fixtures/V1Library`).
 
+## Building and installing on the iPhone
+
+The phone is "Liam's iPhone" (iPhone 15), device ID `00008120-000A40D12E000032`. It must be paired with this Mac. Check with `xcrun devicectl list devices`: it should say `available (paired)`.
+
+Run from the repo root. `$DD` is any folder outside the repo for build output (a temp folder is fine).
+
+1. **Generate the project.** `Transcribe.xcodeproj` is not committed, so make it from `project.yml`:
+   `xcodegen generate`
+2. **Build for the device.** `project.yml` leaves the signing team empty on purpose, so pass it on the command line. Xcode then creates the signing profile itself:
+   `xcodebuild -project Transcribe.xcodeproj -scheme Transcribe -configuration Debug -destination 'id=00008120-000A40D12E000032' -derivedDataPath $DD DEVELOPMENT_TEAM=53FBF5CS9U -allowProvisioningUpdates build`
+   The Mac has two signing identities. Use team `53FBF5CS9U`; the app on the phone is signed with it. If the phone is new to the team, add `-allowProvisioningDeviceRegistration`.
+3. **Install.** This replaces the app and keeps its recordings and voices:
+   `xcrun devicectl device install app --device 00008120-000A40D12E000032 $DD/Build/Products/Debug-iphoneos/Transcribe.app`
+4. **Launch** (the phone must be unlocked):
+   `xcrun devicectl device process launch --device 00008120-000A40D12E000032 ai.w2solutions.transcribe`
+
+To check the result without touching the phone:
+
+- Still running (no crash on launch): `xcrun devicectl device info processes --device 00008120-000A40D12E000032 | grep Transcribe.app`
+- Store files: `xcrun devicectl device info files --device 00008120-000A40D12E000032 --domain-type appDataContainer --domain-identifier ai.w2solutions.transcribe --subdirectory "Library/Application Support"`
+  The library is `Transcribe/Library.store`. After the first launch of a V2 build there is also `Library.schema-v2` (a marker) and `Library.pre-v2-backup.store` (the copy taken before the upgrade).
+
+Rules:
+
+- A plain launch uses the real engine and the real library in `Transcribe/`. The fake engine (`-useFakeEngine`) keeps its data apart in `Transcribe-Fake/`.
+- A build with a newer store schema upgrades the library on first launch, and older builds cannot open it afterwards. Run the migration fixture test before installing such a build.
+- Never delete the app from the phone to fix an install problem: that deletes the recordings and voices.
+
 ## Subagents
 
 - **Every subagent runs on Opus 5.5** (`claude-opus-5-5`). Pass `model: "opus"` on every Agent tool call, and set the same model on every agent in a workflow script. This applies to all agent types (Explore, Plan, general-purpose, reviewers and the rest), even where the agent's own definition names a different model.
