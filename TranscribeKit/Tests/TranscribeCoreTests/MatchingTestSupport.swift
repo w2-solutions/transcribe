@@ -39,6 +39,25 @@ enum TV {
         ProfileCandidate(id: id, name: name, samples: axes.map(axis), modelKey: modelKey,
                          autoLabel: autoLabel, needsResample: needsResample)
     }
+    /// A profile with per-sample trust (default: all trusted) and negatives, using the full initialiser.
+    static func profile(_ id: UUID, name: String, axes: [Int], trusted: [Bool]? = nil, negatives: [VoiceVector],
+                        modelKey: String = TV.modelKey, autoLabel: Bool = true, needsResample: Bool = false) -> ProfileCandidate {
+        ProfileCandidate(id: id, name: name, samples: axes.map(axis),
+                         trusted: trusted ?? Array(repeating: true, count: axes.count), negatives: negatives,
+                         modelKey: modelKey, autoLabel: autoLabel, needsResample: needsResample)
+    }
+
+    /// A standard normal draw (Box–Muller, with `u1 = 1 − unit` so the logarithm never sees 0).
+    static func gaussian(_ rng: inout SplitMix64) -> Float {
+        let u1 = 1 - unit(&rng), u2 = unit(&rng)
+        return Float((-2 * Foundation.log(u1)).squareRoot() * Foundation.cos(2 * Double.pi * u2))
+    }
+
+    /// Uniform in [0, 1) from the top 53 bits.
+    static func unit(_ rng: inout SplitMix64) -> Double {
+        Double(rng.next() >> 11) * 0x1p-53
+    }
+
     static var liam: ProfileCandidate { profile(liamID, name: "Liam", axes: [liamAxis]) }
     static var karan: ProfileCandidate { profile(karanID, name: "Karan", axes: [karanAxis]) }
     static var mei: ProfileCandidate { profile(meiID, name: "Mei", axes: [meiAxis]) }

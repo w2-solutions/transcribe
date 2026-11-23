@@ -63,4 +63,37 @@ public struct VoiceVector: Sendable, Hashable {
         for (v, w) in items { for i in 0..<d { acc[i] += v.values[i] * Float(w) } }
         return VoiceVector(raw: acc)
     }
+
+    /// A speaker vector that resists spans of another voice (§1.11).
+    ///
+    /// Finds the weighted medoid (the item with the highest weighted cosine sum to all items, itself included;
+    /// ties to the lowest index), drops items under `dropBelow` cosine to it as long as at least `minKeptFraction`
+    /// of the total weight remains (otherwise keeps all), and returns the weighted mean of what is left with its
+    /// coherence: the weighted mean cosine of the used items to that vector. Nil if empty, the dimensions differ,
+    /// or the weighted mean is degenerate. Weights are expected to be positive.
+    public static func robustMean(_ items: [(vector: VoiceVector, weight: Double)], dropBelow: Float,
+                                  minKeptFraction: Double) -> (vector: VoiceVector, coherence: Float)? {
+        guard let d = items.first?.vector.dimension, items.allSatisfy({ $0.vector.dimension == d }) else { return nil }
+        if items.count == 1 { return (items[0].vector, 1) }
+
+        // Weighted medoid. Terms are summed in sorted order so the choice does not depend on the input order.
+        var medoid = 0
+        var bestSupport = -Double.infinity
+        for (i, a) in items.enumerated() {
+            let support = items.map { b in b.weight * Double(a.vector.cosine(b.vector)) }.sorted().reduce(0, +)
+            if support > bestSupport { bestSupport = support; medoid = i }
+        }
+
+        let centre = items[medoid].vector
+        let kept = items.filter { atLeast($0.vector.cosine(centre), dropBelow) }
+        let total = items.map(\.weight).sorted().reduce(0, +)
+        let keptWeight = kept.map(\.weight).sorted().reduce(0, +)
+        let used = keptWeight >= minKeptFraction * total - 1e-9 ? kept : items
+
+        guard let vector = weightedMean(used) else { return nil }
+        let usedWeight = used.map(\.weight).sorted().reduce(0, +)
+        guard usedWeight > 0 else { return nil }
+        let agreement = used.map { $0.weight * Double($0.vector.cosine(vector)) }.sorted().reduce(0, +)
+        return (vector, Float(agreement / usedWeight))
+    }
 }

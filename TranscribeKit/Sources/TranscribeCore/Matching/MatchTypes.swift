@@ -5,12 +5,28 @@ public struct MatchPolicy: Sendable, Equatable {
     public var autoLabelMargin: Float = 0.10
     public var askMin: Float = 0.40
     public var minIdentifySeconds: TimeInterval = 3
+    /// New profile, `addedFromRecording`, trust, automatic samples.
     public var minSampleSeconds: TimeInterval = 10
+    /// Adding to an existing person by naming or confirming; negatives; negative clean-up; cohort members.
+    public var minLearnSeconds: TimeInterval = 5
+    /// Applied to the trusted-only score of an auto-label before an automatic sample is stored.
     public var strongMatchMin: Float = 0.70
     public var strongMatchMargin: Float = 0.20
-    public var maxSamplesPerProfile = 8
+    public var minAutoSampleCoherence: Float = 0.5
+    public var maxSamplesPerProfile = 12
     public var duplicateCosine: Float = 0.95
     public var scoringTopK = 2
+    public var maxNegativesPerProfile = 8
+    /// Robust speaker vector: spans under this cosine to the weighted medoid are dropped...
+    public var spanDropBelow: Float = 0.35
+    /// ...as long as at least this fraction of the speech duration remains.
+    public var spanMinKeptFraction: Double = 0.5
+    /// Cohort collection by the store: newest recordings and vectors considered.
+    public var cohortMaxRecordings = 100
+    public var cohortMaxVectors = 300
+    /// Trace only: cohort score statistics over the top N cosines, once the cohort has at least this many vectors.
+    public var cohortStatsTopN = 20
+    public var cohortStatsMinCount = 30
     public init() {}
     public static let `default` = MatchPolicy()
 }
@@ -19,12 +35,25 @@ public struct ProfileCandidate: Sendable, Equatable {
     public let id: UUID
     public let name: String
     public let samples: [VoiceVector]
+    /// Same count as `samples`: whether each sample is trusted (§1.2). Untrusted samples only fill second place.
+    public let trusted: [Bool]
+    /// Voices the user said are not this person (§1.4).
+    public let negatives: [VoiceVector]
     public let modelKey: String          // EmbeddingModelID.key
     public let autoLabel: Bool
     public let needsResample: Bool
+
+    /// Legacy: every sample trusted, no negatives.
     public init(id: UUID, name: String, samples: [VoiceVector], modelKey: String, autoLabel: Bool, needsResample: Bool) {
-        self.id = id; self.name = name; self.samples = samples; self.modelKey = modelKey
-        self.autoLabel = autoLabel; self.needsResample = needsResample
+        self.init(id: id, name: name, samples: samples, trusted: Array(repeating: true, count: samples.count),
+                  negatives: [], modelKey: modelKey, autoLabel: autoLabel, needsResample: needsResample)
+    }
+
+    public init(id: UUID, name: String, samples: [VoiceVector], trusted: [Bool], negatives: [VoiceVector],
+                modelKey: String, autoLabel: Bool, needsResample: Bool) {
+        precondition(trusted.count == samples.count, "one trust flag per sample")
+        self.id = id; self.name = name; self.samples = samples; self.trusted = trusted; self.negatives = negatives
+        self.modelKey = modelKey; self.autoLabel = autoLabel; self.needsResample = needsResample
     }
 }
 
@@ -50,7 +79,18 @@ public enum MatchDecision: Sendable, Equatable {
 }
 
 public enum SampleOrigin: String, Sendable, Codable, CaseIterable {
-    case named, confirmed, strongMatch, addedFromRecording, merged
+    case named, confirmed, strongMatch, addedFromRecording, merged, corrected
+    /// Stored without the user vouching for this voice. `.merged` exists only on legacy rows.
+    public var isAutomatic: Bool { self == .strongMatch || self == .merged }
+}
+
+/// Trust is derived from a sample's origin and length, never stored (§1.2).
+public enum SampleTrust {
+    /// Not automatic and at least `minSampleSeconds` of clean speech. Anything else is untrusted: automatic,
+    /// or a short user sample.
+    public static func isTrusted(origin: SampleOrigin, speechSeconds: TimeInterval, policy: MatchPolicy = .default) -> Bool {
+        !origin.isAutomatic && speechSeconds >= policy.minSampleSeconds
+    }
 }
 
 public struct CuratedSample: Sendable, Equatable, Identifiable {
@@ -58,9 +98,28 @@ public struct CuratedSample: Sendable, Equatable, Identifiable {
     public let vector: VoiceVector
     public let origin: SampleOrigin
     public let addedAt: Date
-    public init(id: UUID, vector: VoiceVector, origin: SampleOrigin, addedAt: Date) {
-        self.id = id; self.vector = vector; self.origin = origin; self.addedAt = addedAt
+    public let speechSeconds: TimeInterval
+    public init(id: UUID, vector: VoiceVector, origin: SampleOrigin, addedAt: Date, speechSeconds: TimeInterval = 60) {
+        self.id = id; self.vector = vector; self.origin = origin; self.addedAt = addedAt; self.speechSeconds = speechSeconds
     }
+    public var isTrusted: Bool { SampleTrust.isTrusted(origin: origin, speechSeconds: speechSeconds) }
+}
+
+public struct CuratedNegative: Sendable, Equatable, Identifiable {
+    public let id: UUID
+    public let vector: VoiceVector
+    public let addedAt: Date
+    public let sourceSpeakerID: UUID?
+    public init(id: UUID, vector: VoiceVector, addedAt: Date, sourceSpeakerID: UUID?) {
+        self.id = id; self.vector = vector; self.addedAt = addedAt; self.sourceSpeakerID = sourceSpeakerID
+    }
+}
+
+public struct NegativeInsertResult: Sendable, Equatable {
+    public var keep: [CuratedNegative]    // the full resulting set (≤ max)
+    public var evicted: [UUID]
+    public var added: Bool                // false when skipped as a duplicate
+    public init(keep: [CuratedNegative], evicted: [UUID], added: Bool) { self.keep = keep; self.evicted = evicted; self.added = added }
 }
 
 public struct SampleInsertResult: Sendable, Equatable {

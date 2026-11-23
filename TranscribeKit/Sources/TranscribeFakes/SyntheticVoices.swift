@@ -25,6 +25,38 @@ public enum SyntheticVoices {
         return VoiceVector(raw: raw)!
     }
 
+    /// Variant directions 56..<64 are reserved as "setting" axes (a room, a car, a phone line) for `mix`.
+    public static let settingAxes = 56..<64
+
+    /// A voice made of several people and an optional shared setting:
+    /// `Σ w·base(p) + sw·variants[axis] + √(1 − Σw²)·variants[variant]`, where Σw² counts the setting weight too.
+    /// Bases and variants are orthonormal, so the cosine of two mixes is the sum of the products of their shared
+    /// weights (people and setting); distinct residual variants contribute nothing.
+    ///
+    /// Variants in use (keep each test's residual unique): 1–6, 11, 12, 20–25 (seeds and scripts), 30–43,
+    /// 44–49 (stage-2 tests), 50–55; 56–63 are setting axes.
+    public static func mix(_ people: [(SyntheticPerson, Float)], setting: (axis: Int, weight: Float)? = nil,
+                           variant: Int) -> VoiceVector {
+        precondition((0..<settingAxes.lowerBound).contains(variant), "variant must be below the setting axes")
+        if let setting { precondition(settingAxes.contains(setting.axis), "setting axis must be in 56..<64") }
+        let weights = people.map { Double($0.1) } + [setting.map { Double($0.weight) } ?? 0]
+        let sumSquares = weights.map { $0 * $0 }.reduce(0, +)
+        precondition(sumSquares <= 1 + 1e-9, "weights must satisfy Σw² ≤ 1")
+        var raw = [Double](repeating: 0, count: dimension)
+        for (person, w) in people {
+            let b = bases[person.rawValue]
+            for i in raw.indices { raw[i] += Double(w) * b[i] }
+        }
+        if let setting {
+            let o = variants[setting.axis]
+            for i in raw.indices { raw[i] += Double(setting.weight) * o[i] }
+        }
+        let residual = Swift.max(0, 1 - sumSquares).squareRoot()
+        let r = variants[variant]
+        for i in raw.indices { raw[i] += residual * r[i] }
+        return VoiceVector(raw: raw.map(Float.init))!
+    }
+
     // MARK: - Construction (Double precision so cosines are exact to ~1e-7)
 
     private static let bases: [[Double]] = {

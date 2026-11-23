@@ -36,6 +36,7 @@ Both artifacts are private to the owner's Claude account. Read them with the Art
 
 - **Voice profiles are per-device only** (decided 2026-11-23). Reason: a voice profile depends on the microphone it was recorded with, so a profile from the iPhone mic would not transfer cleanly to the Mac mic. Do not add iCloud or any cross-device sync for voices.
 - **Minimum OS is iOS 27 and macOS 27** (decided 2026-11-23, the releases current on that date; iOS was at 27.2.1). Liquid Glass can be assumed everywhere, so write no fallback styling for older systems.
+- **Voice learning** (decided 2026-11-23): learn from every naming, confirmation, correction and rejection, as above. Store schema V2 adds negatives and per-speaker match traces. `TranscribeSchemaV1` is frozen: never edit it. Any schema change adds a new version, a migration stage and a fixture test. Builds from before V2 cannot open a V2 store.
 
 ## Speech stack (decided 2026-11-23)
 
@@ -53,10 +54,15 @@ Rules that follow from the research:
 
 - Run transcription and speaker separation one after the other, never at once, and lower the diariser batch size (about 8) on iPhone to limit memory.
 - Store the embedding model name and version with every voice profile. A model change means re-enrolling everyone.
-- Keep several embeddings per person (start with up to 8), not one average. Add one only when the user confirms a name or the match is very strong.
+- Keep several embeddings per person (up to 12), not one average. Store one whenever the user names, confirms or corrects a saved person (5 s of clean speech or more; under 10 s it is a "short" sample). Store one automatically only when the person's user-confirmed samples alone match at 0.70 or more, 0.20 clear of the runner-up, from 10 s of coherent speech (span coherence ≥ 0.5).
+- Score = mean of the two best sample cosines, and the best one must be a user-confirmed sample of 10 s or more. Automatic and short samples can only fill second place.
+- When the user says a voice is not P (No on a suggestion, naming a suggested voice as someone else, or correcting a wrong label), store that voice as a negative for P (5 s or more, up to 8 per person). P is not offered for a voice at least as close to a negative as to P itself. A blocked P still counts as runner-up. Naming that voice as P later deletes the conflicting negatives. With Remember off, nothing is stored.
+- The auto-label margin also counts unnamed voices from the last 100 recordings that do not score as P (the cohort), so a recurring never-named person cannot be auto-labelled as P.
+- A speaker's vector is the weighted mean of its span embeddings after dropping spans under 0.35 cosine to the weighted medoid, as long as at least half the speech remains.
+- No per-person thresholds. Thresholds change only after reading real numbers from Settings → Copy voice matching log.
 - Never name a single short turn on its own. Name the whole speaker for the recording; leave overlapping speech out of embeddings.
 - Three outcomes for a match: auto-label, ask "Is this Karan?", or leave as Unknown. A wrong name is worse than Unknown.
-- Starting thresholds (untested guesses to tune on real recordings): auto-label at cosine similarity 0.55 or more and 0.10 clear of the runner-up; ask between 0.40 and 0.55; need about 10 s of clean speech to create a profile and 3 s to identify.
+- Starting thresholds (untested guesses to tune on real recordings): auto-label at cosine similarity 0.55 or more and 0.10 clear of the runner-up; ask between 0.40 and 0.55; need about 10 s of clean speech to create a profile, 5 s to add a sample or a negative to an existing person, and 3 s to identify.
 - Live text while recording is display-only and uses `FluidLiveRecording.liveConfig`: a 2 s step with 1 s of lookahead (first words at about 3 s, then every 2 s; measured on a Mac, not yet on an iPhone 15). Do not use FluidAudio's `.streaming` preset: it decodes 11 s at a time, so the first words take 13 s. Each step is one model run, so check battery and heat on the iPhone before going below 2 s.
 - The Community-1 and Parakeet models are CC-BY-4.0, so the app needs an attributions screen.
 
@@ -72,6 +78,7 @@ To check first on a real iPhone 15: that Parakeet TDT v3 loads (a different Para
 - Shared UI tests need two per-platform helpers: `click()` on Mac versus `tap()` on iPhone, and a text's string is in `value` on Mac but `label` on iPhone.
 - Every control gets an `accessibilityIdentifier` from the first screen.
 - The simulator cannot stand in for the real iPhone 15 on model loading, memory, speed or microphone behaviour.
+- Migrations are tested against a committed store written by the previous schema (`Tests/TranscribeKitTests/Fixtures/V1Library`).
 
 ## Subagents
 
@@ -80,5 +87,5 @@ To check first on a real iPhone 15: that Parakeet TDT v3 loads (a different Para
 
 ## Open decisions
 
-- Match thresholds and minimum speech for a voice profile (tune on real recordings).
+- Match thresholds and minimum speech (tune from the matching log on real recordings; also decide whether short probes, under 8 s, should be limited to asking).
 - App name ("Transcribe" is a working name).

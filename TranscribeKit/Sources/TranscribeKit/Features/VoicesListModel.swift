@@ -80,6 +80,20 @@ public struct VoicesListModel {
         return text
     }
 
+    /// Voice detail caption under a sample: where it came from, plus " · short sample" for a user sample under 10 s.
+    public static func sampleCaption(origin: SampleOrigin, speechSeconds: Double) -> String {
+        let base = switch origin {
+        case .named: "Named by you"
+        case .confirmed: "Confirmed by you"
+        case .corrected: "Added when not recognised"
+        case .addedFromRecording: "Added by you"
+        case .strongMatch: "Added automatically"
+        case .merged: "Merged from another voice"
+        }
+        let isShort = !origin.isAutomatic && speechSeconds < MatchPolicy.default.minSampleSeconds
+        return isShort ? base + " · short sample" : base
+    }
+
     /// Bars from the newest sample whose source recording still exists and has peaks.
     static func bars(for profile: VoiceProfile, recordingsByID: [UUID: Recording]) -> [Float] {
         for sample in profile.sortedSamples.reversed() {

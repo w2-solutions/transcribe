@@ -181,20 +181,36 @@ extension ProcessingCoordinator {
         let eligible = candidates.filter { !$0.samples.isEmpty && !$0.needsResample }
         let probes = try await lane { try store.probes(for: id) }
         let decisions: [SpeakerKey: MatchDecision]
+        let traces: [SpeakerKey: MatchTrace]
         if !options.recogniseVoices || eligible.isEmpty {
             let reason = options.recogniseVoices ? ProcessingPipeline.noSavedVoicesReason : ProcessingPipeline.recogniseOffReason
             updateJob(id) { $0.states[.matching] = .skipped(reason) }
             decisions = Dictionary(probes.map { ($0.key, MatchDecision.unknown(.noEligibleProfiles)) },
                                    uniquingKeysWith: { a, _ in a })
+            traces = [:]
         } else {
             try await lane { try store.setStage(.matching, queueReason: nil, for: id) }
             let names = eligible.map(\.name)
             updateJob(id) { $0.comparedWith = names; $0.states[.matching] = .active(fraction: nil) }
-            decisions = VoiceMatcher.decide(probes: probes, profiles: candidates, modelKey: modelKey, policy: policy)
+            let cohort = try await lane { try store.matchCohort(modelKey: modelKey, excludingRecording: id) }
+            let run = VoiceMatcher.decideWithTrace(probes: probes, profiles: candidates, modelKey: modelKey,
+                                                   policy: policy, cohort: cohort)
+            decisions = run.decisions
+            traces = run.traces
+            for trace in run.traces.values.sorted(by: { $0.key < $1.key }) { Self.logTrace(trace, job: id) }
             updateJob(id) { $0.states[.matching] = .done }
         }
         let policy = self.policy
-        return try await lane { try store.applyMatches(id: id, decisions: decisions, policy: policy) }
+        return try await lane { try store.applyMatches(id: id, decisions: decisions, traces: traces, policy: policy) }
+    }
+
+    /// One line per speaker for tuning: numbers are public, profile ids private.
+    static func logTrace(_ t: MatchTrace, job id: UUID) {
+        func f(_ x: Float?) -> String { x.map { String(format: "%.4f", $0) } ?? "-" }
+        let cohortMax = t.profiles.compactMap(\.cohortMax).max()
+        let blocked = t.profiles.filter(\.blocked).count
+        let profile = t.profileID?.uuidString ?? "-"
+        Self.log.info("job \(id, privacy: .public): match \(t.key, privacy: .public) \(t.kind.rawValue, privacy: .public) reason=\(t.reason, privacy: .public) profile=\(profile, privacy: .private) score=\(f(t.score), privacy: .public) margin=\(f(t.margin), privacy: .public) runnerUp=\(f(t.runnerUp), privacy: .public) cohortMax=\(f(cohortMax), privacy: .public) blocked=\(blocked, privacy: .public)")
     }
 
     /// Speaker turns, ordinals, clean speech and one voice vector per speaker (§5.6 step 2).
@@ -216,23 +232,28 @@ extension ProcessingCoordinator {
             try Task.checkCancellation()
             let spans = CleanSpeech.spans(for: key, in: segments, config: alignment)
             var vector: VoiceVector?
+            var coherence: Float?
             if !spans.isEmpty {
                 let embedSpans = CleanSpeech.embeddingSpans(spans, config: alignment)
                 do {
                     let vectors = try await engine.embedVoice(audio, spans: embedSpans)
-                    if vectors.count == embedSpans.count {
-                        vector = VoiceVector.weightedMean(zip(vectors, embedSpans).map { ($0, $1.duration) })
+                    if vectors.count == embedSpans.count,
+                       let robust = VoiceVector.robustMean(zip(vectors, embedSpans).map { ($0, $1.duration) },
+                                                           dropBelow: policy.spanDropBelow,
+                                                           minKeptFraction: policy.spanMinKeptFraction) {
+                        vector = robust.vector
+                        coherence = robust.coherence
                     }
                 } catch {
                     if Task.isCancelled { throw CancellationError() }
                 }
-                if vector == nil { vector = separation.centroids[key] }
-                if let v = vector, v.dimension != model.dimension { vector = nil }
+                if vector == nil { vector = separation.centroids[key]; coherence = nil }
+                if let v = vector, v.dimension != model.dimension { vector = nil; coherence = nil }
             }
             drafts.append(SpeakerDraft(key: key, ordinal: ordinal, cleanSeconds: CleanSpeech.seconds(spans),
                                        totalSeconds: CleanSpeech.totalSeconds(for: key, in: segments),
                                        turnCount: turns.filter { $0.speakerKey == key }.count,
-                                       vector: vector, embeddingModel: model))
+                                       vector: vector, embeddingModel: model, coherence: coherence))
         }
         let flagged = turns.flatMap(\.words)
         let words = flagged.count == document.words.count ? flagged : document.words

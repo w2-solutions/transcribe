@@ -45,7 +45,9 @@ final class NamingSpyStore: LibraryStoring {
     func checkpointSeparation(id: UUID, document: TranscriptDocument, speakers: [SpeakerDraft]) throws {}
     func probes(for id: UUID) throws -> [SpeakerProbe] { [] }
     func matchCandidates(modelKey: String) throws -> [ProfileCandidate] { [] }
-    func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], policy: MatchPolicy) throws -> ProcessingOutcome { .init() }
+    func matchCohort(modelKey: String, excludingRecording: UUID) throws -> [VoiceVector] { [] }
+    func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], traces: [SpeakerKey: MatchTrace],
+                      policy: MatchPolicy) throws -> ProcessingOutcome { .init() }
     func finishWithoutMatching(id: UUID, document: TranscriptDocument?, noSpeech: Bool) throws -> ProcessingOutcome { .init() }
     func markFailed(id: UUID, message: String) throws {}
     func incrementAttempt(id: UUID) throws -> Int { 0 }
@@ -69,6 +71,8 @@ final class NamingSpyStore: LibraryStoring {
     func forgetProfile(_ profileID: UUID) throws {}
     func addSample(profileID: UUID, fromSpeaker recordingSpeakerID: UUID) throws -> NameResult { nameResult }
     func sampleCandidates(for profileID: UUID) throws -> [SampleCandidate] { [] }
+    func removeSample(id: UUID) throws {}
+    func matchingLog() throws -> String { "{}" }
 }
 
 @Suite("NameSpeakerModel")
@@ -190,6 +194,30 @@ struct NameSpeakerModelTests {
         #expect(m.action == .name(.newPerson(name: "Mei"), remember: false))
     }
 
+    @Test func sixSecondsCanBeAddedToASavedVoiceButNotANewOne() throws {
+        let f = try Fixture(.shortKaran)
+        // Recording G, S2: 6.2 s of clean speech, unnamed.
+        let m = try f.model(Seeds.ID.recordingG, "S2")
+        #expect(m.remember)
+        #expect(m.selection == .newPerson)
+        #expect(!m.rememberEnabled)
+        #expect(m.rememberHelp == "Needs about 10 seconds of clear speech to remember a voice. Speaker 2 spoke for 0:06.")
+        m.select(.profile(Seeds.ID.karan))
+        #expect(m.rememberEnabled)
+        #expect(m.rememberHelp == "Adds this recording to Karan's voice.")
+        #expect(m.action == .name(.existing(profileID: Seeds.ID.karan), remember: true))
+    }
+
+    @Test func underFiveSecondsSavedVoiceHelp() throws {
+        let f = try Fixture(.library)
+        // Recording A, Karan: 4.6 s of clean speech.
+        let m = try f.model(Seeds.ID.recordingA, "S2")
+        m.select(.profile(Seeds.ID.liam))
+        #expect(m.rememberHelp == "Needs about 5 seconds of clear speech to add to Liam's voice. Karan spoke for 0:04.")
+        #expect(!m.rememberEnabled)
+        #expect(!m.rememberEffective)
+    }
+
     @Test func suggestionIsPrefilledAndConfirmed() throws {
         let f = try Fixture(.askKaran)
         let m = try f.model(Seeds.ID.recordingD, "S2")
@@ -198,6 +226,34 @@ struct NameSpeakerModelTests {
         #expect(m.action == .confirmSuggestion)
         m.select(.profile(Seeds.ID.liam))
         #expect(m.action == .name(.existing(profileID: Seeds.ID.liam), remember: true))
+    }
+
+    @Test func rememberOffOnTheSuggestedVoiceDoesNotConfirm() throws {
+        let f = try Fixture(.askKaran)
+        let spy = NamingSpyStore(context: f.context)
+        let m = try f.model(Seeds.ID.recordingD, "S2")
+        #expect(m.selection == .profile(Seeds.ID.karan) && m.rememberEnabled)
+        m.remember = false
+        // Confirming would store a sample; naming with Remember off stores nothing (D14).
+        #expect(m.action == .name(.existing(profileID: Seeds.ID.karan), remember: false))
+        try m.save(using: spy)
+        #expect(spy.calls == [.name(Seeds.ID.recordingD, "S2", .existing(profileID: Seeds.ID.karan), false)])
+    }
+
+    @Test func aShortNewPersonStillPassesRememberForTheNegative() throws {
+        let f = try Fixture(.shortKaran)
+        // Recording G, S2: 6.2 s. Too short for a new voice (the toggle is off and disabled), but long enough
+        // for a negative, so Save passes the user's choice and the store creates no profile.
+        let m = try f.model(Seeds.ID.recordingG, "S2")
+        m.name = "Mei"
+        #expect(!m.rememberEffective)
+        #expect(m.action == .name(.newPerson(name: "Mei"), remember: true))
+        // Switched off on a saved voice, then a new name: the user's "off" is kept.
+        m.select(.profile(Seeds.ID.karan))
+        m.remember = false
+        m.name = "Mei"
+        #expect(m.selection == .newPerson)
+        #expect(m.action == .name(.newPerson(name: "Mei"), remember: false))
     }
 
     @Test func clipPeaksComeFromTheClipsSliceOfTheRecording() {

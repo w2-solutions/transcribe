@@ -47,6 +47,31 @@ struct DeviceReconcileTests {
         #expect(decisions["S1"] == .unknown(.noEligibleProfiles))
     }
 
+    @Test func anotherDeviceWipesNegativesTracesAndCoherence() throws {
+        let h = try WP3Harness(device: "phone-1")
+        defer { h.cleanup() }
+        try h.seed(.askKaran)
+        _ = try h.store.reconcileDevice()
+        try h.store.rejectSuggestion(recordingID: Seeds.ID.recordingD, key: "S2")
+        let id = try h.separatedRecording(turns: SeedContent.conversationB, drafts: [
+            WP3Docs.draft("S1", 1, clean: 12, vector: SyntheticVoices.vector(near: .liam, cosine: 0.85, variant: 44)),
+            WP3Docs.draft("S2", 2, clean: 11, vector: SyntheticVoices.vector(near: .karan, cosine: 0.8, variant: 45))])
+        try h.matchLikeThePipeline(id)
+        try h.store.moveAllTurns(recordingID: id, from: "S1", to: "S2")   // keeps S1's trace on the recording
+        #expect(try h.count(VoiceNegative.self) == 2)   // the reject, and Liam's from the moved auto-label
+        #expect(try h.recording(id).speakers.allSatisfy { $0.matchTraceData != nil && $0.vectorCoherence != nil })
+        #expect(try h.recording(id).movedSpeakerTracesData != nil)
+
+        let restored = try reopened(h, device: "phone-2")
+        #expect(try restored.store.reconcileDevice() == true)
+        #expect(try restored.count(VoiceNegative.self) == 0)
+        let profiles = try restored.context.fetch(FetchDescriptor<VoiceProfile>())
+        #expect(profiles.allSatisfy { $0.negatives.isEmpty })
+        let speakers = try restored.context.fetch(FetchDescriptor<RecordingSpeaker>())
+        #expect(!speakers.isEmpty && speakers.allSatisfy { $0.matchTraceData == nil && $0.vectorCoherence == nil })
+        #expect(try restored.context.fetch(FetchDescriptor<Recording>()).allSatisfy { $0.movedSpeakerTracesData == nil })
+    }
+
     @Test func namingAfterAWipeResamplesTheProfile() throws {
         let h = try WP3Harness(device: "phone-1")
         defer { h.cleanup() }

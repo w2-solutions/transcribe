@@ -14,6 +14,8 @@ public struct FakeScript: Sendable {
     public var persons: [SpeakerKey: SyntheticPerson]       // voice used for SyntheticAudio
     public var liveTimeline: [(at: TimeInterval, text: LiveText)]
     public var behaviour: Behaviour
+    /// Per-span overrides for `embedVoice`: the first entry whose range contains a span's midpoint wins.
+    public var spanVectors: [(range: TimeRange, vector: VoiceVector)] = []
 
     /// Segments with the synthetic person speaking each one (for SyntheticAudio).
     public var audioSegments: [(TimeRange, SyntheticPerson)] {

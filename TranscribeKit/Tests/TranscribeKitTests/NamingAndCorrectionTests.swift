@@ -57,7 +57,8 @@ struct NamingAndCorrectionTests {
         let result = try h.store.nameSpeaker(recordingID: b, key: "S1", as: .newPerson(name: "liam"), remember: true)
         #expect(result.profileID == liam.id && result.sampleStored)
         #expect(try h.count(VoiceProfile.self) == 1)
-        #expect(liam.samples.count == 4 && liam.sortedSamples.last?.origin == .confirmed)
+        // The voice was unnamed, so naming it is a correction of a miss, not a confirmation.
+        #expect(liam.samples.count == 4 && liam.sortedSamples.last?.origin == .corrected)
         #expect(try h.recording(b).speaker("S1")?.profile?.id == liam.id)
     }
 
@@ -127,7 +128,8 @@ struct NamingAndCorrectionTests {
         #expect(s1.rejectedProfileIDs == [liam.id] && s1.profile?.id == karan.id && s1.label == .named)
         #expect(s1.colourSlot == karan.colourSlot)
         #expect(try h.recording(id).speaker("S2")?.colourSlot != karan.colourSlot)
-        #expect(karan.samples.contains { $0.sourceSpeakerID == s1.id && $0.origin == .confirmed })
+        #expect(karan.samples.contains { $0.sourceSpeakerID == s1.id && $0.origin == .corrected })
+        #expect(liam.negatives.count == 1 && liam.negatives[0].sourceSpeakerID == s1.id)
         #expect(try !h.recording(id).hasUnseenResult)
     }
 
@@ -201,6 +203,7 @@ struct NamingAndCorrectionTests {
         let r = try h.recording(id)
         #expect(!liam.samples.contains { $0.sourceSpeakerID == s1ID })
         #expect(liam.samples.count == 3 && !liam.needsResample)
+        #expect(liam.negatives.count == 1)
         #expect(r.speaker("S1") == nil)                        // no turns left: never waits for a name
         #expect(!liam.speakers.contains { $0.recording?.id == id })
         #expect(r.transcript?.turns.allSatisfy { $0.effectiveSpeakerKey == "S2" } == true)

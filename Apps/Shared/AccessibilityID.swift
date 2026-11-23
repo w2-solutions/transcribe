@@ -163,6 +163,9 @@ enum AX {
         static let footnote = "voiceDetail.footnote"
         static let toast = "voiceDetail.toast"                    // WP7 addition: "Sample added" / skip reason
         static let showAllAppearances = "voiceDetail.showAllAppearances"   // WP7 addition
+        static func sampleOrigin(_ i: Int) -> String { "voiceDetail.sample.\(i).origin" }      // "Named by you" …
+        static func sampleRemove(_ i: Int) -> String { "voiceDetail.sample.\(i).remove" }      // context-menu item
+        static let removeSampleConfirm = "voiceDetail.removeSampleConfirm"
         enum Edit { static let sheet = "voiceEdit.sheet"; static let nameField = "voiceEdit.nameField"; static let isMeToggle = "voiceEdit.isMeToggle"; static let saveButton = "voiceEdit.saveButton"; static let cancelButton = "voiceEdit.cancelButton" }
         enum Merge { static let sheet = "voiceMerge.sheet"; static func target(_ slug: String) -> String { "voiceMerge.target.\(slug)" }; static let confirm = "voiceMerge.confirm"; static let cancelButton = "voiceMerge.cancelButton" }
         enum AddSample { static let sheet = "voiceAddSample.sheet"; static func candidate(_ i: Int) -> String { "voiceAddSample.candidate.\(i)" }; static let cancelButton = "voiceAddSample.cancelButton"; static let emptyState = "voiceAddSample.emptyState" }
@@ -183,6 +186,8 @@ enum AX {
         static let privacyRow = "settings.privacyRow"
         static let versionRow = "settings.versionRow"
         static let footer = "settings.footer"
+        static let copyMatchLogRow = "settings.copyMatchLogRow"
+        static let copiedToast = "settings.copiedToast"
     }
 
     enum ModelSettings {

@@ -47,12 +47,13 @@ struct MergeForgetTests {
         let karan = try #require(try h.profile(named: "Karan"))
         try h.store.setIsMe(profileID: kay.id)
         let slotBefore = try #require(try h.recording(c).speaker("S2")?.colourSlot)
+        let cS2 = try #require(try h.recording(c).speaker("S2"))
 
         try h.store.mergeProfiles(source: kay.id, into: karan.id)
         #expect(try h.profile(named: "Kay") == nil)
         let s2 = try #require(try h.recording(c).speaker("S2"))
         #expect(s2.profile?.id == karan.id && s2.colourSlot == slotBefore && s2.displayName == "Karan")
-        #expect(karan.samples.count == 3 && karan.samples.contains { $0.origin == .merged })
+        #expect(karan.samples.count == 3 && karan.samples.contains { $0.origin == .named && $0.sourceSpeakerID == cS2.id })
         let liamIsMe = try #require(try h.profile(named: "Liam")).isMe
         #expect(karan.isMe && !liamIsMe)
         #expect(try h.recording(c).searchText.contains("karan"))
@@ -67,7 +68,7 @@ struct MergeForgetTests {
         let karan = try #require(try h.profile(named: "Karan"))
         let source = VoiceProfile(name: "K2", colourSlot: 4, embeddingModelKey: EmbeddingModelID.fake.key, now: Seeds.Dates.d)
         h.context.insert(source)
-        for v in 0..<7 {   // seven distinct voices near Karan (pairwise cosine 0.25)
+        for v in 0..<11 {   // eleven distinct voices near Karan (pairwise cosine 0.25): 2 + 11 = 13, one over the cap
             let sample = VoiceSample(vector: SyntheticVoices.vector(near: .karan, cosine: 0.5, variant: 30 + v),
                                      embeddingModelKey: EmbeddingModelID.fake.key, origin: .confirmed,
                                      addedAt: Seeds.Dates.d.addingTimeInterval(Double(v)), speechSeconds: 12)
@@ -79,6 +80,36 @@ struct MergeForgetTests {
         #expect(karan.samples.count == MatchPolicy.default.maxSamplesPerProfile)
         #expect(karan.samples.contains { $0.origin == .named })          // the first named sample survives
         #expect(try h.count(VoiceProfile.self) == 2)
+    }
+
+    @Test func mergeIntoAFullDestinationKeepsTheNewestNegatives() throws {
+        let h = try WP3Harness()
+        defer { h.cleanup() }
+        try h.seed(.library)
+        let karan = try #require(try h.profile(named: "Karan"))
+        let source = VoiceProfile(name: "K2", colourSlot: 4, embeddingModelKey: EmbeddingModelID.fake.key, now: Seeds.Dates.d)
+        h.context.insert(source)
+        let day: TimeInterval = 86_400
+        func negative(variant: Int, day d: Double, on p: VoiceProfile) -> VoiceNegative {
+            // Distinct voices (pairwise cosine 0.25) from no speaker in the library.
+            let n = VoiceNegative(vector: SyntheticVoices.vector(near: .stranger, cosine: 0.5, variant: variant),
+                                  embeddingModelKey: EmbeddingModelID.fake.key,
+                                  addedAt: Seeds.Dates.a.addingTimeInterval(d * day), speechSeconds: 8)
+            h.context.insert(n)
+            n.profile = p
+            return n
+        }
+        // Karan is at the cap with d1…d8 (days 10 to 17); K2 has two older ones (days 1 and 2).
+        let dst = (0..<8).map { negative(variant: 30 + $0, day: Double(10 + $0), on: karan) }
+        _ = (0..<2).map { negative(variant: 38 + $0, day: Double(1 + $0), on: source) }
+        try h.context.save()
+        let dstVectors = dst.map(\.vectorData)
+
+        try h.store.mergeProfiles(source: source.id, into: karan.id)
+        // The newest eight overall are Karan's own: no newer negative is dropped for an older moved one.
+        #expect(karan.negatives.count == MatchPolicy.default.maxNegativesPerProfile)
+        #expect(Set(karan.negatives.map(\.vectorData)) == Set(dstVectors))
+        #expect(try h.count(VoiceNegative.self) == 8)
     }
 
     @Test func forgetAndMergeRejectionsFollowTheProfile() throws {
