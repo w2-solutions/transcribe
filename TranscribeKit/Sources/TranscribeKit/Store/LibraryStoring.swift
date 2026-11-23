@@ -1,0 +1,64 @@
+import Foundation
+import SwiftData
+import TranscribeCore
+
+@MainActor
+public protocol LibraryStoring: AnyObject, Sendable {
+    var context: ModelContext { get }
+
+    // MARK: Device (per-device voices)
+    /// Compares the stored install id with DeviceIdentity. On mismatch: deletes every VoiceSample,
+    /// sets needsResample on every profile, stores the new id. Returns true if a wipe happened.
+    func reconcileDevice() throws -> Bool
+
+    // MARK: Recording lifecycle
+    func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws   // stage .capturing
+    func finishCapture(id: UUID, audio: CapturedAudio, language: LanguageHint) throws                         // → .queued
+    func discardRecording(id: UUID) throws                                                                   // deletes row + file
+    func snapshot(of id: UUID) throws -> RecordingSnapshot
+    func setStage(_ stage: RecordingStage, queueReason: QueueReason?, for id: UUID) throws
+    /// → .transcribed; sets previewText, searchText, asrModelID, transcriptData (paragraph turns).
+    func checkpointTranscript(id: UUID, document: TranscriptDocument) throws
+    /// → .separated; replaces speakers with drafts (provisional slots via ColourAssigner without profiles).
+    func checkpointSeparation(id: UUID, document: TranscriptDocument, speakers: [SpeakerDraft]) throws
+    func probes(for id: UUID) throws -> [SpeakerProbe]
+    func matchCandidates(modelKey: String) throws -> [ProfileCandidate]
+    /// → .ready; applies labels, colour slots, strong-match samples, hasUnseenResult; returns counts.
+    func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], policy: MatchPolicy) throws -> ProcessingOutcome
+    /// → .ready with speaker-less transcript (no speech, identify-off, or recognise-off without matching).
+    func finishWithoutMatching(id: UUID, document: TranscriptDocument?, noSpeech: Bool) throws -> ProcessingOutcome
+    func markFailed(id: UUID, message: String) throws
+    /// Counts one processing attempt, persisted before the run starts so a run the OS kills still counts.
+    func incrementAttempt(id: UUID) throws -> Int
+    /// Gives back an attempt whose run was pre-empted (capture, background expiry, models missing, cancelled).
+    func releaseAttempt(id: UUID) throws
+    func resetForRetry(id: UUID) throws                       // attemptCount = 0, failure cleared, → .queued
+    func recoveryCandidates() throws -> [RecoverySnapshot]    // stage < .ready (including .capturing)
+    func repairCaptured(id: UUID, duration: TimeInterval, peaks: [Float]) throws   // after WAVRepair → .queued
+
+    // MARK: Library edits
+    func rename(id: UUID, title: String?) throws
+    func setFavourite(id: UUID, _ isFavourite: Bool) throws
+    func markSeen(id: UUID) throws
+    func delete(id: UUID) throws                              // row, speakers, audio file; samples keep vectors
+    func createFolder(name: String) throws -> UUID
+    func renameFolder(id: UUID, name: String) throws
+    func deleteFolder(id: UUID) throws
+    func move(recordingID: UUID, toFolder folderID: UUID?) throws
+
+    // MARK: Speakers and voices
+    func nameSpeaker(recordingID: UUID, key: SpeakerKey, as target: NameTarget, remember: Bool) throws -> NameResult
+    func confirmSuggestion(recordingID: UUID, key: SpeakerKey) throws -> NameResult
+    func rejectSuggestion(recordingID: UUID, key: SpeakerKey) throws
+    func reassignTurn(recordingID: UUID, turnID: UUID, to target: TurnTarget) throws
+    /// Whole-speaker "Same as Speaker N": moves every turn, rolls back a wrong auto-label or name, removes the
+    /// emptied speaker. One transaction.
+    func moveAllTurns(recordingID: UUID, from source: SpeakerKey, to target: SpeakerKey) throws
+    func setAutoLabel(profileID: UUID, _ on: Bool) throws
+    func setIsMe(profileID: UUID?) throws                    // at most one profile is "me"
+    func renameProfile(profileID: UUID, name: String) throws
+    func mergeProfiles(source: UUID, into target: UUID) throws
+    func forgetProfile(_ profileID: UUID) throws              // keeps nameSnapshot on every speaker
+    func addSample(profileID: UUID, fromSpeaker recordingSpeakerID: UUID) throws -> NameResult
+    func sampleCandidates(for profileID: UUID) throws -> [SampleCandidate]
+}

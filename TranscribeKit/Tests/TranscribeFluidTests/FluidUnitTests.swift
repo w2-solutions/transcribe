@@ -1,0 +1,699 @@
+@preconcurrency import AVFoundation
+import CoreML
+import FluidAudio
+import Foundation
+import Testing
+import TranscribeCore
+@testable import TranscribeFluid
+
+// Tests that need no models and no microphone. The model-backed tests are in FluidEngineTests.swift.
+
+@Suite("LanguageMapping")
+struct LanguageMappingTests {
+    @Test("Every Parakeet v3 language maps to a FluidAudio language with the same code",
+          arguments: Languages.parakeetV3.map(\.code))
+    func everyParakeetLanguageMaps(code: String) throws {
+        let language = try #require(LanguageMapping.fluid(.language(code)))
+        #expect(language.rawValue == code)
+    }
+
+    @Test func automaticIsNil() {
+        #expect(LanguageMapping.fluid(.automatic) == nil)
+    }
+
+    @Test func codesAreCaseInsensitiveAndUnknownIsAutomatic() {
+        #expect(LanguageMapping.fluid(.language("EN")) == .english)
+        #expect(LanguageMapping.fluid(.language("xx")) == nil)
+    }
+}
+
+@Suite("FluidModelPaths")
+struct FluidModelPathsTests {
+    private func makeDiarizer(in paths: FluidModelPaths, skipping: String? = nil, partialIn: String? = nil,
+                              noCoreMLDataIn: String? = nil) throws {
+        let fm = FileManager.default
+        for name in FluidModelPaths.diarizerRequiredFiles where name != skipping {
+            let url = paths.diarizerDirectory.appendingPathComponent(name)
+            if name.hasSuffix(".mlmodelc") {
+                try fm.createDirectory(at: url, withIntermediateDirectories: true)
+                if name != noCoreMLDataIn { try Data(repeating: 1, count: 1_000).write(to: url.appendingPathComponent("coremldata.bin")) }
+                if name == partialIn {
+                    let weights = url.appendingPathComponent("weights", isDirectory: true)
+                    try fm.createDirectory(at: weights, withIntermediateDirectories: true)
+                    try Data([1]).write(to: weights.appendingPathComponent("weight.bin.partial"))
+                }
+            } else {
+                try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data("{}".utf8).write(to: url)
+            }
+        }
+    }
+
+    @Test func folderLayoutMatchesBothLoaders() {
+        let paths = FluidModelPaths(root: URL(fileURLWithPath: "/models", isDirectory: true))
+        // FluidAudio's cache folder names drop the repo's "-coreml" suffix (`Repo.folderName`).
+        #expect(paths.asrDirectory.path == "/models/parakeet-tdt-0.6b-v3")
+        #expect(paths.diarizerDirectory.path == "/models/speaker-diarization")
+        #expect(paths.diarizerLoadDirectory.path == "/models")
+        #expect(FluidModelPaths.diarizerRequiredFiles ==
+                ["Embedding.mlmodelc", "FBank.mlmodelc", "PldaRho.mlmodelc", "Segmentation.mlmodelc", "plda-parameters.json"])
+        // Nemotron3Models.loadFromHuggingFace(cacheDirectory: root) keeps the repo layout under its folder.
+        #expect(paths.nemotronLoadDirectory.path == "/models")
+        #expect(paths.nemotronDirectory.path == "/models/nemotron-3-diarization")
+        #expect(FluidModelPaths.nemotronRequiredFiles ==
+                ["monolithic/v2/Nemotron3Diarizer_fast128.mlmodelc", "learnable_sil_emb.bin"])
+        #expect(FluidModelPaths.nemotronObsoleteItems == ["split", "pre_encode_proj_t.bin"])
+        #expect(paths.modelFolders.map(\.lastPathComponent) == ["parakeet-tdt-0.6b-v3", "speaker-diarization", "nemotron-3-diarization"])
+    }
+
+    /// Lays out the Nemotron 3 files the way `loadFromHuggingFace` leaves them.
+    private func makeNemotron(in paths: FluidModelPaths, marker: String? = ModelNames.Nemotron3.weightsVersion,
+                              skipping: String? = nil, partial: Bool = false) throws {
+        let fm = FileManager.default
+        for name in FluidModelPaths.nemotronRequiredFiles where name != skipping {
+            let url = paths.nemotronDirectory.appendingPathComponent(name)
+            if name.hasSuffix(".mlmodelc") {
+                try fm.createDirectory(at: url.appendingPathComponent("weights"), withIntermediateDirectories: true)
+                try Data(repeating: 1, count: 600).write(to: url.appendingPathComponent("coremldata.bin"))
+                if partial { try Data([1]).write(to: url.appendingPathComponent("weights/weight.bin.partial")) }
+            } else {
+                try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                try Data(repeating: 0, count: 2_048).write(to: url)
+            }
+        }
+        if let marker {
+            try Data((marker + "\n").utf8).write(to: paths.nemotronDirectory.appendingPathComponent(ModelNames.Nemotron3.weightsVersionFile))
+        }
+    }
+
+    @Test func completeNemotronFolderWithTheCurrentMarkerIsInstalled() throws {
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        #expect(!paths.nemotronInstalled)
+        try makeNemotron(in: paths)
+        #expect(paths.nemotronInstalled)
+        #expect(paths.speakersBytesOnDisk > 0)
+        #expect(!paths.allInstalled) // ASR and community-1 still missing
+    }
+
+    @Test func leftoversFromTheSplitVariantDoNotMatter() throws {
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeNemotron(in: paths)
+        let split = paths.nemotronDirectory.appendingPathComponent("split/Nemotron3Diarizer_c128_split_w8a8.mlmodelc")
+        try FileManager.default.createDirectory(at: split, withIntermediateDirectories: true)
+        try Data([1]).write(to: paths.nemotronDirectory.appendingPathComponent("pre_encode_proj_t.bin"))
+        #expect(paths.nemotronInstalled)
+    }
+
+    @Test func splitVariantAloneIsNotInstalled() throws {
+        // A directory holding only the earlier 95 MB c128-split-w8a8 build must download fast128.
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        let fm = FileManager.default
+        let split = paths.nemotronDirectory.appendingPathComponent("split/Nemotron3Diarizer_c128_split_w8a8.mlmodelc")
+        try fm.createDirectory(at: split, withIntermediateDirectories: true)
+        try Data([1]).write(to: split.appendingPathComponent("coremldata.bin"))
+        for name in ["learnable_sil_emb.bin", "pre_encode_proj_t.bin"] {
+            try Data([1]).write(to: paths.nemotronDirectory.appendingPathComponent(name))
+        }
+        try Data((ModelNames.Nemotron3.weightsVersion + "\n").utf8)
+            .write(to: paths.nemotronDirectory.appendingPathComponent(ModelNames.Nemotron3.weightsVersionFile))
+        #expect(!paths.nemotronInstalled)
+    }
+
+    @Test func nemotronWithoutOrWithAStaleMarkerIsNotInstalled() throws {
+        let missing = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeNemotron(in: missing, marker: nil)
+        #expect(!missing.nemotronInstalled)
+        let stale = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeNemotron(in: stale, marker: "preview-2026-06-01")
+        #expect(!stale.nemotronInstalled)
+    }
+
+    @Test func nemotronMissingAnAssetOrMidDownloadIsNotInstalled() throws {
+        let noSilence = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeNemotron(in: noSilence, skipping: "learnable_sil_emb.bin")
+        #expect(!noSilence.nemotronInstalled)
+        let partial = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeNemotron(in: partial, partial: true)
+        #expect(!partial.nemotronInstalled)
+    }
+
+    @Test func olderInstallWithoutNemotronIsNotInstalled() throws {
+        // Community-1 on its own (an install from before Nemotron 3) must not count as complete.
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeDiarizer(in: paths)
+        #expect(paths.diarizerInstalled && !paths.nemotronInstalled && !paths.allInstalled)
+    }
+
+    @Test func downloadSizesAreByteAccurate() {
+        #expect(FluidModelPaths.nemotronDownloadBytes == 199_096_000)       // 199_094_387 bundle + 2_048 asset
+        #expect(FluidModelPaths.speakersDownloadBytes == 221_096_000)
+        #expect(FluidModelPaths.totalDownloadBytes == 704_096_000)
+    }
+
+    @Test func emptyRootIsNotInstalled() throws {
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        #expect(!paths.asrInstalled)
+        #expect(!paths.diarizerInstalled)
+        #expect(!paths.allInstalled)
+        #expect(paths.speechBytesOnDisk == 0)
+    }
+
+    @Test func completeDiarizerFolderIsInstalled() throws {
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeDiarizer(in: paths)
+        #expect(paths.diarizerInstalled)
+        #expect(paths.speakersBytesOnDisk > 0)
+        #expect(!paths.allInstalled) // ASR still missing
+    }
+
+    @Test func missingFileMakesDiarizerIncomplete() throws {
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeDiarizer(in: paths, skipping: "plda-parameters.json")
+        #expect(!paths.diarizerInstalled)
+    }
+
+    @Test func missingCoreMLDataMakesDiarizerIncomplete() throws {
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeDiarizer(in: paths, noCoreMLDataIn: "Embedding.mlmodelc")
+        #expect(!paths.diarizerInstalled)
+    }
+
+    @Test func leftoverPartialDownloadMakesDiarizerIncomplete() throws {
+        let paths = FluidModelPaths(root: try TestAudio.temporaryDirectory())
+        try makeDiarizer(in: paths, partialIn: "Segmentation.mlmodelc")
+        #expect(!paths.diarizerInstalled)
+    }
+}
+
+@Suite("InstallProgressMapper")
+struct InstallProgressMapperTests {
+    /// The callback sequence `AsrModels.download` produces: the first single-model load downloads the whole
+    /// repo (0...0.5) and compiles; the next three find the cache (0.5) and compile.
+    static let asrSequence: [(Double, RawInstallPhase)] = {
+        var seq: [(Double, RawInstallPhase)] = [(0, .listing)]
+        for i in 1...10 { seq.append((0.05 * Double(i), .downloading(completedFiles: i / 2, totalFiles: 5))) }
+        seq += [(0.5, .compiling), (1.0, .compiling)]
+        for _ in 0..<3 { seq += [(0.5, .downloading(completedFiles: 0, totalFiles: 0)), (0.5, .compiling), (1.0, .compiling)] }
+        return seq
+    }()
+
+    @Test func speechProgressIsMonotonicAndStaysInItsShare() {
+        var mapper = InstallProgressMapper.speech()
+        var last = -1.0
+        for (raw, phase) in Self.asrSequence {
+            let p = mapper.map(fraction: raw, phase: phase)
+            #expect(p.fraction >= last)
+            #expect(p.fraction >= 0 && p.fraction < InstallProgressMapper.speechShare)
+            last = p.fraction
+        }
+        #expect(last > 0.95 * InstallProgressMapper.speechShare)
+        #expect(mapper.finished().fraction == InstallProgressMapper.speechShare)
+    }
+
+    @Test func downloadIsMostOfTheBar() {
+        var mapper = InstallProgressMapper.speech()
+        let half = mapper.map(fraction: 0.25, phase: .downloading(completedFiles: 2, totalFiles: 5))
+        #expect(abs(half.fraction - 0.45 * InstallProgressMapper.speechShare) < 1e-9)
+        #expect(half.phase == .downloading(.speech, completedFiles: 2, totalFiles: 5))
+    }
+
+    @Test func phasesMapToTheContract() {
+        var mapper = InstallProgressMapper.speakers()
+        #expect(mapper.map(fraction: 0, phase: .listing).phase == .checking)
+        #expect(mapper.map(fraction: 0.2, phase: .downloading(completedFiles: 1, totalFiles: 5)).phase
+                == .downloading(.speakers, completedFiles: 1, totalFiles: 5))
+        #expect(mapper.map(fraction: 0.6, phase: .compiling).phase == .compiling(.speakers))
+    }
+
+    @Test func sharesAreByteWeighted() {
+        #expect(abs(InstallProgressMapper.speechShare - 483.0 / 704.096) < 1e-9)
+        #expect(abs(InstallProgressMapper.communityOneShare - 22.0 / 704.096) < 1e-9)
+    }
+
+    @Test func communityOneFillsItsSliceAndNemotronTheRest() {
+        var c1 = InstallProgressMapper.speakers()
+        let first = c1.map(fraction: 0, phase: .listing)
+        #expect(first.fraction == InstallProgressMapper.speechShare)
+        _ = c1.map(fraction: 0.5, phase: .downloading(completedFiles: 5, totalFiles: 5))
+        let c1Done = c1.finished().fraction
+        #expect(abs(c1Done - (InstallProgressMapper.speechShare + InstallProgressMapper.communityOneShare)) < 1e-12)
+
+        var nemotron = InstallProgressMapper.nemotron()
+        let start = nemotron.map(fraction: 0, phase: .listing)
+        #expect(abs(start.fraction - c1Done) < 1e-12)
+        #expect(start.phase == .checking)
+        // A subdirectory download reports 0...1 for the download alone.
+        let half = nemotron.map(fraction: 0.5, phase: .downloading(completedFiles: 3, totalFiles: 6))
+        #expect(abs(half.fraction - (c1Done + (1 - c1Done) * 0.45)) < 1e-9)
+        #expect(half.phase == .downloading(.speakers, completedFiles: 3, totalFiles: 6))
+        let all = nemotron.map(fraction: 1, phase: .downloading(completedFiles: 6, totalFiles: 6))
+        #expect(all.fraction < 1)
+        #expect(all.phase == .compiling(.speakers))   // the first Neural Engine compile follows the last byte
+        #expect(nemotron.finished().fraction == 1)
+    }
+
+    @Test func nonFiniteFractionsAreIgnored() {
+        var mapper = InstallProgressMapper.speech()
+        let p = mapper.map(fraction: .nan, phase: .downloading(completedFiles: 0, totalFiles: 1))
+        #expect(p.fraction == 0)
+    }
+}
+
+@Suite("Capture metering")
+struct CaptureMeteringTests {
+    @Test func silenceIsZeroAndFullScaleIsOne() {
+        #expect(LevelMeter.normalisedLevel(rms: 0) == 0)
+        #expect(LevelMeter.normalisedLevel(rms: 1) == 1)
+        #expect(abs(LevelMeter.normalisedLevel(rms: 0.001) - 0) < 1e-6)        // -60 dBFS
+        #expect(abs(LevelMeter.normalisedLevel(rms: 0.0316228) - 0.5) < 1e-3)  // -30 dBFS
+    }
+
+    @Test func oneTickPer50msWithTheEndFrame() {
+        var meter = LevelMeter()
+        let ticks = meter.ingest([Float](repeating: 0.5, count: 2_000))   // 125 ms
+        #expect(ticks.map(\.endFrame) == [800, 1_600])
+        let more = meter.ingest([Float](repeating: 0.5, count: 400))
+        #expect(more.map(\.endFrame) == [2_400])
+        #expect(meter.totalFrames == 2_400)
+    }
+
+    @Test func levelRisesFastAndFallsSlowly() {
+        var meter = LevelMeter()
+        let up = meter.ingest([Float](repeating: 0.5, count: 800))[0].level
+        let target = LevelMeter.normalisedLevel(rms: 0.5)
+        #expect(abs(up - target * LevelMeter.attack) < 1e-5)
+        let down = meter.ingest([Float](repeating: 0, count: 800))[0].level
+        #expect(down > 0 && down < up)
+    }
+
+    @Test func peaksKeepTheMaximumPerBin() {
+        var bins = PeakBins()
+        var samples = [Float](repeating: 0.1, count: 8_000)   // 10 bins of 50 ms
+        samples[850] = -0.9
+        bins.ingest(samples)
+        let peaks = bins.result()
+        #expect(peaks.count == 10)
+        #expect(peaks[1] == 0.9)
+        #expect(peaks[0] == 0.1)
+    }
+
+    @Test func longRecordingsStayAt200Bins() {
+        var bins = PeakBins()
+        // 70 s in 1 s chunks: 1400 initial bins worth, merged twice.
+        for second in 0..<70 {
+            bins.ingest([Float](repeating: second == 35 ? 0.8 : 0.2, count: 16_000))
+        }
+        let peaks = bins.result()
+        #expect(peaks.count == 200)
+        #expect(peaks.max() == 0.8)
+        #expect(peaks.allSatisfy { $0 >= 0.2 && $0 <= 1 })
+        #expect(bins.binFrames == 3_200)
+    }
+
+    @Test func maxPoolHandlesUnevenGroups() {
+        #expect(PeakBins.maxPool([1, 2, 3], to: 5) == [1, 2, 3])
+        #expect(PeakBins.maxPool([1, 5, 2, 4, 3], to: 2) == [5, 4])
+        #expect(PeakBins.maxPool([0.1, 0.2, 0.3, 0.4], to: 4) == [0.1, 0.2, 0.3, 0.4])
+    }
+}
+
+@Suite("FluidLiveRecording (scripted source)")
+struct FluidLiveRecordingTests {
+    private func makeRecording(liveText: Bool = false, source: ScriptedCaptureSource = ScriptedCaptureSource(),
+                               freeBytes: @escaping @Sendable (URL) -> Int64? = { _ in 10_000_000_000 })
+        throws -> (FluidLiveRecording, ScriptedCaptureSource, URL) {
+        let url = try TestAudio.temporaryDirectory().appendingPathComponent("rec.wav")
+        let request = RecordingRequest(audioURL: url, liveText: liveText, language: .automatic)
+        let recording = FluidLiveRecording(request: request, source: source, liveModels: { nil }, freeBytes: freeBytes)
+        return (recording, source, url)
+    }
+
+    @Test func writesA16kMonoInt16WAVWithTheCapturedDuration() async throws {
+        let (recording, source, url) = try makeRecording()
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        await source.sendSine(seconds: 2)
+        let audio = try await recording.stop()
+
+        #expect(audio.url == url)
+        #expect(abs(audio.duration - 2.0) < 1e-9)
+        let file = try AVAudioFile(forReading: url)
+        #expect(file.fileFormat.sampleRate == 16_000)
+        #expect(file.fileFormat.channelCount == 1)
+        #expect(file.fileFormat.settings[AVLinearPCMBitDepthKey] as? Int == 16)
+        #expect(file.length == 32_000)
+        #expect(try TestAudio.headerDataBytes(url) == 64_000)
+        let samples = try TestAudio.readSamples(url)
+        #expect(abs((samples.max() ?? 0) - 0.5) < 0.01)
+
+        #expect(audio.peaks.count == 40)
+        #expect(audio.peaks.allSatisfy { abs($0 - 0.5) < 0.01 })
+
+        let ticks = await events.value.compactMap { e -> (TimeInterval, Float)? in
+            if case .tick(let t, let l) = e { return (t, l) } else { return nil }
+        }
+        #expect(ticks.count == 40)
+        #expect(abs((ticks.last?.0 ?? 0) - 2.0) < 1e-9)
+        #expect(zip(ticks, ticks.dropFirst()).allSatisfy { $0.0 < $1.0 })
+        #expect(ticks.allSatisfy { $0.1 > 0.5 && $0.1 <= 1 })
+        #expect(await source.calls == ["start", "stop"])
+    }
+
+    @Test func pausesAreExcludedFromElapsedAndMarksUseTheAudioTimeline() async throws {
+        let (recording, source, _) = try makeRecording()
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        await source.sendSine(seconds: 1)
+        #expect(await eventually { await recording.capturedDuration >= 1.0 })
+        await recording.pause()
+        #expect(await source.send([Float](repeating: 0.3, count: 16_000)) == false)   // nothing captured while paused
+        await recording.resume()
+        let mark = await recording.markMoment()
+        await source.sendSine(seconds: 1)
+        let audio = try await recording.stop()
+
+        #expect(mark == 1.0)
+        #expect(audio.marks == [1.0])
+        #expect(abs(audio.duration - 2.0) < 1e-9)
+        let states = await events.value.filter { if case .tick = $0 { false } else { true } }
+        #expect(states == [.liveTextUnavailable(.modelsNotReady), .paused(.user), .resumed])
+        #expect(await source.calls == ["start", "pause", "resume", "stop"])
+    }
+
+    @Test func headerIsFlushedEveryFiveSecondsWhileRecording() async throws {
+        let (recording, source, url) = try makeRecording()
+        try await recording.start()
+        await source.sendSine(seconds: 6)
+        #expect(await eventually { await recording.capturedDuration >= 6.0 })
+        // Before stop: the header already covers at least the first 5 s (crash safety).
+        #expect(try TestAudio.headerDataBytes(url) >= 5 * 32_000)
+        _ = try await recording.stop()
+        #expect(try TestAudio.headerDataBytes(url) == 6 * 32_000)
+    }
+
+    @Test func interruptionPausesAndResumesWhenTheSystemRecommendsIt() async throws {
+        let (recording, source, _) = try makeRecording()
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        await source.send(event: .interrupted)
+        #expect(await eventually { await source.calls.contains("pause") })
+        await source.send(event: .interruptionEnded(shouldResume: true))
+        #expect(await eventually { await source.calls.contains("resume") })
+        _ = try await recording.stop()
+        let states = await events.value.filter { if case .tick = $0 { false } else { true } }
+        #expect(states == [.liveTextUnavailable(.modelsNotReady), .paused(.interruption), .resumed])
+    }
+
+    @Test func interruptionWithoutResumeRecommendationStaysPaused() async throws {
+        let (recording, source, _) = try makeRecording()
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        await source.send(event: .interrupted)
+        await source.send(event: .interruptionEnded(shouldResume: false))
+        #expect(await eventually { await source.calls.contains("pause") })
+        _ = try await recording.stop()
+        #expect(await !source.calls.contains("resume"))
+        #expect(await events.value.contains(.paused(.interruption)))
+        #expect(await !events.value.contains(.resumed))
+    }
+
+    @Test func routeLostPausesCapture() async throws {
+        let (recording, source, _) = try makeRecording()
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        await source.send(event: .routeLost)
+        #expect(await eventually { await source.calls.contains("pause") })
+        _ = try await recording.stop()
+        #expect(await events.value.contains(.paused(.routeLost)))
+    }
+
+    @Test func mediaServicesResetEndsCaptureButKeepsTheAudio() async throws {
+        let (recording, source, _) = try makeRecording()
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        await source.sendSine(seconds: 1)
+        await source.send(event: .mediaServicesReset)
+        #expect(await eventually { await source.calls.contains("stop") })
+        let audio = try await recording.stop()
+        #expect(abs(audio.duration - 1.0) < 1e-9)
+        #expect(await events.value.contains(.endedBySystem(.mediaServicesReset)))
+    }
+
+    @Test func lowStorageEndsCapture() async throws {
+        let (recording, _, _) = try makeRecording(freeBytes: { _ in 100_000_000 })
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        _ = try await recording.stop()
+        #expect(await events.value.contains(.endedBySystem(.lowStorage)))
+    }
+
+    @Test func liveTextWithoutModelsReportsModelsNotReady() async throws {
+        let (recording, _, _) = try makeRecording(liveText: true)
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        _ = try await recording.stop()
+        #expect(await events.value == [.liveTextUnavailable(.modelsNotReady)])
+    }
+
+    @Test func turningLiveTextOffInTheBackgroundIsReported() async throws {
+        let (recording, _, _) = try makeRecording(liveText: true)
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        await recording.setLiveTextEnabled(false)
+        _ = try await recording.stop()
+        #expect(await events.value == [.liveTextUnavailable(.modelsNotReady), .liveTextUnavailable(.pausedInBackground)])
+    }
+
+    @Test func discardDeletesTheFileAndFinishesEvents() async throws {
+        let (recording, source, url) = try makeRecording()
+        let events = collectEvents(recording.events)
+        try await recording.start()
+        await source.sendSine(seconds: 0.5)
+        await recording.discard()
+        _ = await events.value
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+        await #expect(throws: EngineError.self) { _ = try await recording.stop() }
+    }
+
+    @Test func startFailureLeavesNoFile() async throws {
+        let (recording, _, url) = try makeRecording(source: ScriptedCaptureSource(failStart: true))
+        await #expect(throws: EngineError.failed("No microphone input is available")) { try await recording.start() }
+        #expect(!FileManager.default.fileExists(atPath: url.path))
+    }
+}
+
+@Suite("FluidSpeechEngine without models")
+struct FluidEngineNoModelsTests {
+    private func makeEngine() throws -> FluidSpeechEngine {
+        FluidSpeechEngine(modelsRoot: try TestAudio.temporaryDirectory(), captureFactory: { ScriptedCaptureSource() })
+    }
+
+    @Test func infoMatchesTheBlueprint() throws {
+        let info = try makeEngine().info
+        #expect(info.kind == .fluid)
+        #expect(info.asrDisplayName == "Parakeet")
+        #expect(info.asrModelID == "parakeet-tdt-0.6b-v3-coreml@main")
+        #expect(info.embeddingModel == .communityOneResNet34)
+        #expect(info.speechDownloadBytes == 483_000_000)
+        #expect(info.speakersDownloadBytes == 221_096_000)
+        #expect(info.totalDownloadBytes == 704_096_000)
+    }
+
+    @Test func statusIsNotInstalledAndModelCallsThrowModelsMissing() async throws {
+        let engine = try makeEngine()
+        #expect(await engine.modelStatus() == .notInstalled)
+        await #expect(throws: EngineError.modelsMissing) { try await engine.prepareModels() }
+        let url = URL(fileURLWithPath: "/nonexistent.wav")
+        await #expect(throws: EngineError.modelsMissing) { _ = try await engine.transcribe(url, language: .automatic) { _ in } }
+        await #expect(throws: EngineError.modelsMissing) { _ = try await engine.separateSpeakers(url) { _ in } }
+        await #expect(throws: EngineError.modelsMissing) {
+            _ = try await engine.embedVoice(url, spans: [TimeRange(start: 0, end: 1)])
+        }
+        try await engine.removeModels()
+        #expect(await engine.modelStatus() == .notInstalled)
+    }
+
+    @Test func recordingWorksWithoutModels() async throws {
+        let engine = try makeEngine()
+        let url = try TestAudio.temporaryDirectory().appendingPathComponent("r.wav")
+        let source = ScriptedCaptureSource()
+        let recording = try await engine.startRecording(RecordingRequest(audioURL: url, liveText: true, language: .automatic),
+                                                       source: source)
+        let events = collectEvents(recording.events)
+        await source.sendSine(seconds: 0.5)
+        let audio = try await recording.stop()
+        #expect(abs(audio.duration - 0.5) < 1e-9)
+        #expect(await events.value.first == .liveTextUnavailable(.modelsNotReady))
+    }
+
+    @Test func wordsComeFromTokenTimingsWithPunctuationAttached() {
+        let tokens = [
+            TokenTiming(token: "▁Hey", tokenId: 1, startTime: 0.10, endTime: 0.30, confidence: 0.9),
+            TokenTiming(token: ",", tokenId: 2, startTime: 0.30, endTime: 0.35, confidence: 0.9),
+            TokenTiming(token: "▁Ka", tokenId: 3, startTime: 0.50, endTime: 0.70, confidence: 0.9),
+            TokenTiming(token: "ran", tokenId: 4, startTime: 0.70, endTime: 0.90, confidence: 0.9),
+            TokenTiming(token: ".", tokenId: 5, startTime: 0.90, endTime: 0.95, confidence: 0.9),
+        ]
+        let words = FluidSpeechEngine.words(from: tokens, text: "Hey, Karan.", duration: 1)
+        #expect(words.map(\.text) == ["Hey,", "Karan."])
+        #expect(words[0].range == TimeRange(start: 0.10, end: 0.35))
+        #expect(words[1].range == TimeRange(start: 0.50, end: 0.95))
+        #expect(words.allSatisfy { !$0.isOverlap })
+    }
+
+    @Test func wordsFallBackToEvenSpacingWithoutTimings() {
+        let words = FluidSpeechEngine.words(from: [], text: "one two", duration: 2)
+        #expect(words == [TimedWord(text: "one", range: TimeRange(start: 0, end: 1)),
+                          TimedWord(text: "two", range: TimeRange(start: 1, end: 2))])
+        #expect(FluidSpeechEngine.words(from: [], text: "", duration: 2).isEmpty)
+    }
+
+    @Test func separationIsSortedWithNormalisedCentroids() throws {
+        let s1 = [Float](repeating: 2, count: 256)
+        var s2 = [Float](repeating: 0, count: 256); s2[0] = 3
+        let result = DiarizationResult(segments: [
+            TimedSpeakerSegment(speakerId: "S2", embedding: s2, startTimeSeconds: 5, endTimeSeconds: 9, qualityScore: 0.8),
+            TimedSpeakerSegment(speakerId: "S1", embedding: s1, startTimeSeconds: 0, endTimeSeconds: 5.5, qualityScore: 0.9),
+            TimedSpeakerSegment(speakerId: "S1", embedding: s1, startTimeSeconds: 9, endTimeSeconds: 9, qualityScore: 0.9),
+        ], speakerDatabase: ["S1": s1])
+        let separation = FluidSpeechEngine.separation(from: result)
+        #expect(separation.separator == .communityOne)
+        #expect(separation.segments.map(\.speakerKey) == ["S1", "S2"])     // zero-length segment dropped
+        #expect(separation.segments[0].range == TimeRange(start: 0, end: 5.5))
+        #expect(separation.segments[1].quality == 0.8)
+        let c1 = try #require(separation.centroids["S1"])
+        let c2 = try #require(separation.centroids["S2"])                    // from the segment embedding
+        #expect(c1.dimension == 256 && c2.dimension == 256)
+        #expect(abs(c2.values[0] - 1) < 1e-6)
+        #expect(abs(c1.values.reduce(0) { $0 + $1 * $1 } - 1) < 1e-4)
+    }
+
+    @Test func embeddingSpansAreClampedOrRejected() throws {
+        let ranges = try FluidSpeechEngine.embeddingRanges(
+            [TimeRange(start: 1, end: 3), TimeRange(start: 9, end: 12)], audioDuration: 10)
+        #expect(ranges == [1..<3, 9..<10])
+        #expect(throws: EngineError.self) { _ = try FluidSpeechEngine.embeddingRanges([TimeRange(start: 10, end: 11)], audioDuration: 10) }
+        #expect(throws: EngineError.self) { _ = try FluidSpeechEngine.embeddingRanges([TimeRange(start: 2, end: 2)], audioDuration: 10) }
+    }
+
+    @Test func errorsMapOntoTheContract() {
+        #expect(FluidErrorMapping.engineError(ASRError.invalidAudioData) == .tooShort)
+        #expect(FluidErrorMapping.engineError(ASRError.notInitialized) == .modelsMissing)
+        #expect(FluidErrorMapping.engineError(OfflineDiarizationError.noSpeechDetected) == .noSpeech)
+        #expect(FluidErrorMapping.engineError(CancellationError()) == .cancelled)
+        #expect(FluidErrorMapping.engineError(URLError(.cancelled)) == .cancelled)
+        #expect(FluidErrorMapping.engineError(EngineError.microphoneDenied) == .microphoneDenied)
+        if case .failed(let message) = FluidErrorMapping.engineError(Nemotron3Error.modelLoadFailed("no ANE")) {
+            #expect(message.contains("no ANE"))
+        } else {
+            Issue.record("Nemotron3Error should map to .failed")
+        }
+        if case .failed(let message) = FluidErrorMapping.engineError(ASRError.processingFailed("boom")) {
+            #expect(message.contains("boom"))
+        } else {
+            Issue.record("processingFailed should map to .failed")
+        }
+    }
+
+    @Test func audioDurationReadsTheHeader() throws {
+        let url = try TestAudio.temporaryDirectory().appendingPathComponent("short.wav")
+        let writer = try WAVFileWriter(url: url)
+        try writer.append([Float](repeating: 0, count: 3_200))
+        try writer.finish()
+        #expect(abs(try FluidSpeechEngine.audioDuration(url) - 0.2) < 1e-6)
+        #expect(throws: EngineError.self) { _ = try FluidSpeechEngine.audioDuration(URL(fileURLWithPath: "/missing.wav")) }
+    }
+}
+
+@Suite("Nemotron 3 separation (no models)")
+struct NemotronSeparationTests {
+    typealias Activity = NemotronSeparation.Activity
+
+    private func use(_ activities: [Activity]) throws -> SpeakerSeparation {
+        guard case .use(let separation) = NemotronSeparation.decide(activities) else {
+            Issue.record("expected a Nemotron result")
+            throw CancellationError()
+        }
+        return separation
+    }
+
+    private func reason(_ activities: [Activity]) -> NemotronSeparation.FallbackReason? {
+        if case .fallback(let reason) = NemotronSeparation.decide(activities) { return reason }
+        return nil
+    }
+
+    @Test func presetIsTheFullPrecisionFast128Bundle() throws {
+        let config = NemotronSeparation.config
+        let upstream = try #require(Nemotron3Config.preset(named: NemotronSeparation.presetName))
+        #expect(NemotronSeparation.presetName == "fast128")
+        #expect(config.modelFileName == upstream.modelFileName)
+        #expect(config.modelFileName == "Nemotron3Diarizer_fast128.mlmodelc")
+        #expect(!config.splitGraph && !upstream.splitGraph)
+        #expect(config.hubSubdirectory == "monolithic/v2")
+        // Never the `offline` preset: it fails the Neural Engine compile and runs on the GPU.
+        #expect(config.modelFileName != Nemotron3Config.offline.modelFileName)
+        #expect(config.chunkMelFrames <= 1_376, "the largest monolithic chunk that still compiles for the ANE")
+        #expect((config.chunkLen, config.chunkRightContext, config.fifoLen, config.spkcacheLen, config.spkcacheUpdatePeriod)
+                == (upstream.chunkLen, upstream.chunkRightContext, upstream.fifoLen, upstream.spkcacheLen, upstream.spkcacheUpdatePeriod))
+        #expect(config.numSpeakers == NemotronSeparation.speakerChannels)
+        #expect(NemotronSeparation.computeUnits == .cpuAndNeuralEngine)
+    }
+
+    @Test func speakersAreKeyedByFirstSpeechAndSegmentsSorted() throws {
+        // Channel 3 speaks first, then channel 0, then channel 3 again; overlap is kept.
+        let separation = try use([
+            Activity(channel: 0, start: 4.0, end: 7.5, meanProbability: 0.9),
+            Activity(channel: 3, start: 0.2, end: 4.1, meanProbability: 0.8),
+            Activity(channel: 3, start: 7.4, end: 9.0, meanProbability: 0.7),
+        ])
+        #expect(separation.separator == .nemotron3)
+        #expect(separation.centroids.isEmpty)   // voice vectors come from embedVoice
+        #expect(separation.segments.map(\.speakerKey) == ["S1", "S2", "S1"])
+        #expect(separation.segments.map(\.range) == [TimeRange(start: 0.2, end: 4.1), TimeRange(start: 4.0, end: 7.5),
+                                                     TimeRange(start: 7.4, end: 9.0)])
+        #expect(separation.segments.map(\.quality) == [0.8, 0.9, 0.7])
+    }
+
+    @Test func invalidStretchesAreDropped() throws {
+        let separation = try use([
+            Activity(channel: 1, start: 1, end: 2, meanProbability: 0.9),
+            Activity(channel: 1, start: 3, end: 3, meanProbability: 0.9),          // empty
+            Activity(channel: 2, start: .nan, end: 5, meanProbability: 0.9),       // non-finite
+            Activity(channel: 8, start: 5, end: 6, meanProbability: 0.9),          // no such channel
+            Activity(channel: 0, start: 6, end: 7, meanProbability: .infinity),    // bad quality → 0
+        ])
+        #expect(separation.segments.map(\.speakerKey) == ["S1", "S2"])
+        #expect(separation.segments.last?.quality == 0)
+    }
+
+    @Test func nothingHeardFallsBackAsNoSpeech() {
+        #expect(reason([]) == .noSpeech)
+        #expect(reason([Activity(channel: 0, start: 2, end: 2, meanProbability: 1)]) == .noSpeech)
+    }
+
+    @Test func allEightChannelsFallBackAsSaturated() throws {
+        let eight = (0..<8).map { Activity(channel: $0, start: Double($0), end: Double($0) + 0.8, meanProbability: 0.9) }
+        #expect(reason(eight) == .saturated)
+        let seven = Array(eight.prefix(7))
+        #expect(Set(try use(seven).segments.map(\.speakerKey)).count == 7)
+    }
+
+    @Test func frameProbabilitiesBecomeStretchesWithTheirMeanProbability() throws {
+        // 300 frames (3 s), 8 channels: channel 2 active over frames 10..<110 at 0.8, channel 5 over 150..<300 at 0.6,
+        // and a sub-threshold blip on channel 0.
+        let frames = 300, channels = 8
+        var p = [Float](repeating: 0, count: frames * channels)
+        for f in 10..<110 { p[f * channels + 2] = 0.8 }
+        for f in 150..<300 { p[f * channels + 5] = 0.6 }
+        for f in 50..<60 { p[f * channels + 0] = 0.4 }
+        let stretches = NemotronSeparation.activities(probabilities: p, frameCount: frames)
+        #expect(stretches.count == 2)
+        let first = try #require(stretches.first)
+        #expect(first.channel == 2 && abs(first.start - 0.1) < 1e-6 && abs(first.end - 1.1) < 1e-6)
+        #expect(abs(first.meanProbability - 0.8) < 1e-6)
+        let second = try #require(stretches.last)
+        #expect(second.channel == 5 && abs(second.start - 1.5) < 1e-6 && abs(second.end - 3.0) < 1e-6)
+        #expect(abs(second.meanProbability - 0.6) < 1e-6)
+        #expect(NemotronSeparation.activities(probabilities: [], frameCount: 10).isEmpty)
+    }
+}

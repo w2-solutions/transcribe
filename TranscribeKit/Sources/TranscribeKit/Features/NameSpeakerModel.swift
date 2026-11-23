@@ -1,0 +1,359 @@
+import Foundation
+import Observation
+import TranscribeCore
+
+/// Logic of the "Who is this?" / "Who said this?" sheet (§6.5): selection, name validation, the Remember rules,
+/// the button title and what Save writes.
+@MainActor @Observable
+public final class NameSpeakerModel {
+    public enum Mode: Sendable, Equatable {
+        case name                       // whole speaker
+        case correct(turnID: UUID?)     // "Wrong speaker? Change"; a turn id enables "Just this turn"
+    }
+
+    public enum Scope: String, Sendable, Equatable, CaseIterable { case allTurns, justThisTurn }
+
+    public enum Selection: Sendable, Equatable, Hashable {
+        case newPerson
+        case profile(UUID)
+        case speaker(SpeakerKey)        // correct mode: another speaker already in this recording
+    }
+
+    public struct ProfileOption: Sendable, Equatable, Identifiable {
+        public var id: UUID
+        public var name: String
+        public var slot: Int
+        public var isMe: Bool
+        public init(id: UUID, name: String, slot: Int, isMe: Bool) { self.id = id; self.name = name; self.slot = slot; self.isMe = isMe }
+        /// AX slug: lower-cased, spaces → "-".
+        public var slug: String { name.lowercased().replacingOccurrences(of: " ", with: "-") }
+    }
+
+    public struct SpeakerOption: Sendable, Equatable, Identifiable {
+        public var key: SpeakerKey
+        public var ordinal: Int
+        public var slot: Int
+        public var name: String
+        public var hasName: Bool
+        public var id: SpeakerKey { key }
+        public init(key: SpeakerKey, ordinal: Int, slot: Int, name: String, hasName: Bool) {
+            self.key = key; self.ordinal = ordinal; self.slot = slot; self.name = name; self.hasName = hasName
+        }
+    }
+
+    public struct Clip: Sendable, Equatable, Identifiable {
+        public var id: String
+        public var range: TimeRange
+        public var quote: String
+        public var peaks: [Float]
+        public init(id: String, range: TimeRange, quote: String, peaks: [Float]) {
+            self.id = id; self.range = range; self.quote = quote; self.peaks = peaks
+        }
+    }
+
+    /// The speaker being named, as stored.
+    public struct Subject: Sendable, Equatable {
+        public var key: SpeakerKey
+        public var ordinal: Int
+        public var slot: Int
+        public var label: SpeakerLabelState
+        public var displayName: String
+        public var profileID: UUID?
+        public var suggestedProfileID: UUID?
+        public var cleanSeconds: Double
+        public var totalSeconds: Double
+        public var canBeRemembered: Bool
+        /// False for speakers the user added ("Just this turn") and for voices whose vector was dropped.
+        public var hasVector: Bool
+        public init(key: SpeakerKey, ordinal: Int, slot: Int, label: SpeakerLabelState, displayName: String,
+                    profileID: UUID? = nil, suggestedProfileID: UUID? = nil, cleanSeconds: Double, totalSeconds: Double,
+                    canBeRemembered: Bool, hasVector: Bool = true) {
+            self.key = key; self.ordinal = ordinal; self.slot = slot; self.label = label; self.displayName = displayName
+            self.profileID = profileID; self.suggestedProfileID = suggestedProfileID
+            self.cleanSeconds = cleanSeconds; self.totalSeconds = totalSeconds; self.canBeRemembered = canBeRemembered
+            self.hasVector = hasVector
+        }
+    }
+
+    public static let maxNameLength = 60
+
+    public let recordingID: UUID
+    public let mode: Mode
+    public let subject: Subject
+    public let profiles: [ProfileOption]            // "me" first, then by name
+    public let otherSpeakers: [SpeakerOption]       // correct mode only; speakers not already offered as a saved voice
+    public let clips: [Clip]
+    /// Turns in the recording (for counting and "Just this turn").
+    private let turns: [Turn]
+    private let speakerProfiles: [SpeakerKey: UUID]
+
+    public private(set) var selection: Selection = .newPerson
+    public var scope: Scope = .allTurns
+    /// The Toggle's value; `rememberEffective` is what Save uses.
+    public var remember: Bool = true
+    public var name: String = "" {
+        didSet { if !isSyncingName { syncSelectionToName() } }
+    }
+    @ObservationIgnored private var isSyncingName = false
+
+    public init(recordingID: UUID, mode: Mode, subject: Subject, profiles: [ProfileOption],
+                speakers: [SpeakerOption], speakerProfiles: [SpeakerKey: UUID], turns: [Turn], clips: [Clip]) {
+        self.recordingID = recordingID
+        self.mode = mode
+        self.subject = subject
+        self.profiles = profiles.sorted { a, b in
+            if a.isMe != b.isMe { return a.isMe }
+            return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
+        }
+        self.turns = turns
+        self.speakerProfiles = speakerProfiles
+        self.clips = clips
+        if case .correct = mode {
+            let offeredProfiles = Set(profiles.map(\.id))
+            self.otherSpeakers = speakers
+                .filter { $0.key != subject.key && !(speakerProfiles[$0.key].map(offeredProfiles.contains) ?? false) }
+                .sorted { $0.ordinal < $1.ordinal }
+        } else {
+            self.otherSpeakers = []
+        }
+        remember = subject.canBeRemembered
+        // Prefill: the suggested profile's name, else empty.
+        if mode == .name, let suggested = subject.suggestedProfileID, let p = self.profiles.first(where: { $0.id == suggested }) {
+            setName(p.name, selecting: .profile(p.id))
+        }
+    }
+
+    /// Builds the model from the stored recording and every saved profile.
+    public convenience init(recording: Recording, key: SpeakerKey, mode: Mode, profiles: [VoiceProfile],
+                            config: AlignmentConfig = .default) {
+        let speaker = recording.speaker(key)
+        let subject = Subject(
+            key: key, ordinal: speaker?.ordinal ?? 0, slot: speaker?.colourSlot ?? 0, label: speaker?.label ?? .unnamed,
+            displayName: speaker?.displayName ?? "Speaker", profileID: speaker?.profile?.id,
+            suggestedProfileID: speaker?.label == .suggested ? speaker?.suggestedProfileID : nil,
+            cleanSeconds: speaker?.cleanSeconds ?? 0, totalSeconds: speaker?.totalSeconds ?? 0,
+            canBeRemembered: speaker?.canBeRemembered ?? false, hasVector: speaker?.vectorData != nil)
+        let turns = recording.transcript?.turns ?? []
+        let peaks = recording.peaks
+        let duration = recording.duration
+        let clips = CleanSpeech.listenClips(for: key, turns: turns, max: 2, config: config).enumerated().map { i, clip in
+            Clip(id: "\(recording.id.uuidString)-\(key)-\(i)", range: clip.range, quote: clip.quote,
+                 peaks: Self.peaks(peaks, duration: duration, range: clip.range))
+        }
+        let speakerOptions = recording.sortedSpeakers.map {
+            SpeakerOption(key: $0.key, ordinal: $0.ordinal, slot: $0.colourSlot, name: $0.displayName, hasName: $0.hasName)
+        }
+        var links: [SpeakerKey: UUID] = [:]
+        for s in recording.speakers { if let p = s.profile { links[s.key] = p.id } }
+        self.init(recordingID: recording.id, mode: mode, subject: subject,
+                  profiles: profiles.map { ProfileOption(id: $0.id, name: $0.name, slot: $0.colourSlot, isMe: $0.isMe) },
+                  speakers: speakerOptions, speakerProfiles: links, turns: turns, clips: clips)
+    }
+
+    // MARK: Derived text
+
+    public var title: String { mode == .name ? "Who is this?" : "Who said this?" }
+
+    /// "Speaker 2 · spoke for " — the view appends `spokeFor` in mono.
+    public var subtitlePrefix: String { "\(subject.displayName) · spoke for " }
+    public var spokeFor: String { DisplayFormat.duration(subject.totalSeconds) }
+    public var subtitle: String { subtitlePrefix + spokeFor }
+
+    public var trimmedName: String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    public var isNameValid: Bool { !trimmedName.isEmpty && trimmedName.count <= Self.maxNameLength }
+
+    /// Correct mode with a turn: the scope picker is shown.
+    public var showsScope: Bool {
+        if case .correct(let turnID) = mode { return turnID != nil }
+        return false
+    }
+
+    public var effectiveScope: Scope { showsScope ? scope : .allTurns }
+
+    /// "All of Karan's turns here"
+    public var allTurnsTitle: String { "All of \(subject.displayName)'s turns here" }
+
+    /// Turns that Save relabels.
+    public var labelledTurnCount: Int {
+        effectiveScope == .justThisTurn ? 1 : turns.filter { $0.effectiveSpeakerKey == subject.key }.count
+    }
+
+    /// "Save and label 2 turns" / "Save and label 1 turn"
+    public var saveTitle: String {
+        let n = labelledTurnCount
+        return "Save and label \(n) \(n == 1 ? "turn" : "turns")"
+    }
+
+    public var canSave: Bool { isNameValid }
+
+    /// The Remember card is hidden for "Just this turn" and for "same as another speaker here".
+    public var showsRemember: Bool {
+        if effectiveScope == .justThisTurn { return false }
+        if case .speaker = selection { return false }
+        return true
+    }
+
+    /// The toggle is disabled (and off) under ~10 s of clear speech.
+    public var rememberEnabled: Bool { subject.canBeRemembered }
+
+    /// What Save passes as `remember`.
+    public var rememberEffective: Bool { rememberEnabled && remember }
+
+    public var rememberHelp: String {
+        if !subject.hasVector {
+            return "Voices can only be remembered from speakers Transcribe separated."
+        }
+        if !subject.canBeRemembered {
+            return "Needs about 10 seconds of clear speech to remember a voice. \(subject.displayName) spoke for \(DisplayFormat.duration(subject.cleanSeconds))."
+        }
+        if case .profile(let id) = selection, let p = profiles.first(where: { $0.id == id }) {
+            return "Adds this recording to \(p.name)'s voice."
+        }
+        let who = isNameValid ? trimmedName : "them"
+        return "Saved on this iPhone only. Used to label \(who) automatically next time."
+    }
+
+    /// Slot colour for the dot inside the name field: the selected voice's colour, else the speaker's.
+    public var fieldSlot: Int {
+        switch selection {
+        case .profile(let id): profiles.first { $0.id == id }?.slot ?? subject.slot
+        case .speaker(let key): otherSpeakers.first { $0.key == key }?.slot ?? subject.slot
+        case .newPerson: subject.slot
+        }
+    }
+
+    // MARK: Selection
+
+    public func select(_ selection: Selection) {
+        switch selection {
+        case .newPerson:
+            // Keep typed text unless it names a saved voice or another speaker.
+            if case .newPerson = self.selection {} else { setName("", selecting: .newPerson) }
+            self.selection = .newPerson
+        case .profile(let id):
+            guard let p = profiles.first(where: { $0.id == id }) else { return }
+            setName(p.name, selecting: selection)
+        case .speaker(let key):
+            guard let s = otherSpeakers.first(where: { $0.key == key }) else { return }
+            setName(s.name, selecting: selection)
+        }
+    }
+
+    public func clearName() {
+        setName("", selecting: .newPerson)
+    }
+
+    private func setName(_ value: String, selecting s: Selection) {
+        isSyncingName = true
+        name = value
+        isSyncingName = false
+        selection = s
+    }
+
+    /// Typing a saved voice's name selects it; anything else is a new person.
+    private func syncSelectionToName() {
+        let typed = trimmedName
+        if let p = profiles.first(where: { VoiceProfile.nameMatches($0.name, typed) }) {
+            selection = .profile(p.id)
+        } else if case .speaker(let key) = selection,
+                  otherSpeakers.first(where: { $0.key == key })?.name.caseInsensitiveCompare(typed) == .orderedSame {
+            // Still the other speaker's name.
+        } else {
+            selection = .newPerson
+        }
+    }
+
+    // MARK: Save
+
+    /// What Save will write (pure, tested).
+    public enum Action: Sendable, Equatable {
+        case name(NameTarget, remember: Bool)
+        case confirmSuggestion
+        case reassignTurn(UUID, TurnTarget)
+        case reassignAllTurns([UUID], TurnTarget)
+        case none
+    }
+
+    public var action: Action {
+        guard canSave else { return .none }
+        if effectiveScope == .justThisTurn, case .correct(let turnID?) = mode {
+            guard let turn = turns.first(where: { $0.id == turnID }) else { return .none }
+            switch selection {
+            case .speaker(let key):
+                return key == turn.effectiveSpeakerKey ? .none : .reassignTurn(turnID, .speaker(key))
+            case .profile(let id):
+                // Reuse a speaker in this recording that is already this person.
+                if let key = speakerProfiles.first(where: { $0.value == id })?.key {
+                    return key == turn.effectiveSpeakerKey ? .none : .reassignTurn(turnID, .speaker(key))
+                }
+                return .reassignTurn(turnID, .profile(id))
+            case .newPerson:
+                return .reassignTurn(turnID, .newName(trimmedName))
+            }
+        }
+        switch selection {
+        case .speaker(let key):
+            let ids = turns.filter { $0.effectiveSpeakerKey == subject.key }.map(\.id)
+            return ids.isEmpty ? .none : .reassignAllTurns(ids, .speaker(key))
+        case .profile(let id):
+            if subject.label == .suggested, subject.suggestedProfileID == id { return .confirmSuggestion }
+            return .name(.existing(profileID: id), remember: rememberEffective)
+        case .newPerson:
+            return .name(.newPerson(name: trimmedName), remember: rememberEffective)
+        }
+    }
+
+    /// Writes through the store. Returns the store's result when a name was saved.
+    @discardableResult
+    public func save(using store: any LibraryStoring) throws -> NameResult? {
+        switch action {
+        case .none:
+            return nil
+        case .confirmSuggestion:
+            return try store.confirmSuggestion(recordingID: recordingID, key: subject.key)
+        case .name(let target, let remember):
+            return try store.nameSpeaker(recordingID: recordingID, key: subject.key, as: target, remember: remember)
+        case .reassignTurn(let turnID, let target):
+            try store.reassignTurn(recordingID: recordingID, turnID: turnID, to: target)
+            return nil
+        case .reassignAllTurns(let ids, let target):
+            if case .speaker(let key) = target {
+                // One transaction that also rolls back what this speaker fed a wrongly matched voice.
+                try store.moveAllTurns(recordingID: recordingID, from: subject.key, to: key)
+            } else {
+                for id in ids { try store.reassignTurn(recordingID: recordingID, turnID: id, to: target) }
+            }
+            return nil
+        }
+    }
+
+    /// User-facing text for a save error.
+    public static func message(for error: any Error) -> String {
+        switch error {
+        case StoreError.invalidName: "Enter a name."
+        case StoreError.notFound: "This recording or voice no longer exists."
+        case StoreError.notImplemented: "Saving isn't available yet."
+        default: "Couldn't save. Please try again."
+        }
+    }
+
+    /// Note after a save that kept the name but stored no voice sample, else nil.
+    public static func note(for result: NameResult?) -> String? {
+        switch result?.skipReason {
+        case .tooLittleSpeech: "Name saved. Not enough clear speech to remember the voice yet."
+        case .duplicate, .rememberOff, .noVector, nil: nil
+        }
+    }
+
+    // MARK: Helpers
+
+    /// The recording's peak bins that fall inside `range` (at least one bin).
+    public static func peaks(_ peaks: [Float], duration: TimeInterval, range: TimeRange) -> [Float] {
+        guard !peaks.isEmpty, duration > 0 else { return [] }
+        let n = peaks.count
+        let a = Swift.max(0, Swift.min(n - 1, Int((range.start / duration * Double(n)).rounded(.down))))
+        let b = Swift.max(a + 1, Swift.min(n, Int((range.end / duration * Double(n)).rounded(.up))))
+        return Array(peaks[a..<b])
+    }
+}

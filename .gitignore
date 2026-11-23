@@ -1,0 +1,10 @@
+*.xcodeproj/
+Apps/iPhone/Info.plist
+.build/
+.swiftpm/
+DerivedData/
+*.xcresult
+xcuserdata/
+TranscribeKit/Tests/TranscribeFluidTests/Fixtures/*.wav
+.DS_Store
+TranscribeKit/Tests/TranscribeFluidTests/Fixtures/*.turns.json
