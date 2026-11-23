@@ -1,4 +1,5 @@
 import Foundation
+import Testing
 @testable import TranscribeCore
 
 /// Exact-cosine test vectors for the matching suites (WP1).
@@ -95,4 +96,101 @@ extension MatchDecision {
     var isAuto: Bool { if case .autoLabel = self { true } else { false } }
     var isAsk: Bool { if case .ask = self { true } else { false } }
     var lowScoreBest: Float? { if case .unknown(.lowScore(let b)) = self { b } else { nil } }
+}
+
+/// Golden equivalence for capture channels (§7 test 1, D11: "one channel gives exactly today's decisions").
+///
+/// `VoiceMatcherTests`, `VoiceLearningMatcherTests` and `VoiceLearningSimulationTests` call the matcher through these
+/// wrappers. Each call runs three times and returns the first result to the test, so the test's own assertions still
+/// pin the numbers:
+/// 1. the live `VoiceMatcher` on the inputs as given (every channel nil);
+/// 2. the live `VoiceMatcher` with every sample and probe on channel `"c"`;
+/// 3. `ChannelFreeMatcher`, the frozen copy from before channels.
+/// Runs 1 and 2 must equal run 3 exactly, decisions and traces, once the version and channel fields are set back to
+/// their pre-channel values. Neither run may count a trusted sample as being on another channel.
+enum GoldenMatcher {
+    static let channel = "c"
+
+    /// The same profile with every sample heard on `channel`.
+    static func onChannel(_ p: ProfileCandidate, _ channel: String?) -> ProfileCandidate {
+        ProfileCandidate(id: p.id, name: p.name, samples: p.samples, trusted: p.trusted,
+                         channels: Array(repeating: channel, count: p.samples.count), negatives: p.negatives,
+                         modelKey: p.modelKey, autoLabel: p.autoLabel, needsResample: p.needsResample)
+    }
+
+    /// The same probe heard on `channel`.
+    static func onChannel(_ probe: SpeakerProbe, _ channel: String?) -> SpeakerProbe {
+        SpeakerProbe(key: probe.key, vector: probe.vector, cleanSeconds: probe.cleanSeconds,
+                     rejectedProfileIDs: probe.rejectedProfileIDs, channel: channel)
+    }
+
+    /// A trace as the pre-channel matcher wrote it: version 1, no channel fields.
+    static func preChannel(_ t: MatchTrace) -> MatchTrace {
+        var t = t
+        t.version = 1
+        t.probeChannel = nil
+        t.profiles = t.profiles.map(preChannel)
+        return t
+    }
+
+    static func preChannel(_ e: ProfileEvidence) -> ProfileEvidence {
+        var e = e
+        e.otherChannelTrustedCount = nil
+        return e
+    }
+
+    static func decideWithTrace(probes: [SpeakerProbe], profiles: [ProfileCandidate], modelKey: String,
+                                policy: MatchPolicy = .default, cohort: [VoiceVector] = [],
+                                sourceLocation: SourceLocation = #_sourceLocation) -> MatchRun {
+        let frozen = ChannelFreeMatcher.decideWithTrace(probes: probes, profiles: profiles, modelKey: modelKey,
+                                                        policy: policy, cohort: cohort)
+        let asGiven = VoiceMatcher.decideWithTrace(probes: probes, profiles: profiles, modelKey: modelKey,
+                                                   policy: policy, cohort: cohort)
+        let oneChannel = VoiceMatcher.decideWithTrace(probes: probes.map { onChannel($0, channel) },
+                                                      profiles: profiles.map { onChannel($0, channel) },
+                                                      modelKey: modelKey, policy: policy, cohort: cohort)
+        for (run, expectedChannel) in [(asGiven, nil), (oneChannel, Optional(channel))] {
+            #expect(run.decisions == frozen.decisions, "decisions on channel \(expectedChannel ?? "nil")", sourceLocation: sourceLocation)
+            #expect(run.traces.mapValues(preChannel) == frozen.traces, "traces on channel \(expectedChannel ?? "nil")",
+                    sourceLocation: sourceLocation)
+            for t in run.traces.values {
+                #expect(t.version == MatchTrace.currentVersion && t.probeChannel == expectedChannel, sourceLocation: sourceLocation)
+                #expect(t.profiles.allSatisfy { $0.otherChannelTrustedCount == 0 }, sourceLocation: sourceLocation)
+            }
+        }
+        return asGiven
+    }
+
+    static func decide(probes: [SpeakerProbe], profiles: [ProfileCandidate], modelKey: String,
+                       policy: MatchPolicy = .default, cohort: [VoiceVector] = [],
+                       sourceLocation: SourceLocation = #_sourceLocation) -> [SpeakerKey: MatchDecision] {
+        let run = decideWithTrace(probes: probes, profiles: profiles, modelKey: modelKey, policy: policy, cohort: cohort,
+                                  sourceLocation: sourceLocation)
+        let decisions = VoiceMatcher.decide(probes: probes, profiles: profiles, modelKey: modelKey, policy: policy, cohort: cohort)
+        #expect(decisions == run.decisions, sourceLocation: sourceLocation)
+        return decisions
+    }
+
+    static func evidence(_ vector: VoiceVector, against profile: ProfileCandidate, policy: MatchPolicy = .default,
+                         sourceLocation: SourceLocation = #_sourceLocation) -> ProfileEvidence? {
+        let frozen = ChannelFreeMatcher.evidence(vector, against: profile, policy: policy)
+        let asGiven = VoiceMatcher.evidence(vector, against: profile, policy: policy)
+        let oneChannel = VoiceMatcher.evidence(vector, against: onChannel(profile, channel), probeChannel: channel, policy: policy)
+        for e in [asGiven, oneChannel] {
+            #expect(e.map(preChannel) == frozen, sourceLocation: sourceLocation)
+            #expect(e == nil || e?.otherChannelTrustedCount == 0, sourceLocation: sourceLocation)
+        }
+        return asGiven
+    }
+
+    static func conflictingNegatives(_ vector: VoiceVector, profile: ProfileCandidate,
+                                     negatives: [(id: UUID, vector: VoiceVector)], policy: MatchPolicy = .default,
+                                     sourceLocation: SourceLocation = #_sourceLocation) -> [UUID] {
+        let frozen = ChannelFreeMatcher.conflictingNegatives(vector, profile: profile, negatives: negatives, policy: policy)
+        let asGiven = VoiceMatcher.conflictingNegatives(vector, profile: profile, negatives: negatives, policy: policy)
+        let oneChannel = VoiceMatcher.conflictingNegatives(vector, profile: onChannel(profile, channel), negatives: negatives,
+                                                           probeChannel: channel, policy: policy)
+        #expect(asGiven == frozen && oneChannel == frozen, sourceLocation: sourceLocation)
+        return asGiven
+    }
 }

@@ -138,10 +138,14 @@ public final class LibraryStore: LibraryStoring {
     }
 
     /// Curated insert of one embedding into a profile (§5.3). Returns false when skipped as a near-duplicate.
+    ///
+    /// `channel` is the capture channel of the sample's source recording (D10), never this device's; `input` is that
+    /// recording's input route, for the log only. The 12-sample cap, the duplicate check and the protection of the
+    /// earliest `.named` sample apply per channel (D12), so a sample never evicts one heard on another channel.
     @discardableResult
     func insertSample(into profile: VoiceProfile, vector: VoiceVector, modelKey: String, origin: SampleOrigin,
                       speechSeconds: Double, sourceRecordingID: UUID?, sourceSpeakerID: UUID?,
-                      clip: TimeRange?, quote: String?) -> Bool {
+                      clip: TimeRange?, quote: String?, channel: String?, input: String?) -> Bool {
         let live = profile.samples.filter { $0.embeddingModelKey == profile.embeddingModelKey }
         if live.isEmpty && profile.embeddingModelKey != modelKey {
             // A profile with no usable samples (all removed, or a model change) re-enrols on the new model.
@@ -154,7 +158,8 @@ public final class LibraryStore: LibraryStoring {
         }
         guard profile.embeddingModelKey == modelKey else { return false }
         let existing: [CuratedSample] = profile.samples.compactMap { s in
-            guard s.embeddingModelKey == modelKey, let v = s.vector, v.dimension == vector.dimension else { return nil }
+            guard s.embeddingModelKey == modelKey, s.captureChannel == channel,
+                  let v = s.vector, v.dimension == vector.dimension else { return nil }
             return CuratedSample(id: s.id, vector: v, origin: s.origin, addedAt: s.addedAt, speechSeconds: s.speechSeconds)
         }
         let new = CuratedSample(id: UUID(), vector: vector, origin: origin, addedAt: clock.now, speechSeconds: speechSeconds)
@@ -168,6 +173,8 @@ public final class LibraryStore: LibraryStoring {
         sample.clipStart = clip?.start
         sample.clipEnd = clip?.end
         sample.quote = quote
+        sample.captureChannel = channel
+        sample.captureInput = input
         sample.profile = profile
         let evicted = Set(result.evicted)
         for s in profile.samples where evicted.contains(s.id) && s.id != sample.id { context.delete(s) }
@@ -187,7 +194,8 @@ public final class LibraryStore: LibraryStoring {
         let clip = s.recording.flatMap { firstClip(for: s.key, in: $0) }
         let added = insertSample(into: profile, vector: vector, modelKey: key, origin: origin,
                                  speechSeconds: s.cleanSeconds, sourceRecordingID: s.recording?.id,
-                                 sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote)
+                                 sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote,
+                                 channel: s.recording?.captureChannel, input: Self.captureInput(of: s.recording))
         return added ? (true, nil) : (false, .duplicate)
     }
 
@@ -319,7 +327,8 @@ public final class LibraryStore: LibraryStoring {
     }
 
     static func probe(_ s: RecordingSpeaker) -> SpeakerProbe {
-        SpeakerProbe(key: s.key, vector: s.vector, cleanSeconds: s.cleanSeconds, rejectedProfileIDs: Set(s.rejectedProfileIDs))
+        SpeakerProbe(key: s.key, vector: s.vector, cleanSeconds: s.cleanSeconds, rejectedProfileIDs: Set(s.rejectedProfileIDs),
+                     channel: s.recording?.captureChannel)
     }
 
     public func matchCandidates(modelKey: String) throws -> [ProfileCandidate] {
@@ -347,15 +356,18 @@ public final class LibraryStore: LibraryStoring {
                 s.matchScore = Double(score)
                 s.matchMargin = Double(margin)
                 // An automatic sample needs the profile's trusted samples alone to match strongly (§1.7), measured
-                // before the insert, so an automatic sample never vouches for the next one.
+                // before the insert, so an automatic sample never vouches for the next one. Only trusted samples
+                // heard on this recording's channel count (§7).
                 if let vector = s.vector, let key = s.embeddingModelKey, key == p.embeddingModelKey,
                    SampleCurator.shouldAddAutomaticSample(
                        decision: decision,
-                       trustedScore: VoiceMatcher.evidence(vector, against: Self.candidate(p, policy: policy), policy: policy)?.trustedScore,
+                       trustedScore: VoiceMatcher.evidence(vector, against: Self.candidate(p, policy: policy),
+                                                           probeChannel: r.captureChannel, policy: policy)?.trustedScore,
                        coherence: s.coherence, cleanSeconds: s.cleanSeconds, policy: policy) {
                     let clip = firstClip(for: s.key, in: r)
                     insertSample(into: p, vector: vector, modelKey: key, origin: .strongMatch, speechSeconds: s.cleanSeconds,
-                                 sourceRecordingID: r.id, sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote)
+                                 sourceRecordingID: r.id, sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote,
+                                 channel: r.captureChannel, input: Self.captureInput(of: r))
                 }
             case .ask(let profileID, let score)?:
                 s.label = .suggested
@@ -554,7 +566,8 @@ public final class LibraryStore: LibraryStoring {
                 let clip = firstClip(for: s.key, in: r)
                 let stored = insertSample(into: p, vector: vector, modelKey: modelKey, origin: .named,
                                           speechSeconds: s.cleanSeconds, sourceRecordingID: r.id, sourceSpeakerID: s.id,
-                                          clip: clip?.range, quote: clip?.quote)
+                                          clip: clip?.range, quote: clip?.quote,
+                                          channel: r.captureChannel, input: Self.captureInput(of: r))
                 s.profile = p
                 s.nameSnapshot = nil
                 adoptSlot(of: p, for: s, in: r)
@@ -783,12 +796,13 @@ public final class LibraryStore: LibraryStoring {
                 if !s.rejectedProfileIDs.contains(dst.id) { s.rejectedProfileIDs.append(dst.id) }
             }
         }
-        // Samples keep their origin, so trust survives the merge.
+        // Samples keep their origin and channel, so trust survives the merge on the channel it was earned on.
         for sample in src.sortedSamples {
             guard let v = sample.vector else { continue }
             insertSample(into: dst, vector: v, modelKey: sample.embeddingModelKey, origin: sample.origin,
                          speechSeconds: sample.speechSeconds, sourceRecordingID: sample.sourceRecordingID,
-                         sourceSpeakerID: sample.sourceSpeakerID, clip: sample.clipRange, quote: sample.quote)
+                         sourceSpeakerID: sample.sourceSpeakerID, clip: sample.clipRange, quote: sample.quote,
+                         channel: sample.captureChannel, input: sample.captureInput)
         }
         try mergeNegatives(from: src, into: dst)
         if src.isMe { dst.isMe = true }

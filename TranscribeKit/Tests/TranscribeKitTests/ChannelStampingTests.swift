@@ -19,7 +19,7 @@ struct ChannelStampingTests {
     @Test func stampsNilRowsOnce() throws {
         let h = try WP3Harness(channel: CaptureChannel.iphone)
         defer { h.cleanup() }
-        try h.seed(.askKaran)
+        try h.seed(.askKaran, stamp: false)
         try h.store.rejectSuggestion(recordingID: Seeds.ID.recordingD, key: "S2")   // one negative
         let recordings = try h.count(Recording.self), samples = try h.count(VoiceSample.self)
         let negatives = try h.count(VoiceNegative.self)
@@ -45,7 +45,7 @@ struct ChannelStampingTests {
     @Test func copiesASampleChannelFromItsSourceRecording() throws {
         let h = try WP3Harness(channel: CaptureChannel.mac)
         defer { h.cleanup() }
-        try h.seed(.askKaran)
+        try h.seed(.askKaran, stamp: false)
         try h.store.rejectSuggestion(recordingID: Seeds.ID.recordingD, key: "S2")
         // Recording B was captured on an iPhone; A and the rest have no channel yet.
         try h.recording(Seeds.ID.recordingB).captureChannel = CaptureChannel.iphone
@@ -69,7 +69,7 @@ struct ChannelStampingTests {
     @Test func usesTheLocalChannelWhenTheRecordingIsGone() throws {
         let h = try WP3Harness(channel: CaptureChannel.iphone)
         defer { h.cleanup() }
-        try h.seed(.askKaran)
+        try h.seed(.askKaran, stamp: false)
         try h.store.rejectSuggestion(recordingID: Seeds.ID.recordingD, key: "S2")
         for r in try h.context.fetch(FetchDescriptor<Recording>()) { r.captureChannel = CaptureChannel.mac }
         try h.context.save()
@@ -90,7 +90,7 @@ struct ChannelStampingTests {
     @Test func neverDeletesEvenWithAMismatchedStoreDevicePlist() throws {
         let h = try WP3Harness(device: "this-phone")
         defer { h.cleanup() }
-        try h.seed(.askKaran)
+        try h.seed(.askKaran, stamp: false)
         try h.store.rejectSuggestion(recordingID: Seeds.ID.recordingD, key: "S2")
         try h.store.writeDeviceID("some-other-device")
         let counts = [try h.count(Recording.self), try h.count(RecordingSpeaker.self), try h.count(VoiceProfile.self),

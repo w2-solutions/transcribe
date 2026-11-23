@@ -375,7 +375,8 @@ struct V2FixtureWriter {
 
     static func matchTrace(key: SpeakerKey, clean: Double, kind: TraceKind, profile: UUID?, reason: String, score: Float?,
                            runnerUp: Float?, margin: Float?, evidence: [ProfileEvidence]) -> MatchTrace {
-        MatchTrace(key: key, cleanSeconds: clean, kind: kind, profileID: profile, reason: reason, score: score,
+        // Version 1: the trace format V2 stores held (MatchTrace v2 arrived with capture channels in stage 6).
+        MatchTrace(version: 1, key: key, cleanSeconds: clean, kind: kind, profileID: profile, reason: reason, score: score,
                    runnerUp: runnerUp, margin: margin, profiles: evidence, cohortSize: 0, cohortTopMean: nil,
                    cohortTopStd: nil, autoLabelMin: 0.55, autoLabelMargin: 0.10, askMin: 0.40)
     }

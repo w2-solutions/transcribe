@@ -48,7 +48,7 @@ public enum Seeds {
     public static func expectedCounts(_ seed: SeedName) -> (recordings: Int, profiles: Int, samples: Int) {
         switch seed {
         case .firstRun, .empty: (0, 0, 0)
-        case .library: (3, 2, 5)
+        case .library, .karanFromIPhone: (3, 2, 5)
         case .twoSpeakersUnnamed: (1, 1, 3)
         case .askKaran: (4, 2, 5)
         case .shortKaran: (4, 2, 5)
@@ -74,6 +74,9 @@ public enum Seeds {
         case .shortKaran:
             try s.library()
             try s.shortKaranG()
+        case .karanFromIPhone:
+            try s.library()
+            s.karanHeardOnIPhone()
         case .processingHeld:
             try s.profiles()
             try s.processingHeldE()
@@ -232,6 +235,18 @@ struct SeedBuilder {
         addSpeaker(r, key: "S2", ordinal: 2, slot: 1, clean: 6.2, total: 7.0,
                    vector: SyntheticVoices.mix([(.karan, 0.35)], setting: (56, 0.7), variant: 55), label: .unnamed)
         finish(r)
+    }
+
+    /// `karanFromIPhone` (§7): Karan's samples and the recordings they came from (A and B) were heard on an iPhone.
+    /// Everything else is left without a channel, so the launch stamp puts it on this device's channel (Liam's
+    /// samples follow their source recordings: A and B on the iPhone, C on this device). On a Mac, a new recording of
+    /// Karan can then only ask "Is this Karan?" (reason `otherChannel`), while Liam still auto-labels from C.
+    func karanHeardOnIPhone() {
+        guard let karan else { return }
+        let sources = Set(karan.samples.compactMap(\.sourceRecordingID))
+        for sample in karan.samples { sample.captureChannel = CaptureChannel.iphone }
+        let recordings = (try? context.fetch(FetchDescriptor<Recording>())) ?? []
+        for r in recordings where sources.contains(r.id) { r.captureChannel = CaptureChannel.iphone }
     }
 
     /// E: B's date and content, held at `.separating` with speaker-less paragraphs.

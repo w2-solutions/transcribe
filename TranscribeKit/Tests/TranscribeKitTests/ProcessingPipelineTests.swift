@@ -258,7 +258,8 @@ struct ProcessingPipelineTests {
         let liamCohortMax = try #require(trace.profiles.first { $0.profileID == Seeds.ID.liam }?.cohortMax)
         #expect(abs(liamCohortMax - 0.54) < 1e-3)
         // Without the cohort, the same voice would have been auto-labelled.
-        let probe = SpeakerProbe(key: "S1", vector: voice, cleanSeconds: s1.cleanSeconds, rejectedProfileIDs: [])
+        let probe = SpeakerProbe(key: "S1", vector: voice, cleanSeconds: s1.cleanSeconds, rejectedProfileIDs: [],
+                                 channel: try p.h.recording(id).captureChannel)
         let candidates = try p.h.store.matchCandidates(modelKey: EmbeddingModelID.fake.key)
         let alone = VoiceMatcher.decide(probes: [probe], profiles: candidates, modelKey: EmbeddingModelID.fake.key)
         guard case .autoLabel(Seeds.ID.liam, _, _)? = alone["S1"] else {

@@ -33,7 +33,7 @@ struct MatchLogTests {
         }
 
         let decoded = try MatchLog.decoder().decode(MatchLog.self, from: Data(log.utf8))
-        #expect(decoded.version == 1 && decoded.profiles.count == 2)
+        #expect(decoded.version == 2 && decoded.profiles.count == 2)
         #expect(decoded.policy.autoLabelMin == MatchPolicy.default.autoLabelMin && decoded.policy.maxSamplesPerProfile == 12)
         let karan = try #require(decoded.profiles.first { $0.id == Seeds.ID.karan })
         #expect(karan.samples == MatchLog.SampleCounts(trusted: 1, short: 1, automatic: 0) && karan.negatives == 1)

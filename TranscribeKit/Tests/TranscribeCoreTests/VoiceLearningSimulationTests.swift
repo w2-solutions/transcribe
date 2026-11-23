@@ -13,7 +13,7 @@ struct VoiceLearningSimulationTests {
 
     private func run(_ v: VoiceVector, _ profile: ProfileCandidate) throws -> (MatchDecision, MatchTrace) {
         let probe = SpeakerProbe(key: "S1", vector: v, cleanSeconds: 12, rejectedProfileIDs: [])
-        let r = VoiceMatcher.decideWithTrace(probes: [probe], profiles: [profile], modelKey: TV.modelKey)
+        let r = GoldenMatcher.decideWithTrace(probes: [probe], profiles: [profile], modelKey: TV.modelKey)
         return (try #require(r.decisions["S1"]), try #require(r.traces["S1"]))
     }
 

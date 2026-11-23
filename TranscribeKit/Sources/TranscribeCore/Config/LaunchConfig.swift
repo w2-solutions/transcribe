@@ -3,6 +3,7 @@ import Foundation
 public enum SeedName: String, Sendable, CaseIterable {
     case firstRun, empty, library, twoSpeakersUnnamed, askKaran, processingHeld, failedProcessing
     case shortKaran        // library + G: an unnamed 6.2 s voice that is Karan in another setting
+    case karanFromIPhone   // library, with Karan's samples and his source recordings heard on an iPhone (§7)
 }
 public enum FakeScriptName: String, Sendable, CaseIterable {
     case newVoices, knownVoices, askKaran, noSpeech, failSeparation, holdAtSeparating

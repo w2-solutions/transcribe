@@ -35,11 +35,12 @@ public enum VoiceMatcher {
         return descendingMean(top)
     }
 
-    /// How `vector` scores against `profile` (§1.3, §1.4). Nil when the profile has no sample of the vector's
-    /// dimension. `cohortMax` is always nil here; only `decideWithTrace` knows the cohort.
-    public static func evidence(_ vector: VoiceVector, against profile: ProfileCandidate,
+    /// How `vector`, heard on `probeChannel`, scores against `profile` (§1.3, §1.4, §7). Nil when the profile has no
+    /// sample of the vector's dimension. A trusted sample counts as trusted only on the probe's channel (nil equals
+    /// nil); negatives count from every channel. `cohortMax` is always nil here; only `decideWithTrace` knows the cohort.
+    public static func evidence(_ vector: VoiceVector, against profile: ProfileCandidate, probeChannel: String? = nil,
                                 policy: MatchPolicy = .default) -> ProfileEvidence? {
-        guard let s = scored(vector, against: profile, topK: policy.scoringTopK) else { return nil }
+        guard let s = scored(vector, against: profile, topK: policy.scoringTopK, channel: .only(probeChannel)) else { return nil }
         let negativeMax = profile.negatives
             .filter { $0.dimension == vector.dimension }
             .map { vector.cosine($0) }
@@ -48,7 +49,8 @@ public enum VoiceMatcher {
         return ProfileEvidence(profileID: profile.id, score: s.score, trustedTop: s.trustedTop,
                                trustedScore: s.trustedScore, trustedCount: s.trustedCount,
                                untrustedCount: s.untrustedCount, askOnly: s.trustedCount == 0,
-                               negativeMax: negativeMax, blocked: blocked, cohortMax: nil)
+                               negativeMax: negativeMax, blocked: blocked, cohortMax: nil,
+                               otherChannelTrustedCount: s.otherChannelTrustedCount)
     }
 
     /// One decision per probe key. Pure, deterministic, order-independent. Same as `decideWithTrace(...).decisions`.
@@ -63,6 +65,9 @@ public enum VoiceMatcher {
     /// greedily from the highest score down so that one profile is offered to at most one speaker per recording.
     /// A profile blocked by a negative is never offered but still counts as runner-up, and so do `cohort` voices
     /// (unnamed voices from past recordings) that do not themselves score as that profile.
+    /// Each probe is scored on its own `channel` (§7): trusted samples from another channel only fill second place,
+    /// so a profile with none on the probe's channel can be asked about but never auto-labelled. With every sample
+    /// and probe on one channel, the decisions are exactly those from before channels.
     /// Probe keys and profile ids are expected to be unique; if one repeats, its first occurrence is used.
     public static func decideWithTrace(probes: [SpeakerProbe], profiles: [ProfileCandidate], modelKey: String,
                                        policy: MatchPolicy = .default, cohort: [VoiceVector] = []) -> MatchRun {
@@ -75,11 +80,12 @@ public enum VoiceMatcher {
             p.modelKey == modelKey && !p.needsResample && !p.samples.isEmpty && seenProfiles.insert(p.id).inserted
         }
 
-        // C_P: cohort voices that do not themselves score as P (§1.5), once per profile.
+        // C_P: cohort voices that do not themselves score as P (§1.5), once per profile. The cohort is per profile,
+        // not per probe, so it is scored ignoring channels, exactly as before channels.
         var cohortFor: [UUID: [VoiceVector]] = [:]
         for p in eligible {
             cohortFor[p.id] = cohort.filter { x in
-                guard let s = scored(x, against: p, topK: policy.scoringTopK) else { return true }
+                guard let s = scored(x, against: p, topK: policy.scoringTopK, channel: .any) else { return true }
                 return !atLeast(s.score, policy.askMin)
             }
         }
@@ -88,7 +94,7 @@ public enum VoiceMatcher {
             MatchTrace(key: probe.key, cleanSeconds: probe.cleanSeconds, kind: kind, profileID: nil, reason: reason,
                        score: nil, runnerUp: nil, margin: nil, profiles: [], cohortSize: stats.size,
                        cohortTopMean: stats.topMean, cohortTopStd: stats.topStd, autoLabelMin: policy.autoLabelMin,
-                       autoLabelMargin: policy.autoLabelMargin, askMin: policy.askMin)
+                       autoLabelMargin: policy.autoLabelMargin, askMin: policy.askMin, probeChannel: probe.channel)
         }
 
         // 2. Per-probe pre-filter, then scoring.
@@ -115,7 +121,7 @@ public enum VoiceMatcher {
             }
             var evidences: [ProfileEvidence] = []
             for p in candidates {
-                guard var e = evidence(vector, against: p, policy: policy) else { continue }
+                guard var e = evidence(vector, against: p, probeChannel: probe.channel, policy: policy) else { continue }
                 e.cohortMax = (cohortFor[p.id] ?? [])
                     .filter { $0.dimension == vector.dimension }
                     .map { vector.cosine($0) }
@@ -170,7 +176,7 @@ public enum VoiceMatcher {
                                               score: best, runnerUp: second, margin: margin)
             } else if atLeast(best, policy.askMin) {
                 let reason = downgraded ? "downgraded"
-                    : t.evidence.askOnly ? "askOnly"
+                    : t.evidence.askOnly ? ((t.evidence.otherChannelTrustedCount ?? 0) > 0 ? "otherChannel" : "askOnly")
                     : !t.profile.autoLabel ? "autoLabelOff"
                     : !atLeast(best, policy.autoLabelMin) ? "belowAuto"
                     : "margin"
@@ -203,12 +209,13 @@ public enum VoiceMatcher {
     }
 
     /// §1.10: the negatives a voice `vector` conflicts with once the user says it is `profile`, that is, those at
-    /// least as close to the voice as the profile's own score. Pass the profile without this speaker's samples and
-    /// call it before the new sample is added. Empty when the profile has no sample of the vector's dimension.
+    /// least as close to the voice as the profile's own score on the voice's `probeChannel`. Negatives from every
+    /// channel count. Pass the profile without this speaker's samples and call it before the new sample is added.
+    /// Empty when the profile has no sample of the vector's dimension.
     public static func conflictingNegatives(_ vector: VoiceVector, profile: ProfileCandidate,
-                                            negatives: [(id: UUID, vector: VoiceVector)],
+                                            negatives: [(id: UUID, vector: VoiceVector)], probeChannel: String? = nil,
                                             policy: MatchPolicy = .default) -> [UUID] {
-        guard let s = scored(vector, against: profile, topK: policy.scoringTopK) else { return [] }
+        guard let s = scored(vector, against: profile, topK: policy.scoringTopK, channel: .only(probeChannel)) else { return [] }
         return negatives
             .filter { $0.vector.dimension == vector.dimension && atLeast(vector.cosine($0.vector), s.score) }
             .map(\.id)
@@ -222,20 +229,42 @@ public enum VoiceMatcher {
         let trustedScore: Float?
         let trustedCount: Int
         let untrustedCount: Int
+        let otherChannelTrustedCount: Int
+    }
+
+    /// Which samples may count as trusted (D11).
+    private enum ChannelFilter {
+        /// Trust as stored, whatever the channel: the cohort filter, which is per profile, not per probe.
+        case any
+        /// Trusted only when heard on this channel (nil equals nil); trusted samples from another channel fall back to
+        /// second place.
+        case only(String?)
     }
 
     /// §1.3 against the samples of the vector's dimension. Nil when there are none.
-    private static func scored(_ vector: VoiceVector, against profile: ProfileCandidate, topK: Int) -> Scored? {
+    private static func scored(_ vector: VoiceVector, against profile: ProfileCandidate, topK: Int,
+                               channel: ChannelFilter) -> Scored? {
         var trusted: [Float] = [], untrusted: [Float] = []
+        var otherChannelTrusted = 0
         for (i, sample) in profile.samples.enumerated() where sample.dimension == vector.dimension {
             let c = vector.cosine(sample)
-            if profile.trusted[i] { trusted.append(c) } else { untrusted.append(c) }
+            let sameChannel: Bool
+            switch channel {
+            case .any: sameChannel = true
+            case .only(let probeChannel): sameChannel = profile.channels[i] == probeChannel
+            }
+            if profile.trusted[i] && sameChannel {
+                trusted.append(c)
+            } else {
+                untrusted.append(c)
+                if profile.trusted[i] { otherChannelTrusted += 1 }
+            }
         }
         guard let score = pairScore(trusted: trusted, untrusted: untrusted, topK: topK) else { return nil }
         let t = trusted.sorted(by: >)
         let trustedScore = t.isEmpty ? nil : descendingMean(Array(t.prefix(Swift.max(1, topK))))
-        return Scored(score: score, trustedTop: t.first, trustedScore: trustedScore,
-                      trustedCount: trusted.count, untrustedCount: untrusted.count)
+        return Scored(score: score, trustedTop: t.first, trustedScore: trustedScore, trustedCount: trusted.count,
+                      untrustedCount: untrusted.count, otherChannelTrustedCount: otherChannelTrusted)
     }
 
     /// Mean of `values`, summed in descending order so the result does not depend on their order.

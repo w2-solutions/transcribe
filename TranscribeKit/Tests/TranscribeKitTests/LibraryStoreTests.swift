@@ -26,8 +26,11 @@ struct WP3Harness {
                              deviceIdentity: FixedDeviceIdentity(device), clock: .frozen(now), localChannel: channel)
     }
 
-    func seed(_ seed: SeedName) throws {
+    /// Applies a seed, then stamps capture channels as `AppEnvironment` does at launch (§6.4), so seeded samples sit on
+    /// this harness's channel. `stamp: false` leaves every channel nil, for the stamping tests.
+    func seed(_ seed: SeedName, stamp: Bool = true) throws {
         try Seeds.apply(seed, context: context, paths: paths, clock: .frozen(Seeds.Dates.d))
+        if stamp { _ = try store.stampCaptureChannels() }
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: paths.root) }

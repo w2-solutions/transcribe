@@ -34,7 +34,7 @@ struct DeviceReconcileTests {
     @Test func firstLaunchRecordsTheDeviceWithoutWiping() throws {
         let h = try WP3Harness(device: "phone-1")
         defer { h.cleanup() }
-        try h.seed(.library)
+        try h.seed(.library, stamp: false)
         #expect(try h.store.stampCaptureChannels() > 0)
         #expect(try h.store.stampCaptureChannels() == 0)
         #expect(try h.count(VoiceSample.self) == 5)
@@ -44,7 +44,7 @@ struct DeviceReconcileTests {
     @Test func anotherDeviceWipesNothing() throws {
         let h = try WP3Harness(device: "phone-1")
         defer { h.cleanup() }
-        try h.seed(.library)
+        try h.seed(.library, stamp: false)
         _ = try h.store.stampCaptureChannels()
         let before = try voiceState(h)
         #expect(before.samples == 5 && before.vectors > 0)
@@ -65,7 +65,7 @@ struct DeviceReconcileTests {
     @Test func anotherDeviceKeepsNegativesTracesAndCoherence() throws {
         let h = try WP3Harness(device: "phone-1")
         defer { h.cleanup() }
-        try h.seed(.askKaran)
+        try h.seed(.askKaran, stamp: false)
         _ = try h.store.stampCaptureChannels()
         try h.store.rejectSuggestion(recordingID: Seeds.ID.recordingD, key: "S2")
         let id = try h.separatedRecording(turns: SeedContent.conversationB, drafts: [
@@ -84,7 +84,7 @@ struct DeviceReconcileTests {
     @Test func anUnknownIdentityRecordsNothingAndWipesNothing() throws {
         let h = try WP3Harness(device: "")
         defer { h.cleanup() }
-        try h.seed(.library)
+        try h.seed(.library, stamp: false)
         _ = try h.store.stampCaptureChannels()
         #expect(h.store.storedDeviceID() == nil)
         #expect(try h.count(VoiceSample.self) == 5)
