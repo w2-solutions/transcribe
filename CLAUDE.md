@@ -61,6 +61,17 @@ Rules that follow from the research:
 
 To check first on a real iPhone 15: that Parakeet TDT v3 loads (a different Parakeet variant fails on its A16 chip), and peak memory and speed of the offline diariser. No published figures exist for either.
 
+## Testing approach (decided 2026-11-23)
+
+- **Logic tests:** Swift Testing on `TranscribeKit`, run with `swift test`. No simulator. Covers the matcher, thresholds and storage; the real FluidAudio engine is tested here against recorded audio files.
+- **Flow tests:** XCUITest via `xcodebuild test`, one per mockup flow, on iPhone simulator and Mac.
+- **Ad-hoc checks while building:** `xcrun simctl` (boot, install, launch, screenshot) plus `axe` (tap, type, read the screen). Third-party and disposable; nothing important depends on it. Needs `axe` 2.1.1 or later on Xcode 27 (1.2.1 fails).
+- **The UI talks to `TranscribeKit` through a protocol** with a real engine (FluidAudio) and a fake engine (scripted results, no models, no microphone). A launch argument selects the fake engine and seeds app state. UI tests and ad-hoc checks use the fake engine.
+- The Mac app needs no simulator: XCUITest runs it natively, taking over the screen and mouse for a few seconds. `axe` does not work on Mac.
+- Shared UI tests need two per-platform helpers: `click()` on Mac versus `tap()` on iPhone, and a text's string is in `value` on Mac but `label` on iPhone.
+- Every control gets an `accessibilityIdentifier` from the first screen.
+- The simulator cannot stand in for the real iPhone 15 on model loading, memory, speed or microphone behaviour.
+
 ## Open decisions
 
 - Match thresholds and minimum speech for a voice profile (tune on real recordings).
