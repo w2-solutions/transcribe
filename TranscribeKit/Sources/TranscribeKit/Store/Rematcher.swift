@@ -17,7 +17,7 @@ enum Rematcher {
         let profiles = try context.fetch(FetchDescriptor<VoiceProfile>())
             .filter { $0.embeddingModelKey == modelKey }
             .sorted(by: LibraryStore.profileOrder)
-        let candidates = profiles.map { LibraryStore.candidate($0) }
+        let candidates = profiles.map { LibraryStore.candidate($0, policy: policy) }   // trust and negatives: a blocked profile is never suggested
         guard candidates.contains(where: { $0.id == changed.id && !$0.samples.isEmpty && !$0.needsResample }) else { return 0 }
 
         let ready = RecordingStage.ready.rawValue

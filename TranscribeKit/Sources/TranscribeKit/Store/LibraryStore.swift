@@ -139,16 +139,19 @@ public final class LibraryStore: LibraryStoring {
         let live = profile.samples.filter { $0.embeddingModelKey == profile.embeddingModelKey }
         if live.isEmpty && profile.embeddingModelKey != modelKey {
             // A profile with no usable samples (device wipe or model change) re-enrols on the new model.
+            // Its negatives were measured on the old model too, so they go with the samples.
             for stale in profile.samples { context.delete(stale) }
             profile.samples.removeAll()
+            for stale in profile.negatives { context.delete(stale) }
+            profile.negatives.removeAll()
             profile.embeddingModelKey = modelKey
         }
         guard profile.embeddingModelKey == modelKey else { return false }
         let existing: [CuratedSample] = profile.samples.compactMap { s in
             guard s.embeddingModelKey == modelKey, let v = s.vector, v.dimension == vector.dimension else { return nil }
-            return CuratedSample(id: s.id, vector: v, origin: s.origin, addedAt: s.addedAt)
+            return CuratedSample(id: s.id, vector: v, origin: s.origin, addedAt: s.addedAt, speechSeconds: s.speechSeconds)
         }
-        let new = CuratedSample(id: UUID(), vector: vector, origin: origin, addedAt: clock.now)
+        let new = CuratedSample(id: UUID(), vector: vector, origin: origin, addedAt: clock.now, speechSeconds: speechSeconds)
         let result = SampleCurator.insert(new, into: existing, policy: policy)
         guard result.added else { return false }
         let sample = VoiceSample(id: new.id, vector: vector, embeddingModelKey: modelKey, origin: origin,
@@ -183,11 +186,13 @@ public final class LibraryStore: LibraryStoring {
     }
 
     /// A correction away from profile `p`: roll back what this speaker fed into `p` and never suggest `p` again.
-    func rollBack(_ p: VoiceProfile, from s: RecordingSpeaker) {
+    /// With `addNegative`, the voice is also kept as a negative for `p` (§1.4), after the fed samples are gone.
+    func rollBack(_ p: VoiceProfile, from s: RecordingSpeaker, addNegative: Bool) {
         let fed = p.samples.filter { $0.sourceSpeakerID == s.id }
         for sample in fed { context.delete(sample) }
         p.samples.removeAll { $0.sourceSpeakerID == s.id }
         if !s.rejectedProfileIDs.contains(p.id) { s.rejectedProfileIDs.append(p.id) }
+        if addNegative { self.addNegative(to: p, from: s) }
     }
 
     /// After a rollback (and after the corrected speaker has been unlinked from `p`): a profile left with
@@ -239,16 +244,21 @@ public final class LibraryStore: LibraryStoring {
         guard stored != current else { return false }
         // Restored onto another device: voices were learnt with another microphone (CLAUDE.md), so wipe them.
         for sample in try context.fetch(FetchDescriptor<VoiceSample>()) { context.delete(sample) }
+        for negative in try context.fetch(FetchDescriptor<VoiceNegative>()) { context.delete(negative) }
         for p in try context.fetch(FetchDescriptor<VoiceProfile>()) {
             p.samples.removeAll()
+            p.negatives.removeAll()
             p.needsResample = true
         }
-        // Speaker vectors in existing recordings came from the old device's microphone too: drop them so a
-        // profile can only re-enrol from recordings made on this device.
+        // Speaker vectors in existing recordings came from the old device's microphone too: drop them (and the
+        // numbers measured from them) so a profile can only re-enrol from recordings made on this device.
         for s in try context.fetch(FetchDescriptor<RecordingSpeaker>()) {
             s.vectorData = nil
             s.embeddingModelKey = nil
+            s.vectorCoherence = nil
+            s.matchTraceData = nil
         }
+        for r in try context.fetch(FetchDescriptor<Recording>()) { r.movedSpeakerTracesData = nil }
         try context.save()
         try writeDeviceID(current)
         return true
@@ -314,6 +324,7 @@ public final class LibraryStore: LibraryStoring {
             s.totalSeconds = d.totalSeconds
             s.turnCount = d.turnCount
             s.vectorData = d.vector?.packed
+            s.vectorCoherence = d.coherence.map(Double.init)
             s.embeddingModelKey = d.embeddingModel.key
             s.recording = r
         }
@@ -334,17 +345,16 @@ public final class LibraryStore: LibraryStoring {
     }
 
     public func matchCandidates(modelKey: String) throws -> [ProfileCandidate] {
-        try allProfiles().filter { $0.embeddingModelKey == modelKey }.map { Self.candidate($0) }
+        try allProfiles().filter { $0.embeddingModelKey == modelKey }.map { Self.candidate($0, policy: policy) }
     }
 
-    static func candidate(_ p: VoiceProfile) -> ProfileCandidate {
-        let vectors = p.sortedSamples.filter { $0.embeddingModelKey == p.embeddingModelKey }.compactMap(\.vector)
-        return ProfileCandidate(id: p.id, name: p.name, samples: vectors, modelKey: p.embeddingModelKey,
-                                autoLabel: p.autoLabel, needsResample: p.needsResample)
-    }
-
-    public func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], policy: MatchPolicy) throws -> ProcessingOutcome {
+    public func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], traces: [SpeakerKey: MatchTrace],
+                             policy: MatchPolicy) throws -> ProcessingOutcome {
         let r = try recording(id)
+        // The trace is written once, here, and never cleared by later edits.
+        for s in r.sortedSpeakers {
+            if let trace = traces[s.key] { s.matchTraceData = try? JSONEncoder().encode(trace) }
+        }
         for s in r.sortedSpeakers where s.label != .named {
             var decision = decisions[s.key]
             if case .autoLabel(let id, _, _)? = decision, (try? profile(id)) == nil { decision = nil }
@@ -358,8 +368,13 @@ public final class LibraryStore: LibraryStoring {
                 s.nameSnapshot = nil
                 s.matchScore = Double(score)
                 s.matchMargin = Double(margin)
-                if SampleCurator.shouldAddSample(origin: .strongMatch, decision: decision, cleanSeconds: s.cleanSeconds, policy: policy),
-                   let vector = s.vector, let key = s.embeddingModelKey, key == p.embeddingModelKey {
+                // An automatic sample needs the profile's trusted samples alone to match strongly (§1.7), measured
+                // before the insert, so an automatic sample never vouches for the next one.
+                if let vector = s.vector, let key = s.embeddingModelKey, key == p.embeddingModelKey,
+                   SampleCurator.shouldAddAutomaticSample(
+                       decision: decision,
+                       trustedScore: VoiceMatcher.evidence(vector, against: Self.candidate(p, policy: policy), policy: policy)?.trustedScore,
+                       coherence: s.coherence, cleanSeconds: s.cleanSeconds, policy: policy) {
                     let clip = firstClip(for: s.key, in: r)
                     insertSample(into: p, vector: vector, modelKey: key, origin: .strongMatch, speechSeconds: s.cleanSeconds,
                                  sourceRecordingID: r.id, sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote)
@@ -543,13 +558,16 @@ public final class LibraryStore: LibraryStoring {
             }
         }
 
+        // Captured before any change: the person this voice was labelled as, and the person it was suggested as.
         let previous = (s.label == .autoLabelled || s.label == .named) ? s.profile : nil
+        let priorSuggestion = s.label == .suggested ? s.suggestedProfileID : nil
         let result: NameResult
         var changedProfile: VoiceProfile?
 
         switch resolved {
         case .newPerson(let name):
-            if let previous { rollBack(previous, from: s) }
+            if let previous { rollBack(previous, from: s, addNegative: remember) }
+            if remember, let q = priorSuggestion, let suggested = try? profile(q) { addNegative(to: suggested, from: s) }
             if remember && s.canBeRemembered, let vector = s.vector, let modelKey = s.embeddingModelKey {
                 let owned = Set(try allProfiles().map(\.colourSlot))
                 let slot = ColourAssigner.slotForNewProfile(speakerSlot: s.colourSlot, profileSlots: owned)
@@ -576,18 +594,17 @@ public final class LibraryStore: LibraryStoring {
 
         case .existing(let profileID):
             let p = try profile(profileID)
-            if let previous, previous.id != p.id { rollBack(previous, from: s) }
+            if let previous, previous.id != p.id { rollBack(previous, from: s, addNegative: remember) }
+            if remember, let q = priorSuggestion, q != p.id, let suggested = try? profile(q) { addNegative(to: suggested, from: s) }
             s.profile = p
             s.nameSnapshot = nil
             s.rejectedProfileIDs.removeAll { $0 == p.id }
             adoptSlot(of: p, for: s, in: r)
-            if remember {
-                let added = addSpeakerSample(s, to: p, origin: .confirmed)
-                if added.stored { changedProfile = p }
-                result = NameResult(profileID: p.id, sampleStored: added.stored, skipReason: added.skip)
-            } else {
-                result = NameResult(profileID: p.id, sampleStored: false, skipReason: .rememberOff)
-            }
+            // The user agreeing with what the app said is a confirmation; anything else corrects a miss.
+            let origin: SampleOrigin = (previous?.id == p.id || priorSuggestion == p.id) ? .confirmed : .corrected
+            let added = learnPositive(s, is: p, origin: origin, remember: remember)
+            if added.stored { changedProfile = p }
+            result = NameResult(profileID: p.id, sampleStored: added.stored, skipReason: added.skip)
         }
 
         s.label = .named
@@ -618,6 +635,7 @@ public final class LibraryStore: LibraryStoring {
         if let profileID = s.suggestedProfileID, !s.rejectedProfileIDs.contains(profileID) {
             s.rejectedProfileIDs.append(profileID)
         }
+        if let profileID = s.suggestedProfileID, let p = try? profile(profileID) { addNegative(to: p, from: s) }
         s.suggestedProfileID = nil
         s.matchScore = nil
         s.matchMargin = nil
@@ -677,10 +695,11 @@ public final class LibraryStore: LibraryStoring {
         let r = try recording(recordingID)
         guard var doc = r.transcript else { throw StoreError.invariant("recording \(recordingID) has no transcript") }
         let s = try speaker(source, in: r)
-        _ = try speaker(target, in: r)
+        let t = try speaker(target, in: r)
 
         if s.label == .autoLabelled || s.label == .named, let p = s.profile {
-            rollBack(p, from: s)
+            // The voice belongs to the target speaker, so it is not P unless the target is P too.
+            rollBack(p, from: s, addNegative: t.profile?.id != p.id)
             s.profile = nil
             pruneAfterRollBack(p, movedAway: s)
         }
@@ -697,6 +716,7 @@ public final class LibraryStore: LibraryStoring {
         try setTranscript(doc, on: r)
         recount(r, before: before, after: doc.turns)
         if s.turnCount == 0, r.speakers.contains(where: { $0.id == s.id }) {
+            keepTrace(of: s, movedTo: target, in: r)
             r.speakers.removeAll { $0.id == s.id }
             context.delete(s)
         }
@@ -785,12 +805,14 @@ public final class LibraryStore: LibraryStoring {
                 if !s.rejectedProfileIDs.contains(dst.id) { s.rejectedProfileIDs.append(dst.id) }
             }
         }
+        // Samples keep their origin, so trust survives the merge.
         for sample in src.sortedSamples {
             guard let v = sample.vector else { continue }
-            insertSample(into: dst, vector: v, modelKey: sample.embeddingModelKey, origin: .merged,
+            insertSample(into: dst, vector: v, modelKey: sample.embeddingModelKey, origin: sample.origin,
                          speechSeconds: sample.speechSeconds, sourceRecordingID: sample.sourceRecordingID,
                          sourceSpeakerID: sample.sourceSpeakerID, clip: sample.clipRange, quote: sample.quote)
         }
+        try mergeNegatives(from: src, into: dst)
         if src.isMe { dst.isMe = true }
         dst.namedAt = max(dst.namedAt, src.namedAt)
         context.delete(src)
@@ -830,7 +852,11 @@ public final class LibraryStore: LibraryStoring {
         if let other = s.profile, other.id != p.id {
             throw StoreError.invariant("speaker \(recordingSpeakerID) is \(other.name), not \(p.name)")
         }
-        let added = addSpeakerSample(s, to: p, origin: .addedFromRecording)
+        let priorSuggestion = s.label == .suggested ? s.suggestedProfileID : nil
+        let negativesBefore = Set(p.negatives.map(\.id))
+        let added = learnPositive(s, is: p, origin: .addedFromRecording, remember: true)
+        // learnPositive drops negatives before the sample gate, so they can change even when no sample is stored.
+        let negativesChanged = Set(p.negatives.map(\.id)) != negativesBefore
         if added.stored, s.profile == nil, let r = s.recording {
             // Adding this voice to a person says who the speaker is.
             s.profile = p
@@ -839,8 +865,10 @@ public final class LibraryStore: LibraryStoring {
             s.suggestedProfileID = nil
             adoptSlot(of: p, for: s, in: r)
             rebuildSearchText(r)
+            if let q = priorSuggestion, q != p.id, let suggested = try? profile(q) { addNegative(to: suggested, from: s) }
         }
-        if added.stored {
+        if added.stored || negativesChanged {
+            // A removed negative can unblock suggestions too, so the rematch runs for either change.
             try Rematcher.run(changed: p, excludingRecording: s.recording?.id, context: context, policy: policy)
             try context.save()
         }

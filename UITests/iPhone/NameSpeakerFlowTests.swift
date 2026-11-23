@@ -52,4 +52,21 @@ final class NameSpeakerFlowTests: FlowTestCase {
         XCTAssertEqual(app.element(AX.Transcript.turnChip(0)).textValue, "Speaker 1")
         XCTAssertEqual(app.element(AX.Transcript.turnChip(1)).textValue, "Speaker 2")
     }
+
+    /// `shortKaran`: recording G's Speaker 2 spoke for 6.2 s. Too little for a new voice (10 s), enough to add to a
+    /// saved one (5 s), so choosing Karan turns Remember on.
+    @MainActor func testShortSpeakerToSavedVoiceKeepsRemember() {
+        let app = UITestApp.launch(seed: "shortKaran", route: "name:latest:S2")
+        app.waitFor(AX.NameSpeaker.sheet, timeout: 20)
+        app.waitFor(AX.NameSpeaker.savedVoice("karan")).press()
+
+        let toggle = app.waitFor(AX.NameSpeaker.rememberToggle)
+        Wait.enabled(toggle, true)
+        Wait.until(toggle, "value == %@", "1", timeout: 5, "Remember should be on for a saved voice")
+        Wait.label(app.waitFor(AX.NameSpeaker.rememberHelp), equals: "Adds this recording to Karan's voice.")
+
+        app.element(AX.NameSpeaker.saveButton).press()
+        app.waitForGone(AX.NameSpeaker.sheet)
+        Wait.label(app.waitFor(AX.Transcript.turnChip(1)), equals: "Karan")
+    }
 }

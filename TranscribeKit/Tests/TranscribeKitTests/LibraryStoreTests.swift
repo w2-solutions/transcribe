@@ -66,6 +66,27 @@ struct WP3Harness {
         _ = try store.applyMatches(id: id, decisions: decisions, policy: .default)
         return id
     }
+
+    /// Matches a separated recording as the pipeline does: probes, candidates, cohort, `decideWithTrace`, then
+    /// `applyMatches` with the traces.
+    @discardableResult
+    func matchLikeThePipeline(_ id: UUID, policy: MatchPolicy = .default) throws -> ProcessingOutcome {
+        let key = EmbeddingModelID.fake.key
+        let probes = try store.probes(for: id)
+        let candidates = try store.matchCandidates(modelKey: key)
+        let cohort = try store.matchCohort(modelKey: key, excludingRecording: id)
+        let run = VoiceMatcher.decideWithTrace(probes: probes, profiles: candidates, modelKey: key, policy: policy, cohort: cohort)
+        return try store.applyMatches(id: id, decisions: run.decisions, traces: run.traces, policy: policy)
+    }
+
+    /// A separated (not yet matched) recording built through the store API.
+    @discardableResult
+    func separatedRecording(turns: [ScriptTurn], drafts: [SpeakerDraft], createdAt: Date = Seeds.Dates.d) throws -> UUID {
+        let id = try queuedRecording(createdAt: createdAt)
+        try store.checkpointTranscript(id: id, document: WP3Docs.paragraphs(turns))
+        try store.checkpointSeparation(id: id, document: WP3Docs.speakers(turns), speakers: drafts)
+        return id
+    }
 }
 
 enum WP3Docs {
@@ -76,9 +97,9 @@ enum WP3Docs {
         TranscriptDocument(words: SeedContent.allWords(turns), turns: SeedContent.speakerTurns(turns), asrModelID: "fake-parakeet")
     }
     static func draft(_ key: SpeakerKey, _ ordinal: Int, clean: Double, total: Double? = nil, turns: Int = 1,
-                      vector: VoiceVector?) -> SpeakerDraft {
+                      vector: VoiceVector?, coherence: Float? = 1) -> SpeakerDraft {
         SpeakerDraft(key: key, ordinal: ordinal, cleanSeconds: clean, totalSeconds: total ?? clean + 0.5, turnCount: turns,
-                     vector: vector, embeddingModel: .fake)
+                     vector: vector, embeddingModel: .fake, coherence: coherence)
     }
 }
 

@@ -10,6 +10,8 @@ struct SettingsView: View {
     @Environment(Router.self) private var router
     @Query private var profiles: [VoiceProfile]
     @State private var privacyExpanded = false
+    @State private var toastText: String?
+    @State private var toastIcon = "checkmark"
 
     var body: some View {
         @Bindable var settings = env.settings
@@ -35,6 +37,13 @@ struct SettingsView: View {
                     .accessibilityIdentifier(AX.Settings.voicesRow)
                     ValueRow(systemImage: "clock", tint: .accent, title: "Run", value: "After recording", accessory: .none)
                         .accessibilityIdentifier(AX.Settings.runRow)
+                    Button { copyLog() } label: {
+                        ValueRow(systemImage: "doc.on.clipboard", tint: .neutral, title: "Copy voice matching log", value: nil,
+                                 accessory: .none)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityHint("Copies match scores for tuning. No voices, names or text.")
+                    .accessibilityIdentifier(AX.Settings.copyMatchLogRow)
                 }
                 footnote("Speaker separation runs on-device once a recording ends.")
 
@@ -132,7 +141,27 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .navigationBarTitleDisplayMode(.large)
         .screenBackground()
+        .toast(toastText, systemImage: toastIcon, id: AX.Settings.copiedToast)
         .task { await env.models.refresh() }
+    }
+
+    /// Match scores and settings for tuning thresholds (no vectors, names, titles or text), on this iPhone's clipboard only.
+    private func copyLog() {
+        do {
+            Pasteboard.copyPrivate(try env.store.matchingLog())
+            showToast("Log copied", systemImage: "checkmark")
+        } catch {
+            showToast("Couldn't copy the log", systemImage: "exclamationmark.triangle")
+        }
+    }
+
+    private func showToast(_ text: String, systemImage: String) {
+        toastText = nil
+        toastIcon = systemImage
+        Task {
+            await Task.yield()
+            toastText = text
+        }
     }
 
     private func footnote(_ text: String) -> some View {

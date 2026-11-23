@@ -8,12 +8,57 @@ import TranscribeCore
 @Suite("WP3: schema")
 @MainActor
 struct SchemaTests {
-    @Test func migrationPlanListsV1() {
-        #expect(TranscribeMigrationPlan.schemas.count == 1)
-        #expect(TranscribeMigrationPlan.schemas.first == TranscribeSchemaV1.self)
-        #expect(TranscribeMigrationPlan.stages.isEmpty)
+    @Test func migrationPlanListsV1AndV2() {
+        let schemas = TranscribeMigrationPlan.schemas
+        #expect(schemas.count == 2)
+        #expect(schemas.first == TranscribeSchemaV1.self && schemas.last == TranscribeSchemaV2.self)
+        #expect(TranscribeMigrationPlan.stages.count == 1)
         #expect(TranscribeSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
         #expect(TranscribeSchemaV1.models.count == 5)
+        #expect(TranscribeSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
+        #expect(TranscribeSchemaV2.models.count == 6)
+    }
+
+    @Test func v2StoreRoundTripsNegativesAndTraces() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("v2-schema-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = AppPaths(root: root)
+        try paths.prepare()
+        let d = Seeds.ID.recordingD
+        var expectedTrace: MatchTrace?
+        var expectedNegative: (vector: VoiceVector?, source: UUID?, recording: UUID?)?
+
+        do {
+            let container = try ModelContainerFactory.make(inMemory: false, url: paths.storeURL)
+            let h = try WP3Harness(container: container, paths: paths)
+            try h.seed(.askKaran)
+            // A trace from a pipeline-style match, then a reject that stores a negative.
+            let id = try h.separatedRecording(turns: SeedContent.conversationB, drafts: [
+                WP3Docs.draft("S1", 1, clean: 12, vector: SyntheticVoices.vector(near: .liam, cosine: 0.8, variant: 44))])
+            try h.matchLikeThePipeline(id)
+            let s1 = try #require(try h.recording(id).speaker("S1"))
+            expectedTrace = try JSONDecoder().decode(MatchTrace.self, from: try #require(s1.matchTraceData))
+            try h.store.rejectSuggestion(recordingID: d, key: "S2")
+            let s2 = try #require(try h.recording(d).speaker("S2"))
+            let karan = try #require(try h.profile(named: "Karan"))
+            #expect(karan.negatives.count == 1)
+            expectedNegative = (s2.vector, s2.id, d)
+        }
+
+        let container = try ModelContainerFactory.make(inMemory: false, url: paths.storeURL)
+        let context = container.mainContext
+        let negatives = try context.fetch(FetchDescriptor<VoiceNegative>())
+        #expect(negatives.count == 1)
+        let n = try #require(negatives.first)
+        #expect(n.vector == expectedNegative?.vector && n.vector != nil)
+        #expect(n.embeddingModelKey == EmbeddingModelID.fake.key)
+        #expect(n.sourceSpeakerID == expectedNegative?.source && n.sourceRecordingID == expectedNegative?.recording)
+        #expect(n.profile?.id == Seeds.ID.karan && n.speechSeconds == 11.5)
+        let speakers = try context.fetch(FetchDescriptor<RecordingSpeaker>())
+        let traced = speakers.compactMap(\.matchTraceData)
+        #expect(traced.count == 1)
+        let trace = try JSONDecoder().decode(MatchTrace.self, from: try #require(traced.first))
+        #expect(trace == expectedTrace && trace.kind == .auto && trace.profileID == Seeds.ID.liam)
     }
 
     @Test func onDiskStoreSurvivesCloseAndReopen() throws {

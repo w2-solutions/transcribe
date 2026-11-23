@@ -24,7 +24,7 @@ let package = Package(
         ]),
         .target(name: "TranscribeFakes", dependencies: ["TranscribeCore", "TranscribeKit"]),
         .testTarget(name: "TranscribeCoreTests", dependencies: ["TranscribeCore"]),
-        .testTarget(name: "TranscribeKitTests", dependencies: ["TranscribeKit", "TranscribeFakes"]),
+        .testTarget(name: "TranscribeKitTests", dependencies: ["TranscribeKit", "TranscribeFakes"], resources: [.copy("Fixtures")]),
         .testTarget(name: "TranscribeFluidTests", dependencies: ["TranscribeFluid"], resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v6]   // NO .defaultIsolation(MainActor.self): toolchain pitfall 2

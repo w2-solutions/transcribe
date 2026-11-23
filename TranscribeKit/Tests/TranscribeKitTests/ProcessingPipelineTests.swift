@@ -24,12 +24,13 @@ final class WP3Pipeline {
     let coordinator: ProcessingCoordinator
     let published = SnapshotLog()
 
-    init(_ script: FakeScriptName, seed: SeedName? = nil, modelsReady: Bool = true, harness: WP3Harness? = nil) async throws {
+    init(_ script: FakeScriptName, seed: SeedName? = nil, modelsReady: Bool = true, harness: WP3Harness? = nil,
+         customScript: FakeScript? = nil) async throws {
         h = try harness ?? WP3Harness()
         if let seed { try h.seed(seed) }
         let env = modelsReady ? [:] : ["TRANSCRIBE_MODELS": "missing"]
         engine = FakeSpeechEngine(config: LaunchConfig(arguments: ["-useFakeEngine", "-uiTesting"], environment: env),
-                                  script: .named(script))
+                                  script: customScript ?? .named(script))
         if modelsReady { try await engine.prepareModels() }
         settings = AppSettings(defaults: UserDefaults(suiteName: "wp3-\(UUID().uuidString)")!)
         coordinator = ProcessingCoordinator(engine: engine, store: h.store, monitor: monitor, settings: settings,
@@ -201,6 +202,68 @@ struct ProcessingPipelineTests {
         #expect(karan.samples.count == 2)
         let s1 = try #require(r.speaker("S1"))
         #expect(abs((s1.matchScore ?? 0) - 0.82) < 1e-3)
+    }
+
+    @Test func anOutlierSpanDoesNotPullTheSpeakerVector() async throws {
+        var script = FakeScript.named(.newVoices)
+        let spans = CleanSpeech.spans(for: "S1", in: script.segments, config: .default)
+        let embedded = CleanSpeech.embeddingSpans(spans, config: .default)
+        let shortest = try #require(embedded.min { $0.duration < $1.duration })
+        let embeddedSeconds = embedded.reduce(0) { $0 + $1.duration }
+        try #require(embedded.count >= 2 && shortest.duration < embeddedSeconds / 2)
+        script.spanVectors = [(range: shortest, vector: SyntheticVoices.vector(near: .stranger, cosine: 0.9, variant: 49))]
+
+        let p = try await WP3Pipeline(.newVoices, seed: .empty, customScript: script)
+        defer { p.cleanup() }
+        let id = try p.record()
+        _ = await p.run(id)
+        let s1 = try #require(try p.h.recording(id).speaker("S1"))
+        let stored = try #require(s1.vector)
+        let expected = try #require(script.vectors["S1"])
+        #expect(zip(stored.values, expected.values).allSatisfy { abs($0 - $1) < 1e-5 })
+        #expect(s1.vectorCoherence == 1)
+    }
+
+    @Test func thePipelineMatchesWithTheCohortAndWritesTraces() async throws {
+        let p = try await WP3Pipeline(.knownVoices, seed: .library)
+        defer { p.cleanup() }
+        let id = try p.record()
+        _ = await p.run(id)
+        let cohort = try p.h.store.matchCohort(modelKey: EmbeddingModelID.fake.key, excludingRecording: id)
+        #expect(!cohort.isEmpty)   // C's Speaker 2, never named
+        let speakers = try p.h.recording(id).sortedSpeakers
+        #expect(speakers.count == 2)
+        for s in speakers {
+            let trace = try JSONDecoder().decode(MatchTrace.self, from: try #require(s.matchTraceData))
+            #expect(trace.key == s.key && trace.kind == .auto && trace.cohortSize == cohort.count)
+        }
+    }
+
+    @Test func aCohortVoiceTurnsThePipelinesAutoLabelIntoAnAsk() async throws {
+        // Liam at 0.6, but also 0.6 × 0.9 = 0.54 like C's never-named Speaker 2 (the stranger at 0.9):
+        // the margin is 0.6 − 0.54 = 0.06, under 0.10, so the pipeline asks instead of auto-labelling.
+        var script = FakeScript.named(.knownVoices)
+        let voice = SyntheticVoices.mix([(.liam, 0.6), (.stranger, 0.6)], variant: 50)
+        script.vectors["S1"] = voice
+        let p = try await WP3Pipeline(.knownVoices, seed: .library, customScript: script)
+        defer { p.cleanup() }
+        let id = try p.record()
+        let final = try #require(await p.run(id))
+        #expect(final.phase == .finished(ProcessingOutcome(autoLabelled: 1, suggested: 1)))
+        let s1 = try #require(try p.h.recording(id).speaker("S1"))
+        #expect(s1.label == .suggested && s1.suggestedProfileID == Seeds.ID.liam)
+        let trace = try JSONDecoder().decode(MatchTrace.self, from: try #require(s1.matchTraceData))
+        #expect(trace.kind == .ask && trace.reason == "margin" && trace.profileID == Seeds.ID.liam)
+        #expect(abs((trace.score ?? 0) - 0.6) < 1e-3 && abs((trace.margin ?? 0) - 0.06) < 1e-3)
+        let liamCohortMax = try #require(trace.profiles.first { $0.profileID == Seeds.ID.liam }?.cohortMax)
+        #expect(abs(liamCohortMax - 0.54) < 1e-3)
+        // Without the cohort, the same voice would have been auto-labelled.
+        let probe = SpeakerProbe(key: "S1", vector: voice, cleanSeconds: s1.cleanSeconds, rejectedProfileIDs: [])
+        let candidates = try p.h.store.matchCandidates(modelKey: EmbeddingModelID.fake.key)
+        let alone = VoiceMatcher.decide(probes: [probe], profiles: candidates, modelKey: EmbeddingModelID.fake.key)
+        guard case .autoLabel(Seeds.ID.liam, _, _)? = alone["S1"] else {
+            Issue.record("expected an auto-label without the cohort, got \(String(describing: alone["S1"]))"); return
+        }
     }
 
     @Test func askKaranAsksAboutKaran() async throws {

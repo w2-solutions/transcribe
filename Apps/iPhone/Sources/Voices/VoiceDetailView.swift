@@ -16,6 +16,7 @@ struct VoiceDetailView: View {
 
     @State private var sheet: VoiceDetailSheet?
     @State private var confirmForget = false
+    @State private var pendingRemoval: UUID?
     @State private var showAllAppearances = false
     @State private var toastText: String?
     @State private var errorText: String?
@@ -89,8 +90,9 @@ struct VoiceDetailView: View {
 
     private func header(_ profile: VoiceProfile) -> some View {
         HStack(spacing: 22) {
+            // 8 tick groups: 12 (the sample cap) at 3° spacing does not read.
             VoiceRingAvatar(initial: profile.initial, slot: profile.colourSlot, sampleCount: profile.samples.count,
-                            maxSamples: MatchPolicy.default.maxSamplesPerProfile)
+                            maxSamples: 8)
             VStack(alignment: .leading, spacing: 4) {
                 Text(profile.name)
                     .font(DS.Typo.screenTitle)
@@ -174,6 +176,18 @@ struct VoiceDetailView: View {
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .cardSurface(padding: EdgeInsets())
+        // Anchored to the card so the iOS 27 popover points at the samples.
+        .confirmationDialog("Remove this sample?",
+                            isPresented: Binding(get: { pendingRemoval != nil }, set: { if !$0 { pendingRemoval = nil } }),
+                            titleVisibility: .visible) {
+            Button("Remove sample", role: .destructive) {
+                if let id = pendingRemoval { removeSample(id) }
+            }
+            .accessibilityIdentifier(AX.VoiceDetail.removeSampleConfirm)
+            Button("Cancel", role: .cancel) { pendingRemoval = nil }
+        } message: {
+            Text("\(profile.name) may be recognised less reliably.")
+        }
     }
 
     private func sampleRow(_ sample: VoiceSample, index i: Int, slot: Int, recording: Recording?) -> some View {
@@ -204,7 +218,21 @@ struct VoiceDetailView: View {
                     : "Sample: \(quote). Recording deleted")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { play() }
+                .accessibilityAction(named: "Remove sample") { pendingRemoval = sample.id }
                 .accessibilityIdentifier(AX.VoiceDetail.samplePlay(i))
+                .contextMenu {
+                    Button(role: .destructive) { pendingRemoval = sample.id } label: {
+                        Label("Remove sample", systemImage: "trash")
+                    }
+                    .accessibilityIdentifier(AX.VoiceDetail.sampleRemove(i))
+                }
+            Text(VoicesListModel.sampleCaption(origin: sample.origin, speechSeconds: sample.speechSeconds))
+                .font(DS.Typo.meta)
+                .foregroundStyle(DS.Colour.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 72)
+                .padding(.bottom, 8)
+                .accessibilityIdentifier(AX.VoiceDetail.sampleOrigin(i))
         }
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.VoiceDetail.sample(i))
@@ -354,6 +382,25 @@ struct VoiceDetailView: View {
 
     private func setAutoLabel(_ profile: VoiceProfile, _ on: Bool) {
         do { try env.store.setAutoLabel(profileID: profile.id, on) } catch { errorText = Self.describe(error) }
+    }
+
+    private func removeSample(_ id: UUID) {
+        pendingRemoval = nil
+        if env.player.playingClipID == id.uuidString { env.player.stop() }
+        do {
+            try env.store.removeSample(id: id)
+            showToast("Sample removed")
+        } catch {
+            errorText = Self.describe(error)
+        }
+    }
+
+    private func showToast(_ text: String) {
+        toastText = nil
+        Task {
+            await Task.yield()
+            toastText = text
+        }
     }
 
     private func forget(_ profile: VoiceProfile) {

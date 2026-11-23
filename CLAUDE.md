@@ -39,11 +39,12 @@ Both artifacts are private to the owner's Claude account. Read them with the Art
 - **Models ship in the app** (decided 2026-11-23). Nothing is downloaded after install.
   - `scripts/models.lock` pins every file (repo, revision, size, sha256); `scripts/fetch-models.sh` (`make models`) fills the gitignored `BundledModels/` from it. Never commit model files.
   - No dotfiles in `BundledModels/` (no `.fluidaudio-revision` markers).
-  - `FluidRuntime.lockDown()` (FluidAudio offline mode plus the diarizer revision override "main") runs at engine init.
+  - `FluidRuntime.lockDown()` (FluidAudio offline mode plus a revision override of "main" for all three model repos) runs at engine init.
   - Loaders: `AsrModels.load`, `OfflineDiarizerModels.load`, and `Nemotron3Models.load(directory:)` with a flat layout. Never `loadFromHuggingFace` or any download API in app code.
   - Release and archive builds fail without verified models (`scripts/check-models.sh`); Debug device builds warn; simulator builds leave the models out.
   - The old downloaded `Models/` folder in Application Support is deleted at launch.
   - A FluidAudio bump means `./scripts/fetch-models.sh --update-lock` and a green `swift test`.
+- **Voice learning** (decided 2026-11-23): learn from every naming, confirmation, correction and rejection, as above. Store schema V2 adds negatives and per-speaker match traces. `TranscribeSchemaV1` is frozen: never edit it. Any schema change adds a new version, a migration stage and a fixture test. Builds from before V2 cannot open a V2 store.
 
 ## Speech stack (decided 2026-11-23)
 
@@ -61,10 +62,15 @@ Rules that follow from the research:
 
 - Run transcription and speaker separation one after the other, never at once, and lower the diariser batch size (about 8) on iPhone to limit memory.
 - Store the embedding model name and version with every voice profile. A model change means re-enrolling everyone. Models change only with an app update; a change to the speaker-diarization rows in `scripts/models.lock` requires bumping `EmbeddingModelID.revision`.
-- Keep several embeddings per person (start with up to 8), not one average. Add one only when the user confirms a name or the match is very strong.
+- Keep several embeddings per person (up to 12), not one average. Store one whenever the user names, confirms or corrects a saved person (5 s of clean speech or more; under 10 s it is a "short" sample). Store one automatically only when the person's user-confirmed samples alone match at 0.70 or more, 0.20 clear of the runner-up, from 10 s of coherent speech (span coherence ≥ 0.5).
+- Score = mean of the two best sample cosines, and the best one must be a user-confirmed sample of 10 s or more. Automatic and short samples can only fill second place.
+- When the user says a voice is not P (No on a suggestion, naming a suggested voice as someone else, or correcting a wrong label), store that voice as a negative for P (5 s or more, up to 8 per person). P is not offered for a voice at least as close to a negative as to P itself. A blocked P still counts as runner-up. Naming that voice as P later deletes the conflicting negatives. With Remember off, nothing is stored.
+- The auto-label margin also counts unnamed voices from the last 100 recordings that do not score as P (the cohort), so a recurring never-named person cannot be auto-labelled as P.
+- A speaker's vector is the weighted mean of its span embeddings after dropping spans under 0.35 cosine to the weighted medoid, as long as at least half the speech remains.
+- No per-person thresholds. Thresholds change only after reading real numbers from Settings → Copy voice matching log.
 - Never name a single short turn on its own. Name the whole speaker for the recording; leave overlapping speech out of embeddings.
 - Three outcomes for a match: auto-label, ask "Is this Karan?", or leave as Unknown. A wrong name is worse than Unknown.
-- Starting thresholds (untested guesses to tune on real recordings): auto-label at cosine similarity 0.55 or more and 0.10 clear of the runner-up; ask between 0.40 and 0.55; need about 10 s of clean speech to create a profile and 3 s to identify.
+- Starting thresholds (untested guesses to tune on real recordings): auto-label at cosine similarity 0.55 or more and 0.10 clear of the runner-up; ask between 0.40 and 0.55; need about 10 s of clean speech to create a profile, 5 s to add a sample or a negative to an existing person, and 3 s to identify.
 - Live text while recording is display-only and uses `FluidLiveRecording.liveConfig`: a 2 s step with 1 s of lookahead (first words at about 3 s, then every 2 s; measured on a Mac, not yet on an iPhone 15). Do not use FluidAudio's `.streaming` preset: it decodes 11 s at a time, so the first words take 13 s. Each step is one model run, so check battery and heat on the iPhone before going below 2 s.
 - Parakeet and community-1 are CC-BY-4.0, Nemotron 3 is OpenMDW-1.1; the app redistributes all three, so the attributions screen keeps their licences.
 
@@ -81,6 +87,36 @@ To check first on a real iPhone 15: that Parakeet TDT v3 loads (a different Para
 - Every control gets an `accessibilityIdentifier` from the first screen.
 - The simulator cannot stand in for the real iPhone 15 on model loading, memory, speed or microphone behaviour.
 - Gated real-engine tests use the fetched folder: `cd TranscribeKit && TRANSCRIBE_MODELS_DIR=$PWD/../BundledModels swift test --filter FluidEngineTests`.
+- Migrations are tested against a committed store written by the previous schema (`Tests/TranscribeKitTests/Fixtures/V1Library`).
+
+## Building and installing on the iPhone
+
+The phone is "Liam's iPhone" (iPhone 15), device ID `00008120-000A40D12E000032`. It must be paired with this Mac. Check with `xcrun devicectl list devices`: it should say `available (paired)`.
+
+Run from the repo root. `$DD` is any folder outside the repo for build output (a temp folder is fine).
+
+1. **Fetch the models and generate the project.** The models ship inside the app but are not in git, and `Transcribe.xcodeproj` is not committed:
+   `make models && xcodegen generate`
+   A Debug device build without the models only warns, and the app then cannot load them.
+2. **Build for the device.** `project.yml` leaves the signing team empty on purpose, so pass it on the command line. Xcode then creates the signing profile itself:
+   `xcodebuild -project Transcribe.xcodeproj -scheme Transcribe -configuration Debug -destination 'id=00008120-000A40D12E000032' -derivedDataPath $DD DEVELOPMENT_TEAM=53FBF5CS9U -allowProvisioningUpdates build`
+   The Mac has two signing identities. Use team `53FBF5CS9U`; the app on the phone is signed with it. If the phone is new to the team, add `-allowProvisioningDeviceRegistration`.
+3. **Install.** This replaces the app and keeps its recordings and voices:
+   `xcrun devicectl device install app --device 00008120-000A40D12E000032 $DD/Build/Products/Debug-iphoneos/Transcribe.app`
+4. **Launch** (the phone must be unlocked):
+   `xcrun devicectl device process launch --device 00008120-000A40D12E000032 ai.w2solutions.transcribe`
+
+To check the result without touching the phone:
+
+- Still running (no crash on launch): `xcrun devicectl device info processes --device 00008120-000A40D12E000032 | grep Transcribe.app`
+- Store files: `xcrun devicectl device info files --device 00008120-000A40D12E000032 --domain-type appDataContainer --domain-identifier ai.w2solutions.transcribe --subdirectory "Library/Application Support"`
+  The library is `Transcribe/Library.store`. After the first launch of a V2 build there is also `Library.schema-v2` (a marker) and `Library.pre-v2-backup.store` (the copy taken before the upgrade).
+
+Rules:
+
+- A plain launch uses the real engine and the real library in `Transcribe/`. The fake engine (`-useFakeEngine`) keeps its data apart in `Transcribe-Fake/`.
+- A build with a newer store schema upgrades the library on first launch, and older builds cannot open it afterwards. Run the migration fixture test before installing such a build.
+- Never delete the app from the phone to fix an install problem: that deletes the recordings and voices.
 
 ## Subagents
 
@@ -89,5 +125,5 @@ To check first on a real iPhone 15: that Parakeet TDT v3 loads (a different Para
 
 ## Open decisions
 
-- Match thresholds and minimum speech for a voice profile (tune on real recordings).
+- Match thresholds and minimum speech (tune from the matching log on real recordings; also decide whether short probes, under 8 s, should be limited to asking).
 - App name ("Transcribe" is a working name).

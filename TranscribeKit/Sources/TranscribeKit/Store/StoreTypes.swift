@@ -39,10 +39,12 @@ public struct SpeakerDraft: Sendable, Equatable {
     public var turnCount: Int
     public var vector: VoiceVector?
     public var embeddingModel: EmbeddingModelID
+    /// Span coherence of `vector` (§1.11); nil when the vector is a fallback or missing.
+    public var coherence: Float?
     public init(key: SpeakerKey, ordinal: Int, cleanSeconds: Double, totalSeconds: Double, turnCount: Int,
-                vector: VoiceVector?, embeddingModel: EmbeddingModelID) {
+                vector: VoiceVector?, embeddingModel: EmbeddingModelID, coherence: Float? = nil) {
         self.key = key; self.ordinal = ordinal; self.cleanSeconds = cleanSeconds; self.totalSeconds = totalSeconds
-        self.turnCount = turnCount; self.vector = vector; self.embeddingModel = embeddingModel
+        self.turnCount = turnCount; self.vector = vector; self.embeddingModel = embeddingModel; self.coherence = coherence
     }
 }
 public struct RecordingSnapshot: Sendable, Equatable {

@@ -7,8 +7,9 @@ public protocol LibraryStoring: AnyObject, Sendable {
     var context: ModelContext { get }
 
     // MARK: Device (per-device voices)
-    /// Compares the stored install id with DeviceIdentity. On mismatch: deletes every VoiceSample,
-    /// sets needsResample on every profile, stores the new id. Returns true if a wipe happened.
+    /// Compares the stored install id with DeviceIdentity. On mismatch: deletes every VoiceSample and VoiceNegative,
+    /// sets needsResample on every profile, drops speaker vectors, coherence and match traces, stores the new id.
+    /// Returns true if a wipe happened.
     func reconcileDevice() throws -> Bool
 
     // MARK: Recording lifecycle
@@ -23,8 +24,12 @@ public protocol LibraryStoring: AnyObject, Sendable {
     func checkpointSeparation(id: UUID, document: TranscriptDocument, speakers: [SpeakerDraft]) throws
     func probes(for id: UUID) throws -> [SpeakerProbe]
     func matchCandidates(modelKey: String) throws -> [ProfileCandidate]
-    /// → .ready; applies labels, colour slots, strong-match samples, hasUnseenResult; returns counts.
-    func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], policy: MatchPolicy) throws -> ProcessingOutcome
+    /// Unnamed (or snapshot-named) voices from past ready recordings on this model, for the auto-label margin (§1.5).
+    func matchCohort(modelKey: String, excludingRecording: UUID) throws -> [VoiceVector]
+    /// → .ready; applies labels, colour slots, automatic samples, hasUnseenResult and each speaker's match trace;
+    /// returns counts.
+    func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], traces: [SpeakerKey: MatchTrace],
+                      policy: MatchPolicy) throws -> ProcessingOutcome
     /// → .ready with speaker-less transcript (no speech, identify-off, or recognise-off without matching).
     func finishWithoutMatching(id: UUID, document: TranscriptDocument?, noSpeech: Bool) throws -> ProcessingOutcome
     func markFailed(id: UUID, message: String) throws
@@ -61,4 +66,17 @@ public protocol LibraryStoring: AnyObject, Sendable {
     func forgetProfile(_ profileID: UUID) throws              // keeps nameSnapshot on every speaker
     func addSample(profileID: UUID, fromSpeaker recordingSpeakerID: UUID) throws -> NameResult
     func sampleCandidates(for profileID: UUID) throws -> [SampleCandidate]
+    /// Deletes one voice sample. A profile left with no sample on its model needs a new one.
+    func removeSample(id: UUID) throws
+
+    // MARK: Diagnostics
+    /// JSON of match scores and decisions for tuning: no names, titles, text or vectors.
+    func matchingLog() throws -> String
+}
+
+public extension LibraryStoring {
+    /// Applies decisions without traces.
+    func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], policy: MatchPolicy) throws -> ProcessingOutcome {
+        try applyMatches(id: id, decisions: decisions, traces: [:], policy: policy)
+    }
 }

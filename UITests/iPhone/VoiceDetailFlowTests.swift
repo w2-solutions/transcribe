@@ -24,6 +24,32 @@ final class VoiceDetailFlowTests: FlowTestCase {
         Wait.label(app.element(AX.VoiceDetail.status), contains: "Auto-label off")
     }
 
+    @MainActor func testSampleOriginsShown() {
+        let app = launchKaran()
+        Wait.label(app.waitFor(AX.VoiceDetail.sampleOrigin(0)), equals: "Named by you")
+        // The 4.6 s seed sample from recording A.
+        Wait.label(app.waitFor(AX.VoiceDetail.sampleOrigin(1)), equals: "Named by you · short sample")
+    }
+
+    @MainActor func testRemoveSample() {
+        let app = launchKaran()
+        app.assertCount(2, of: AX.VoiceDetail.sample)
+        app.waitFor(AX.VoiceDetail.samplePlay(1)).press(forDuration: 1.2)
+        let byID = app.element(AX.VoiceDetail.sampleRemove(1))
+        if byID.waitForExistence(timeout: 3) {
+            byID.press()
+        } else {
+            // The context-menu item's identifier is not always exposed.
+            let byLabel = app.buttons["Remove sample"].firstMatch
+            XCTAssertTrue(byLabel.waitForExistence(timeout: 5), "The context menu offers Remove sample")
+            byLabel.press()
+        }
+        app.waitFor(AX.VoiceDetail.removeSampleConfirm).press()
+        // The toast first: it hides after 2 s, which the row-count waits can outlast.
+        app.waitFor(AX.VoiceDetail.toast)
+        app.assertCount(1, of: AX.VoiceDetail.sample)
+    }
+
     @MainActor func testForgetKeepsNameInPastTranscripts() {
         let app = launchKaran()
         app.scrollTo(AX.VoiceDetail.forgetButton).press()

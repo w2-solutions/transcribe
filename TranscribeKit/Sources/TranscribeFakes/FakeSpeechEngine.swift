@@ -136,6 +136,7 @@ public actor FakeSpeechEngine: SpeechEngine {
         guard status == .ready else { throw EngineError.modelsMissing }
         return try spans.map { span in
             let mid = span.mid
+            if let override = script.spanVectors.first(where: { $0.range.contains(mid) }) { return override.vector }
             guard let segment = script.segments.first(where: { $0.range.contains(mid) }),
                   let vector = script.vectors[segment.speakerKey] else {
                 throw EngineError.failed("No voice at \(mid)")

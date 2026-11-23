@@ -2,24 +2,34 @@ import Foundation
 import Testing
 @testable import TranscribeCore
 
-private func sample(_ n: Int, _ vector: VoiceVector, _ origin: SampleOrigin = .confirmed, day: Int) -> CuratedSample {
+private func sample(_ n: Int, _ vector: VoiceVector, _ origin: SampleOrigin = .confirmed, day: Int,
+                    seconds: TimeInterval = 60) -> CuratedSample {
     CuratedSample(id: TV.uuid(0x100 + n), vector: vector, origin: origin,
-                  addedAt: Date(timeIntervalSince1970: 1_790_000_000 + Double(day) * 86_400))
+                  addedAt: Date(timeIntervalSince1970: 1_790_000_000 + Double(day) * 86_400), speechSeconds: seconds)
 }
 
-private func sample(_ n: Int, axis: Int, _ origin: SampleOrigin = .confirmed, day: Int) -> CuratedSample {
-    sample(n, TV.axis(axis), origin, day: day)
+private func sample(_ n: Int, axis: Int, _ origin: SampleOrigin = .confirmed, day: Int,
+                    seconds: TimeInterval = 60) -> CuratedSample {
+    sample(n, TV.axis(axis), origin, day: day, seconds: seconds)
 }
+
+/// The cap these tests were written for; the default is now 12.
+private let capEight: MatchPolicy = { var p = MatchPolicy.default; p.maxSamplesPerProfile = 8; return p }()
 
 @Suite("SampleCurator.shouldAddSample")
 struct SampleCuratorGateTests {
     static let strong = MatchDecision.autoLabel(profileID: TV.liamID, score: 0.9, margin: 0.5)
 
-    @Test("10 s gate per origin", arguments: SampleOrigin.allCases, [9.99, 10.0])
-    func tenSecondGate(origin: SampleOrigin, seconds: TimeInterval) {
+    @Test("Seconds gate per origin", arguments: SampleOrigin.allCases, [4.99, 5.0, 9.99, 10.0])
+    func secondsGatePerOrigin(origin: SampleOrigin, seconds: TimeInterval) {
         let decision: MatchDecision? = origin == .strongMatch ? Self.strong : nil
         let allowed = SampleCurator.shouldAddSample(origin: origin, decision: decision, cleanSeconds: seconds)
-        #expect(allowed == (origin == .merged || seconds >= 10))
+        let expected = switch origin {
+        case .merged: true
+        case .confirmed, .corrected: seconds >= 5
+        case .named, .addedFromRecording, .strongMatch: seconds >= 10
+        }
+        #expect(allowed == expected)
     }
 
     @Test func mergedNeedsNoSpeechOrDecision() {
@@ -64,11 +74,11 @@ struct SampleCuratorTests {
 
     @Test func capOfEight() {
         let seven = (0..<7).map { sample($0, axis: $0, day: $0) }
-        let r7 = SampleCurator.insert(sample(9, axis: 9, day: 9), into: seven)
+        let r7 = SampleCurator.insert(sample(9, axis: 9, day: 9), into: seven, policy: capEight)
         #expect(r7.added && r7.keep.count == 8 && r7.evicted.isEmpty)
 
         let eight = (0..<8).map { sample($0, axis: $0, day: $0) }
-        let r8 = SampleCurator.insert(sample(9, axis: 9, day: 9), into: eight)
+        let r8 = SampleCurator.insert(sample(9, axis: 9, day: 9), into: eight, policy: capEight)
         #expect(r8.added && r8.keep.count == 8 && r8.evicted.count == 1)
         #expect(Set(r8.keep.map(\.id)).isDisjoint(with: r8.evicted))
     }
@@ -87,7 +97,7 @@ struct SampleCuratorTests {
         let existing = [sample(0, axis: 0, .named, day: 0), x,
                         sample(3, axis: 3, day: 3), sample(4, axis: 4, day: 4), sample(5, axis: 5, day: 5),
                         sample(6, axis: 6, day: 6), sample(7, axis: 7, .strongMatch, day: 8), sample(8, axis: 8, day: 2)]
-        let r = SampleCurator.insert(sample(9, axis: 9, .addedFromRecording, day: 9), into: existing)
+        let r = SampleCurator.insert(sample(9, axis: 9, .addedFromRecording, day: 9), into: existing, policy: capEight)
         #expect(r.evicted == [TV.uuid(0x107)])
     }
 
@@ -97,7 +107,7 @@ struct SampleCuratorTests {
                         sample(2, axis: 2, .strongMatch, day: 1),
                         sample(3, axis: 3, day: 3), sample(4, axis: 4, day: 4), sample(5, axis: 5, day: 5),
                         sample(6, axis: 6, day: 6), sample(7, axis: 7, day: 7)]
-        let r = SampleCurator.insert(sample(9, axis: 9, day: 10), into: existing)
+        let r = SampleCurator.insert(sample(9, axis: 9, day: 10), into: existing, policy: capEight)
         #expect(r.evicted == [TV.uuid(0x101)])
     }
 
@@ -106,7 +116,7 @@ struct SampleCuratorTests {
         let a = sample(0, TV.vector([1: 0.6, 2: 0.6], residual: 40), .named, day: 0)
         let existing = [a, sample(1, axis: 1, day: 1), sample(2, axis: 2, day: 2)]
             + (3..<8).map { sample($0, axis: $0, day: $0) }
-        let r = SampleCurator.insert(sample(9, axis: 9, day: 9), into: existing)
+        let r = SampleCurator.insert(sample(9, axis: 9, day: 9), into: existing, policy: capEight)
         #expect(r.keep.contains { $0.id == a.id })
         #expect(r.evicted == [TV.uuid(0x101)])
     }
@@ -116,14 +126,14 @@ struct SampleCuratorTests {
         let b = sample(3, TV.vector([1: 0.6, 2: 0.6], residual: 41), .named, day: 3)
         let existing = [a, sample(1, axis: 1, day: 1), sample(2, axis: 2, day: 2), b]
             + (4..<8).map { sample($0, axis: $0, day: $0) }
-        let r = SampleCurator.insert(sample(9, axis: 9, day: 9), into: existing)
+        let r = SampleCurator.insert(sample(9, axis: 9, day: 9), into: existing, policy: capEight)
         #expect(r.evicted == [b.id])
     }
 
     @Test func newSampleIsNeverEvicted() {
         let existing = [sample(0, axis: 0, .named, day: 0)] + (1..<8).map { sample($0, axis: $0, day: $0) }
         let new = sample(9, TV.vector([1: 0.6, 2: 0.6, 3: 0.3], residual: 40), .confirmed, day: 9)
-        let r = SampleCurator.insert(new, into: existing)
+        let r = SampleCurator.insert(new, into: existing, policy: capEight)
         #expect(r.added && r.keep.last?.id == new.id)
         #expect(r.evicted == [TV.uuid(0x101)])    // e1 and e2 tie at 0.6/8; e1 is older
     }
@@ -133,7 +143,7 @@ struct SampleCuratorTests {
         let x = sample(1, TV.vector([3: 0.5, 4: 0.5], residual: 40), day: 7)
         let existing = [sample(0, axis: 0, .named, day: 0), x]
             + [3, 4, 5, 6, 7, 8].map { sample($0, axis: $0, day: $0 - 3) }
-        let r = SampleCurator.insert(sample(9, axis: 9, day: 9), into: existing)
+        let r = SampleCurator.insert(sample(9, axis: 9, day: 9), into: existing, policy: capEight)
         #expect(r.evicted == [x.id])
     }
 
@@ -141,7 +151,7 @@ struct SampleCuratorTests {
         let days = [5, 3, 7, 1, 6, 2, 4]
         let existing = [sample(0, axis: 0, .named, day: 10)]
             + days.enumerated().map { i, d in sample(i + 1, axis: i + 1, day: d) }
-        let r = SampleCurator.insert(sample(9, axis: 9, day: 11), into: existing)
+        let r = SampleCurator.insert(sample(9, axis: 9, day: 11), into: existing, policy: capEight)
         #expect(r.evicted == [TV.uuid(0x104)])   // day 1
     }
 
@@ -151,10 +161,10 @@ struct SampleCuratorTests {
                         sample(3, TV.vector([4: 0.5, 5: 0.5], residual: 41), day: 3)]
             + (4..<8).map { sample($0, axis: $0, day: $0) }
         let new = sample(9, axis: 9, day: 9)
-        let baseline = SampleCurator.insert(new, into: existing)
+        let baseline = SampleCurator.insert(new, into: existing, policy: capEight)
         var rng = SplitMix64(seed: 42)
         for _ in 0..<100 {
-            let r = SampleCurator.insert(new, into: existing.shuffled(using: &rng))
+            let r = SampleCurator.insert(new, into: existing.shuffled(using: &rng), policy: capEight)
             #expect(r.evicted == baseline.evicted && Set(r.keep.map(\.id)) == Set(baseline.keep.map(\.id)))
         }
     }
@@ -162,7 +172,7 @@ struct SampleCuratorTests {
     @Test func mergingEightIntoEightStaysAtEight() {
         var keep = [sample(0, axis: 0, .named, day: 0)] + (1..<8).map { sample($0, axis: $0, day: $0) }
         for i in 0..<8 {
-            let r = SampleCurator.insert(sample(20 + i, axis: 20 + i, .merged, day: 20 + i), into: keep)
+            let r = SampleCurator.insert(sample(20 + i, axis: 20 + i, .merged, day: 20 + i), into: keep, policy: capEight)
             #expect(r.added && r.keep.count == 8 && r.evicted.count == 1)
             keep = r.keep
         }
@@ -185,7 +195,144 @@ struct SampleCuratorTests {
 
         // Seven 64-d samples plus the odd one: all have zero redundancy, so the oldest (the odd one) goes.
         let existing = [odd] + (1..<8).map { sample($0, axis: $0, day: $0) }
-        let r2 = SampleCurator.insert(sample(9, axis: 9, day: 9), into: existing)
+        let r2 = SampleCurator.insert(sample(9, axis: 9, day: 9), into: existing, policy: capEight)
         #expect(r2.evicted == [odd.id])
+    }
+}
+
+@Suite("SampleCurator.shouldAddAutomaticSample")
+struct AutomaticSampleGateTests {
+    enum DecisionKind: String, CaseIterable, Sendable { case auto, ask, unknown, none }
+
+    struct Case: Sendable, CustomTestStringConvertible {
+        let trustedScore: Float, margin: Float, coherence: Float?, seconds: TimeInterval, decision: DecisionKind
+        var allowed: Bool {
+            decision == .auto && trustedScore >= 0.70 && margin >= 0.20 && (coherence ?? 0) >= 0.5 && seconds >= 10
+        }
+        var testDescription: String {
+            "trusted \(trustedScore) margin \(margin) coherence \(coherence.map { "\($0)" } ?? "nil") \(seconds) s \(decision)"
+        }
+    }
+
+    static let cases: [Case] = {
+        var out: [Case] = []
+        for t: Float in [0.70, 0.6999] {
+            for m: Float in [0.20, 0.1999] {
+                for c: Float? in [0.5, 0.4999, nil] {
+                    for s: TimeInterval in [10, 9.99] {
+                        for d in DecisionKind.allCases {
+                            out.append(Case(trustedScore: t, margin: m, coherence: c, seconds: s, decision: d))
+                        }
+                    }
+                }
+            }
+        }
+        return out
+    }()
+
+    @Test(arguments: cases)
+    func automaticSampleGate(_ c: Case) {
+        let decision: MatchDecision? = switch c.decision {
+        case .auto: .autoLabel(profileID: TV.liamID, score: 0.9, margin: c.margin)
+        case .ask: .ask(profileID: TV.liamID, score: 0.9)
+        case .unknown: .unknown(.lowScore(best: 0.9))
+        case .none: nil
+        }
+        let allowed = SampleCurator.shouldAddAutomaticSample(decision: decision, trustedScore: c.trustedScore,
+                                                             coherence: c.coherence, cleanSeconds: c.seconds)
+        #expect(allowed == c.allowed)
+    }
+}
+
+@Suite("SampleCurator trust and eviction classes")
+struct SampleCuratorTrustTests {
+
+    @Test func sampleTrustTable() {
+        let rows: [(SampleOrigin, TimeInterval, Bool)] = [
+            (.named, 10, true), (.named, 9.99, false), (.corrected, 6, false), (.corrected, 12, true),
+            (.strongMatch, 30, false), (.merged, 30, false),
+        ]
+        for (origin, seconds, trusted) in rows {
+            #expect(SampleTrust.isTrusted(origin: origin, speechSeconds: seconds) == trusted, "\(origin) at \(seconds) s")
+            #expect(sample(0, axis: 0, origin, day: 0, seconds: seconds).isTrusted == trusted, "\(origin) at \(seconds) s")
+        }
+    }
+
+    @Test func evictionOrderAutomaticThenShortThenTrusted() {
+        var policy = MatchPolicy.default
+        policy.maxSamplesPerProfile = 3
+        let named = sample(0, axis: 0, .named, day: 0)
+        let short = sample(1, axis: 1, .confirmed, day: 1, seconds: 6)
+        let strong = sample(2, axis: 2, .strongMatch, day: 2)
+        // T1 is the most redundant sample both times (it shares axis 0 with the named sample and axis 5 with T2).
+        let t1 = sample(3, TV.vector([0: 0.6, 5: 0.5], residual: 40), .confirmed, day: 3)
+        let t2 = sample(4, TV.vector([5: 0.6], residual: 41), .addedFromRecording, day: 4)
+
+        let r1 = SampleCurator.insert(t1, into: [named, short, strong], policy: policy)
+        #expect(r1.added && r1.evicted == [strong.id])
+        #expect(r1.keep.map(\.id) == [named.id, short.id, t1.id])
+
+        let r2 = SampleCurator.insert(t2, into: r1.keep, policy: policy)
+        #expect(r2.added && r2.evicted == [short.id])
+        #expect(r2.keep.map(\.id) == [named.id, t1.id, t2.id])
+    }
+
+    @Test func capIsTwelve() {
+        #expect(MatchPolicy.default.maxSamplesPerProfile == 12)
+        let eleven = (0..<11).map { sample($0, axis: $0, day: $0) }
+        let r11 = SampleCurator.insert(sample(20, axis: 20, day: 20), into: eleven)
+        #expect(r11.added && r11.keep.count == 12 && r11.evicted.isEmpty)
+
+        let twelve = (0..<12).map { sample($0, axis: $0, day: $0) }
+        let r12 = SampleCurator.insert(sample(20, axis: 20, day: 20), into: twelve)
+        #expect(r12.added && r12.keep.count == 12 && r12.evicted.count == 1)
+        #expect(Set(r12.keep.map(\.id)).isDisjoint(with: r12.evicted))
+    }
+}
+
+@Suite("SampleCurator.insertNegative")
+struct NegativeCuratorTests {
+    private func negative(_ n: Int, _ vector: VoiceVector, day: Int, source: Int? = nil) -> CuratedNegative {
+        CuratedNegative(id: TV.uuid(0x200 + n), vector: vector,
+                        addedAt: Date(timeIntervalSince1970: 1_790_000_000 + Double(day) * 86_400),
+                        sourceSpeakerID: source.map { TV.uuid(0x300 + $0) })
+    }
+
+    @Test func negativeCuratorDedupesCapsAndEvictsOldest() {
+        // A near-duplicate (cosine 0.96) is skipped.
+        let a = negative(0, TV.axis(0), day: 0, source: 1)
+        let nearDuplicate = negative(1, TV.vector([0: 0.96], residual: 40), day: 1, source: 2)
+        let dup = SampleCurator.insertNegative(nearDuplicate, into: [a])
+        #expect(!dup.added && dup.keep == [a] && dup.evicted.isEmpty)
+
+        // A negative from the same speaker is skipped, however different its vector.
+        let sameSpeaker = negative(2, TV.axis(1), day: 2, source: 1)
+        let same = SampleCurator.insertNegative(sameSpeaker, into: [a])
+        #expect(!same.added && same.keep == [a])
+
+        // A distinct one is appended.
+        let distinct = negative(3, TV.vector([0: 0.94], residual: 41), day: 3, source: 3)
+        let ok = SampleCurator.insertNegative(distinct, into: [a])
+        #expect(ok.added && ok.keep == [a, distinct] && ok.evicted.isEmpty)
+
+        // A 9th negative evicts the oldest (day 1, at index 3 here).
+        let days = [5, 3, 7, 1, 6, 2, 4, 8]
+        let eight = days.enumerated().map { i, d in negative(10 + i, TV.axis(10 + i), day: d, source: 10 + i) }
+        let ninth = negative(30, TV.axis(30), day: 9, source: 30)
+        let r = SampleCurator.insertNegative(ninth, into: eight)
+        #expect(r.added && r.keep.count == 8 && r.evicted == [TV.uuid(0x200 + 13)])
+        #expect(r.keep.last == ninth)
+
+        // The new one is never evicted, even when it is the oldest.
+        let oldest = negative(31, TV.axis(31), day: -1, source: 31)
+        let r2 = SampleCurator.insertNegative(oldest, into: eight)
+        #expect(r2.added && r2.keep.contains(oldest) && r2.evicted == [TV.uuid(0x200 + 13)])
+
+        // Independent of input order.
+        var rng = SplitMix64(seed: 42)
+        for _ in 0..<100 {
+            let shuffled = SampleCurator.insertNegative(ninth, into: eight.shuffled(using: &rng))
+            #expect(shuffled.evicted == r.evicted && Set(shuffled.keep.map(\.id)) == Set(r.keep.map(\.id)))
+        }
     }
 }

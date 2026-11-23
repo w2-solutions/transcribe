@@ -26,6 +26,15 @@ final class SettingsFlowTests: FlowTestCase {
         XCTAssertTrue(recognise.isOn, "The saved Recognise setting comes back")
     }
 
+    /// Only the toast is checked: reading the pasteboard would show the paste prompt. A failure shows
+    /// "Couldn't copy the log" on the same toast, so its text is checked too.
+    @MainActor func testCopyMatchLog() {
+        let app = launchSettings()
+        app.scrollTo(AX.Settings.copyMatchLogRow).press()
+        let toast = app.waitFor(AX.Settings.copiedToast)
+        XCTAssertTrue(toast.label.contains("Log copied"), "Expected the success toast, got \"\(toast.label)\"")
+    }
+
     @MainActor func testAppearanceDark() {
         let app = launchSettings()
         let row = app.scrollTo(AX.Settings.appearanceRow)

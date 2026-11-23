@@ -16,6 +16,7 @@ public enum Seeds {
         public static let recordingD = UUID(uuidString: "A0000000-0000-4000-8000-00000000000D")!
         public static let recordingE = UUID(uuidString: "A0000000-0000-4000-8000-00000000000E")!
         public static let recordingF = UUID(uuidString: "A0000000-0000-4000-8000-00000000000F")!
+        public static let recordingG = UUID(uuidString: "A0000000-0000-4000-8000-000000000010")!
         public static let liam = UUID(uuidString: "B0000000-0000-4000-8000-000000000001")!
         public static let karan = UUID(uuidString: "B0000000-0000-4000-8000-000000000002")!
     }
@@ -31,6 +32,8 @@ public enum Seeds {
         public static var c: Date { date(17, 9, 2) }
         /// Thu 19 Nov 2026 10:05
         public static var d: Date { date(19, 10, 5) }
+        /// Fri 20 Nov 2026 11:15
+        public static var g: Date { date(20, 11, 15) }
         /// Liam named: 17 Nov 09:20
         public static var liamNamed: Date { date(17, 9, 20) }
         /// Karan named: 18 Nov 14:25
@@ -48,6 +51,7 @@ public enum Seeds {
         case .library: (3, 2, 5)
         case .twoSpeakersUnnamed: (1, 1, 3)
         case .askKaran: (4, 2, 5)
+        case .shortKaran: (4, 2, 5)
         case .processingHeld: (1, 2, 5)
         case .failedProcessing: (1, 0, 0)
         }
@@ -67,6 +71,9 @@ public enum Seeds {
         case .askKaran:
             try s.library()
             try s.askKaranD()
+        case .shortKaran:
+            try s.library()
+            try s.shortKaranG()
         case .processingHeld:
             try s.profiles()
             try s.processingHeldE()
@@ -78,6 +85,7 @@ public enum Seeds {
     }
 
     @MainActor static func wipe(_ context: ModelContext) throws {
+        for negative in try context.fetch(FetchDescriptor<VoiceNegative>()) { context.delete(negative) }
         for sample in try context.fetch(FetchDescriptor<VoiceSample>()) { context.delete(sample) }
         for speaker in try context.fetch(FetchDescriptor<RecordingSpeaker>()) { context.delete(speaker) }
         for recording in try context.fetch(FetchDescriptor<Recording>()) { context.delete(recording) }
@@ -211,6 +219,18 @@ struct SeedBuilder {
                             vector: SyntheticVoices.vector(near: .karan, cosine: 0.47, variant: 6), label: .suggested)
         s2.suggestedProfileID = Seeds.ID.karan
         s2.matchScore = 0.47
+        finish(r)
+    }
+
+    /// G (0:24, Fri 20 Nov 11:15): B's content; S1 Liam (named), S2 unnamed with 6.2 s of clean speech: Karan in
+    /// another setting, too short for a new voice but enough to add to a saved one.
+    mutating func shortKaranG() throws {
+        let r = try makeRecording(id: Seeds.ID.recordingG, createdAt: Seeds.Dates.g, turns: SeedContent.conversationB,
+                                  duration: SeedContent.conversationBDuration, stage: .ready, speakers: true)
+        addSpeaker(r, key: "S1", ordinal: 1, slot: 0, clean: 11.0, total: 11.4,
+                   vector: SyntheticVoices.vector(near: .liam, cosine: 0.90, variant: 1), label: .named, profile: liam)
+        addSpeaker(r, key: "S2", ordinal: 2, slot: 1, clean: 6.2, total: 7.0,
+                   vector: SyntheticVoices.mix([(.karan, 0.35)], setting: (56, 0.7), variant: 55), label: .unnamed)
         finish(r)
     }
 

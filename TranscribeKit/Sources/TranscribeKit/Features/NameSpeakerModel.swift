@@ -116,7 +116,8 @@ public final class NameSpeakerModel {
         } else {
             self.otherSpeakers = []
         }
-        remember = subject.canBeRemembered
+        // On whenever the voice could be added somewhere: 5 s to a saved voice (new voices still need 10 s).
+        remember = subject.hasVector && subject.cleanSeconds >= MatchPolicy.default.minLearnSeconds
         // Prefill: the suggested profile's name, else empty.
         if mode == .name, let suggested = subject.suggestedProfileID, let p = self.profiles.first(where: { $0.id == suggested }) {
             setName(p.name, selecting: .profile(p.id))
@@ -194,21 +195,42 @@ public final class NameSpeakerModel {
         return true
     }
 
-    /// The toggle is disabled (and off) under ~10 s of clear speech.
-    public var rememberEnabled: Bool { subject.canBeRemembered }
+    /// The toggle is disabled (and off) under ~5 s of clear speech for a saved voice, and under ~10 s for a new one.
+    public var rememberEnabled: Bool {
+        switch selection {
+        case .profile: subject.hasVector && subject.cleanSeconds >= MatchPolicy.default.minLearnSeconds
+        case .newPerson, .speaker: subject.canBeRemembered
+        }
+    }
 
-    /// What Save passes as `remember`.
+    /// What the toggle shows, and what Save passes as `remember` except in the case `rememberForSave` covers.
     public var rememberEffective: Bool { rememberEnabled && remember }
+
+    /// True when the user switched an enabled Remember toggle off (D14: then nothing is stored).
+    var rememberSwitchedOff: Bool { rememberEnabled && !remember }
+
+    /// What Save passes as `remember`. A new person under 10 s has the toggle disabled only because a new voice
+    /// needs 10 s, not because the user opted out: the store still creates no profile (it checks 10 s itself), but
+    /// it keeps this voice as a negative (5 s) for the person it was wrongly labelled or suggested as.
+    var rememberForSave: Bool {
+        if case .newPerson = selection, !rememberEnabled {
+            return remember && subject.hasVector && subject.cleanSeconds >= MatchPolicy.default.minLearnSeconds
+        }
+        return rememberEffective
+    }
 
     public var rememberHelp: String {
         if !subject.hasVector {
             return "Voices can only be remembered from speakers Transcribe separated."
         }
+        if case .profile(let id) = selection, let p = profiles.first(where: { $0.id == id }) {
+            if subject.cleanSeconds < MatchPolicy.default.minLearnSeconds {
+                return "Needs about 5 seconds of clear speech to add to \(p.name)'s voice. \(subject.displayName) spoke for \(DisplayFormat.duration(subject.cleanSeconds))."
+            }
+            return "Adds this recording to \(p.name)'s voice."
+        }
         if !subject.canBeRemembered {
             return "Needs about 10 seconds of clear speech to remember a voice. \(subject.displayName) spoke for \(DisplayFormat.duration(subject.cleanSeconds))."
-        }
-        if case .profile(let id) = selection, let p = profiles.first(where: { $0.id == id }) {
-            return "Adds this recording to \(p.name)'s voice."
         }
         let who = isNameValid ? trimmedName : "them"
         return "Saved on this iPhone only. Used to label \(who) automatically next time."
@@ -297,10 +319,11 @@ public final class NameSpeakerModel {
             let ids = turns.filter { $0.effectiveSpeakerKey == subject.key }.map(\.id)
             return ids.isEmpty ? .none : .reassignAllTurns(ids, .speaker(key))
         case .profile(let id):
-            if subject.label == .suggested, subject.suggestedProfileID == id { return .confirmSuggestion }
-            return .name(.existing(profileID: id), remember: rememberEffective)
+            // Yes to the suggestion, unless Remember was switched off: then name the voice without storing a sample.
+            if subject.label == .suggested, subject.suggestedProfileID == id, !rememberSwitchedOff { return .confirmSuggestion }
+            return .name(.existing(profileID: id), remember: rememberForSave)
         case .newPerson:
-            return .name(.newPerson(name: trimmedName), remember: rememberEffective)
+            return .name(.newPerson(name: trimmedName), remember: rememberForSave)
         }
     }
 

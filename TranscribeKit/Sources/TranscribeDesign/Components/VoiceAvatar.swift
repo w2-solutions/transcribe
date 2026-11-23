@@ -40,8 +40,8 @@ public struct VoiceAvatar: View {
 }
 
 public struct VoiceRingAvatar: View {
-    /// 88 pt: disc avatarDisc(slot) with initial 36 semibold slot text, ringed by 8 tick groups; the first
-    /// `sampleCount` ticks are slot dot colour, the rest neutralFill.
+    /// 88 pt: disc avatarDisc(slot) with initial 36 semibold slot text, ringed by `maxSamples` (8) tick groups; the
+    /// first `min(sampleCount, maxSamples)` groups are slot dot colour, the rest neutralFill.
     let initial: String
     let slot: Int
     let sampleCount: Int
@@ -91,7 +91,7 @@ public struct VoiceRingAvatar: View {
         }
         .frame(width: DS.Size.ringAvatar, height: DS.Size.ringAvatar)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(sampleCount) of \(maxSamples) voice samples")
+        .accessibilityLabel(sampleCount == 1 ? "1 voice sample" : "\(sampleCount) voice samples")
     }
 }
 

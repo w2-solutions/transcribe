@@ -134,6 +134,27 @@ struct VoicesListModelTests {
                 == "Needs a new sample on this iPhone")
     }
 
+    @Test func sampleCaptions() {
+        let rows: [(SampleOrigin, Double, String)] = [
+            (.named, 12, "Named by you"),
+            (.named, 4.6, "Named by you · short sample"),
+            (.confirmed, 10, "Confirmed by you"),
+            (.confirmed, 9.99, "Confirmed by you · short sample"),
+            (.corrected, 12, "Added when not recognised"),
+            (.corrected, 6, "Added when not recognised · short sample"),
+            (.addedFromRecording, 10, "Added by you"),
+            (.addedFromRecording, 7, "Added by you · short sample"),
+            (.strongMatch, 12, "Added automatically"),
+            (.strongMatch, 6, "Added automatically"),
+            (.merged, 30, "Merged from another voice"),
+            (.merged, 6, "Merged from another voice"),
+        ]
+        for (origin, seconds, caption) in rows {
+            #expect(VoicesListModel.sampleCaption(origin: origin, speechSeconds: seconds) == caption, "\(origin) @ \(seconds) s")
+        }
+        #expect(Set(rows.map(\.0)) == Set(SampleOrigin.allCases))
+    }
+
     @Test func clipPeaksSamplesTheRangeAndNormalises() {
         // 10 s, 10 bins of 1 s: bin value = its index / 10.
         let peaks: [Float] = (0..<10).map { Float($0) / 10 }
