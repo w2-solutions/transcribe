@@ -1,0 +1,583 @@
+import Foundation
+import Observation
+import os
+import SwiftData
+import TranscribeCore
+
+/// Runs sync for one device (§8.4): local change detection, sending, fetching and merging, account and zone changes,
+/// the mass-delete breaker, and the On/Off switch. It talks to the server only through a `SyncTransport`, so all of
+/// it runs in `swift test` over `FakeTransport`.
+///
+/// Every write it makes goes to `Library.store`, and the sync state rows are saved in the same `context.save()` as the
+/// data they describe (decision D2).
+@MainActor @Observable
+public final class SyncCoordinator {
+    public private(set) var status: SyncStatus
+    /// A fetched record had a different embedding model key, or a record schema (`sv`) this build cannot read.
+    public private(set) var otherDeviceNeedsUpdate = false
+    /// Saved voices that share a name (`DuplicateVoiceBanner`). Never merged automatically (D13).
+    public private(set) var duplicateNames: [String] = []
+    /// While paused for a mass delete: how many records the breaker held back.
+    public private(set) var heldDeleteCount = 0
+
+    @ObservationIgnored let store: LibraryStore
+    @ObservationIgnored let transport: any SyncTransport
+    @ObservationIgnored let settings: AppSettings
+    @ObservationIgnored let clock: AppClock
+    @ObservationIgnored let detector: ChangeDetector
+    @ObservationIgnored let applier: RemoteApplier
+    /// The local change debounce (§8.4: 1 s).
+    @ObservationIgnored public var debounce: Duration = .seconds(1)
+
+    @ObservationIgnored private(set) var running = false
+    @ObservationIgnored private(set) var crashed = false
+    @ObservationIgnored private var loopTask: Task<Void, Never>?
+    @ObservationIgnored private var flushTask: Task<Void, Never>?
+    /// Hashes of the projection handed to the transport, by record name, until its send result arrives.
+    @ObservationIgnored private var inFlight: [String: [String: String]] = [:]
+    @ObservationIgnored private var heldDeletes: [SyncRecordID] = []
+    @ObservationIgnored private var fetchTouchedProfiles: Set<UUID> = []
+    @ObservationIgnored private var deletedZoneItself = false
+    /// After a record from a newer build: engine state is no longer saved, so the next launch fetches it again.
+    @ObservationIgnored private var ignoreStateUpdates = false
+    /// Tests: throw at a fault point to simulate a crash there (nothing since the last save survives).
+    @ObservationIgnored var fault: ((SyncFaultPoint) throws -> Void)? {
+        didSet { applier.fault = fault }
+    }
+    @ObservationIgnored private let log = Logger(subsystem: "ai.w2solutions.transcribe", category: "sync")
+
+    public convenience init(store: LibraryStore, transport: any SyncTransport, settings: AppSettings, clock: AppClock) {
+        self.init(store: store, transport: transport, settings: settings, clock: clock, modelKey: nil)
+    }
+
+    /// `modelKey`: this build's embedding model key, used only to notice another device on a different build.
+    public init(store: LibraryStore, transport: any SyncTransport, settings: AppSettings, clock: AppClock, modelKey: String?) {
+        self.store = store
+        self.transport = transport
+        self.settings = settings
+        self.clock = clock
+        let detector = ChangeDetector(store: store, clock: clock)
+        self.detector = detector
+        self.applier = RemoteApplier(store: store, detector: detector, clock: clock, modelKey: modelKey)
+        if !settings.syncEnabled {
+            status = .off
+        } else if let reason = Self.accountRow(store.context, create: false)?.pausedReason {
+            status = .paused(reason)
+        } else {
+            status = .idle(lastSync: Self.accountRow(store.context, create: false)?.lastSendAt)
+        }
+        detector.onCollected = { [weak self] in self?.scheduleFlush() }
+    }
+
+    var context: ModelContext { store.context }
+
+    // MARK: Public flows
+
+    /// At launch, when the switch is on: resume on the same account, or pause (no account, another account, or the
+    /// iCloud copy was removed elsewhere).
+    public func start() async {
+        guard settings.syncEnabled else { status = .off; return }
+        guard !crashed else { return }
+        if running { await sync(fullScan: true); return }
+        ensureEventLoop()
+        let account = self.account
+        if account.pausedReason == .zoneRemoved { status = .paused(.zoneRemoved); return }
+        guard let hash = await transport.accountHash() else { pause(.noAccount); return }
+        if let stored = account.accountHash, stored != hash { pause(.accountChanged); return }
+        await run(hash: hash, joining: account.accountHash == nil)
+    }
+
+    /// Off → On, the first merge: fetch everything, then upload what only this device has.
+    public func enable() async {
+        guard !crashed else { return }
+        settings.syncEnabled = true
+        ensureEventLoop()
+        guard let hash = await transport.accountHash() else { pause(.noAccount); return }
+        if let stored = account.accountHash, stored != hash { pause(.accountChanged); return }
+        if running { await sync(fullScan: true); return }
+        await run(hash: hash, joining: true)
+    }
+
+    /// On → Off. "Keep the iCloud copy" keeps every state row and the engine state, so turning sync on again on the
+    /// same account sends the deletes made meanwhile. "Also remove from iCloud" deletes the zone and all sync state.
+    /// Local data is never touched.
+    public func disable(removeCloudCopy: Bool) async throws {
+        if removeCloudCopy {
+            deletedZoneItself = true
+            if !running { await transport.start(state: account.engineState, provider: provider) }
+            try await transport.deleteZone()
+        }
+        stopRunning()
+        await transport.stop()
+        if removeCloudCopy { clearSyncState() }
+        settings.syncEnabled = false
+        account.pausedReason = nil
+        try? context.save()
+        status = .off
+    }
+
+    /// After `.paused(.accountChanged)`: merge adds this library to the new account's iCloud; otherwise sync stays
+    /// paused. Nothing is uploaded to a different Apple Account without this consent.
+    public func resolveAccountChange(merge: Bool) async {
+        guard status == .paused(.accountChanged) else { return }
+        guard merge else { return }
+        stopRunning()
+        await transport.stop()
+        clearSyncState()
+        await enable()
+    }
+
+    /// After `.paused(.massDelete)`: confirm sends the held deletes; otherwise the deleted items are restored from
+    /// iCloud (their state rows forget the server and everything is fetched again).
+    public func resolveMassDelete(confirm: Bool) async {
+        guard status == .paused(.massDelete) else { return }
+        let held = heldDeletes
+        heldDeletes = []
+        heldDeleteCount = 0
+        account.pausedReason = nil
+        status = .idle(lastSync: account.lastSendAt)
+        if confirm {
+            do {
+                let deletes = try detector.confirmDeletes(held)
+                await transport.enqueue(saves: [], deletes: deletes)
+            } catch {
+                log.error("Confirming deletes failed: \(error.localizedDescription, privacy: .public)")
+            }
+            await sync(fullScan: true)
+        } else {
+            let rows = (try? detector.stateRows(named: held.map(\.recordName))) ?? [:]
+            for row in rows.values {
+                row.systemFields = nil
+                row.baseHashes = [:]
+                row.pending = .none
+                row.updatedAt = clock.now
+            }
+            account.engineState = nil
+            try? context.save()
+            await transport.stop()
+            await transport.start(state: nil, provider: provider)
+            await sync(fullScan: true)
+        }
+    }
+
+    /// Fetch, scan everything, send. Also retries after a full quota or a missing account.
+    public func syncNow() async {
+        await sync(fullScan: true)
+    }
+
+    // MARK: Running
+
+    func sync(fullScan: Bool) async {
+        guard settings.syncEnabled, !crashed else { return }
+        if case .paused(let reason) = status {
+            switch reason {
+            case .quotaFull, .noAccount, .needsUpdate, .restricted:
+                account.pausedReason = nil
+                status = .idle(lastSync: account.lastSendAt)
+                if !running { await start(); return }
+            case .accountChanged, .zoneRemoved, .massDelete:
+                return
+            }
+        }
+        guard running else { await start(); return }
+        await flushAndEnqueue()
+        await fetch()
+        guard running, !status.isPaused else { return }
+        if fullScan {
+            guard await scanAndEnqueue() else { return }
+        } else {
+            await flushAndEnqueue()
+        }
+        await sendAll()
+    }
+
+    private func run(hash: String, joining: Bool) async {
+        account.pausedReason = nil
+        try? context.save()
+        ignoreStateUpdates = false
+        deletedZoneItself = false
+        await transport.ensureZone()
+        account.zoneReady = true
+        await transport.start(state: account.engineState, provider: provider)
+        running = true
+        detector.startObserving()
+        status = .idle(lastSync: account.lastSendAt)
+        await fetch()
+        guard running, !status.isPaused else { return }
+        guard await scanAndEnqueue() else { return }
+        account.accountHash = hash
+        try? context.save()
+        if joining {
+            let n = pendingCount()
+            if n > 0 { status = .joining(SyncStatus.joiningMessage(n)) }
+        }
+        await sendAll()
+    }
+
+    private func fetch() async {
+        do {
+            try await transport.fetchChanges()
+        } catch {
+            log.info("Fetch failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    /// A full scan; queues its result. False when the breaker tripped (sync is then paused).
+    private func scanAndEnqueue() async -> Bool {
+        do {
+            let outcome = try await detector.fullScan()
+            if let held = outcome.massDelete {
+                heldDeletes = held
+                heldDeleteCount = held.count
+                pause(.massDelete)
+                return false
+            }
+            await enqueue(outcome.saves, outcome.deletes)
+            return true
+        } catch {
+            log.error("Full scan failed: \(error.localizedDescription, privacy: .public)")
+            return false
+        }
+    }
+
+    private func sendAll() async {
+        var previous = Int.max
+        for _ in 0..<8 {
+            guard running, !crashed, !status.isPaused else { break }
+            await flushAndEnqueue()
+            let pending = pendingCount()
+            guard pending > 0 else { break }
+            if case .joining = status {} else { status = .syncing(pending: pending) }
+            do {
+                try await transport.sendChanges()
+            } catch {
+                log.info("Send failed: \(error.localizedDescription, privacy: .public)")
+                break
+            }
+            let after = pendingCount()
+            if after >= pending && after >= previous { break }   // only failures the engine retries later
+            previous = after
+        }
+        guard running, !crashed, !status.isPaused else { return }
+        let left = pendingCount()
+        guard left == 0 else {
+            // Not drained (offline, or only retries left): "joining" stays until the first send drains.
+            if case .joining = status {} else { status = .syncing(pending: left) }
+            return
+        }
+        account.lastSendAt = clock.now
+        try? context.save()
+        status = .idle(lastSync: clock.now)
+    }
+
+    /// Rows waiting for a save or a delete that can go now (frozen rows and held speaker deletes do not count).
+    func pendingCount() -> Int {
+        let save = SyncPending.save.rawValue, delete = SyncPending.delete.rawValue
+        let rows = (try? context.fetch(FetchDescriptor<SyncRecordState>(predicate: #Predicate {
+            $0.pendingRaw == save || $0.pendingRaw == delete
+        }))) ?? []
+        let projector = RecordProjector(context: context)
+        var holdSpeakers: Bool?
+        return rows.filter { row in
+            guard let id = row.recordID else { return false }
+            if row.pending == .save {
+                guard let e = projector.entity(id) else { return false }
+                return e.isSyncable
+            }
+            if id.type == .speaker {
+                if holdSpeakers == nil { holdSpeakers = (try? detector.syncedRecordingIsProcessing()) ?? false }
+                return holdSpeakers == false
+            }
+            return true
+        }.count
+    }
+
+    private func stopRunning() {
+        running = false
+        flushTask?.cancel()
+        flushTask = nil
+        detector.stopObserving()
+        inFlight = [:]
+    }
+
+    private func pause(_ reason: SyncPauseReason) {
+        status = .paused(reason)
+        account.pausedReason = reason
+        try? context.save()
+    }
+
+    /// Deletes every state row and forgets the engine state and account (local data is untouched).
+    private func clearSyncState() {
+        for row in (try? context.fetch(FetchDescriptor<SyncRecordState>())) ?? [] { context.delete(row) }
+        let a = account
+        a.engineState = nil
+        a.accountHash = nil
+        a.zoneReady = false
+        a.lastFetchAt = nil
+        a.lastSendAt = nil
+        inFlight = [:]
+        try? context.save()
+    }
+
+    // MARK: Local changes
+
+    private func scheduleFlush() {
+        guard running, flushTask == nil else { return }
+        let delay = debounce
+        flushTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled else { return }
+            await self?.flushAndEnqueue()
+        }
+    }
+
+    /// The fast path now: what `didSave` collected becomes pending state and goes to the transport.
+    func flushAndEnqueue() async {
+        flushTask?.cancel()
+        flushTask = nil
+        guard running, !crashed else { return }
+        do {
+            let outcome = try detector.flush()
+            await enqueue(outcome.saves, outcome.deletes)
+        } catch {
+            log.error("Change detection failed: \(error.localizedDescription, privacy: .public)")
+        }
+    }
+
+    private func enqueue(_ saves: [SyncRecordID], _ deletes: [SyncRecordID]) async {
+        guard !saves.isEmpty || !deletes.isEmpty else { return }
+        await transport.enqueue(saves: saves, deletes: deletes)
+    }
+
+    // MARK: Provider
+
+    private var provider: @MainActor @Sendable (SyncRecordID) -> SyncRecord? {
+        { [weak self] id in self?.provide(id) }
+    }
+
+    /// The record for a pending save, built when the transport makes a batch. Nil skips it (gone, frozen, or no
+    /// longer pending).
+    func provide(_ id: SyncRecordID) -> SyncRecord? {
+        guard running, !crashed, let row = try? detector.stateRow(named: id.recordName), row.pending == .save,
+              let e = RecordProjector(context: context).entity(id), e.isSyncable else { return nil }
+        let record = RecordProjector.record(e, unresolved: row.unresolvedLinks, systemFields: row.systemFields)
+        inFlight[id.recordName] = SyncSchema.hashes(record)
+        return record
+    }
+
+    // MARK: Events
+
+    private func ensureEventLoop() {
+        guard loopTask == nil else { return }
+        let events = transport.events
+        let transport = self.transport
+        loopTask = Task { [weak self] in
+            for await event in events {
+                if let self { await self.handle(event) }
+                await transport.eventHandled()
+            }
+        }
+    }
+
+    func handle(_ event: SyncEvent) async {
+        guard !crashed else { return }
+        switch event {
+        case .stateUpdate(let data):
+            guard running, !ignoreStateUpdates else { return }
+            account.engineState = data
+            try? context.save()
+        case .accountChange(let change):
+            await handleAccountChange(change)
+        case .fetched(let modifications, let deletions):
+            guard running else { return }
+            await handleFetched(modifications, deletions)
+        case .fetchFinished:
+            guard running else { return }
+            await handleFetchFinished()
+        case .sent(let saved, let deleted, let failures):
+            guard running else { return }
+            await handleSent(saved, deleted, failures)
+        case .zoneDeleted(let reason):
+            guard running else { return }
+            stopRunning()
+            clearSyncState()
+            switch reason {
+            case .deleted, .purged:
+                pause(.zoneRemoved)
+                Task { await self.transport.stop() }
+            case .encryptedDataReset:
+                Task {
+                    await self.transport.stop()
+                    await self.enable()
+                }
+            }
+        }
+    }
+
+    private func handleFetched(_ modifications: [SyncRecord], _ deletions: [SyncRecordID]) async {
+        await flushAndEnqueue()
+        if modifications.contains(where: { SyncSchema.recordVersion($0) > SyncSchema.version }) {
+            otherDeviceNeedsUpdate = true
+            ignoreStateUpdates = true
+            stopRunning()
+            pause(.needsUpdate)
+            Task { await self.transport.stop() }
+            return
+        }
+        var effects = RemoteApplier.Effects()
+        do {
+            try await applier.applyFetched(modifications: modifications, deletions: deletions, effects: &effects)
+        } catch is SyncCrash {
+            crash()
+            return
+        } catch {
+            log.error("Applying fetched records failed: \(error.localizedDescription, privacy: .public)")
+        }
+        if effects.otherModelKey { otherDeviceNeedsUpdate = true }
+        fetchTouchedProfiles.formUnion(effects.touchedProfiles)
+        await enqueue(effects.saves, effects.deletes)
+    }
+
+    private func handleFetchFinished() async {
+        do {
+            let linked = try applier.finishFetch(touchedProfiles: fetchTouchedProfiles)
+            // Chunks already rebuilt the search text of what they touched; links resolved now name new speakers.
+            let repair = try InvariantRepair.run(store, touchedRecordings: linked)
+            duplicateNames = repair.duplicateNames
+            account.lastFetchAt = clock.now
+            try context.save()
+        } catch {
+            log.error("Finishing a fetch failed: \(error.localizedDescription, privacy: .public)")
+        }
+        fetchTouchedProfiles = []
+        await flushAndEnqueue()
+    }
+
+    private func handleSent(_ saved: [SyncRecord], _ deleted: [SyncRecordID], _ failures: [SendFailure]) async {
+        await flushAndEnqueue()
+        var effects = RemoteApplier.Effects()
+        let projector = RecordProjector(context: context)
+        let names = saved.map(\.id.recordName) + deleted.map(\.recordName) + failures.map(\.recordID.recordName)
+        let rows = (try? detector.stateRows(named: names)) ?? [:]
+        var zoneGone = false, quotaFull = false
+
+        for record in saved {
+            let name = record.id.recordName
+            let sent = inFlight.removeValue(forKey: name) ?? SyncSchema.hashes(record)
+            guard let row = rows[name] else { continue }
+            row.systemFields = record.systemFields
+            row.baseHashes = sent
+            row.updatedAt = clock.now
+            switch row.pending {
+            case .delete:
+                effects.deletes.append(record.id)
+            case .parkedDelete:
+                break
+            case .none, .save:
+                guard let e = projector.entity(record.id) else { continue }   // deleted meanwhile: the detector sends it
+                guard e.isSyncable else { continue }                              // frozen: re-checked when ready
+                if RecordProjector.hashes(e, unresolved: row.unresolvedLinks) != sent {
+                    row.pending = .save
+                    effects.saves.append(record.id)
+                } else {
+                    row.pending = .none
+                }
+            }
+        }
+        for id in deleted {
+            inFlight.removeValue(forKey: id.recordName)
+            guard let row = rows[id.recordName] else { continue }
+            if projector.entity(id) == nil {
+                context.delete(row)
+            } else {
+                // The entity exists again here: the server no longer has it, so it is new to the server.
+                row.systemFields = nil
+                row.baseHashes = [:]
+                row.pending = .save
+                effects.saves.append(id)
+            }
+        }
+        for failure in failures {
+            let id = failure.recordID
+            switch failure {
+            case .serverRecordChanged(let server):
+                inFlight.removeValue(forKey: id.recordName)
+                applier.merge(server: server, state: rows[id.recordName], effects: &effects)
+            case .unknownItem:
+                // The server no longer has it: delete wins.
+                inFlight.removeValue(forKey: id.recordName)
+                applier.applyDeletion(id, state: rows[id.recordName], effects: &effects)
+            case .zoneNotFound:
+                if !deletedZoneItself { zoneGone = true }
+            case .quotaExceeded:
+                quotaFull = true
+            case .retryable:
+                break
+            case .permanent(_, let message):
+                inFlight.removeValue(forKey: id.recordName)
+                log.error("Record \(id.recordName, privacy: .public) was refused: \(message, privacy: .public)")
+                if let row = rows[id.recordName], row.pending == .save { row.pending = .none }
+            }
+        }
+        applier.refreshSearchText(effects.touchedRecordings)
+        do {
+            try fault?(.beforeSendResultSave)
+        } catch {
+            crash()
+            return
+        }
+        try? context.save()
+        if zoneGone {
+            stopRunning()
+            clearSyncState()
+            pause(.zoneRemoved)
+            Task { await self.transport.stop() }
+            return
+        }
+        await enqueue(effects.saves, effects.deletes)
+        if quotaFull { pause(.quotaFull) }
+    }
+
+    private func handleAccountChange(_ change: AccountChange) async {
+        switch change {
+        case .signOut:
+            guard settings.syncEnabled else { return }
+            stopRunning()
+            pause(.noAccount)
+            Task { await self.transport.stop() }
+        case .signIn(let hash), .switchAccounts(let hash):
+            guard settings.syncEnabled else { return }
+            if let stored = account.accountHash, stored != hash {
+                stopRunning()
+                pause(.accountChanged)
+                Task { await self.transport.stop() }
+            } else if !running {
+                account.pausedReason = nil
+                status = .idle(lastSync: account.lastSendAt)
+                Task { await self.start() }
+            }
+        }
+    }
+
+    /// A simulated crash: everything unsaved is lost, and this coordinator does nothing more (tests relaunch).
+    private func crash() {
+        crashed = true
+        stopRunning()
+        context.rollback()
+        Task { await self.transport.stop() }
+    }
+
+    // MARK: Account row
+
+    var account: SyncAccountState { Self.accountRow(context, create: true)! }
+
+    static func accountRow(_ context: ModelContext, create: Bool) -> SyncAccountState? {
+        var d = FetchDescriptor<SyncAccountState>(predicate: #Predicate { $0.key == "default" })
+        d.fetchLimit = 1
+        if let row = try? context.fetch(d).first { return row }
+        guard create else { return nil }
+        let row = SyncAccountState()
+        context.insert(row)
+        return row
+    }
+}

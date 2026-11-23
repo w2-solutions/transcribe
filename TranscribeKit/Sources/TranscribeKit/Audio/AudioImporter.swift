@@ -40,7 +40,10 @@ public enum AudioImporter {
                 let duration = try writer.finish()
                 guard duration > 0 else { throw AudioImportError.unreadable }
                 let peaks = try WaveformPeaks.peaks(ofWAV: destination, bins: peakBins)
-                return CapturedAudio(url: destination, duration: duration, marks: [], peaks: peaks)
+                // Imported audio counts as heard on the importing device (D9); its route is "imported".
+                return CapturedAudio(url: destination, duration: duration, marks: [], peaks: peaks,
+                                     detail: CaptureDetail(hardwareModel: CaptureChannel.hardwareModel,
+                                                           input: CaptureDetail.Input.imported, routeChanged: false))
             } catch {
                 _ = try? writer.finish()
                 throw error

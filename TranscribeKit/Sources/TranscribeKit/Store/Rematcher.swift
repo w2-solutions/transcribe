@@ -36,7 +36,7 @@ enum Rematcher {
             let taken = Set(r.speakers.compactMap { $0.profile?.id ?? $0.suggestedProfileID })
             let probes = open.map { s in
                 SpeakerProbe(key: s.key, vector: s.vector, cleanSeconds: s.cleanSeconds,
-                             rejectedProfileIDs: Set(s.rejectedProfileIDs).union(taken))
+                             rejectedProfileIDs: Set(s.rejectedProfileIDs).union(taken), channel: r.captureChannel)
             }
             let decisions = VoiceMatcher.decide(probes: probes, profiles: candidates, modelKey: modelKey, policy: policy)
             for s in open {

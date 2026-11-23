@@ -55,6 +55,37 @@ struct LearningJourneyTests {
         #expect(!karan.samples.contains { $0.sourceSpeakerID == s3.id })
     }
 
+    /// §7: Karan was learned on the iPhone (`karanFromIPhone`); this store is a Mac. The first Mac recording can only
+    /// ask; confirming it stores a Mac sample, and the next Mac recording is auto-labelled.
+    @Test func karanLearnedOnTheIPhoneIsAskedThenLearnedOnTheMac() throws {
+        let h = try WP3Harness(channel: CaptureChannel.mac)
+        defer { h.cleanup() }
+        try h.seed(.karanFromIPhone)
+        let karan = try #require(try h.profile(named: "Karan"))
+        #expect(karan.samples.allSatisfy { $0.captureChannel == CaptureChannel.iphone })
+
+        // 1. 0.8 to both iPhone samples, which can only fill second place on the Mac: "Is this Karan?".
+        let (id1, s1) = try record(h, SyntheticVoices.vector(near: .karan, cosine: 0.8, variant: 36), at: 1)
+        #expect(try h.recording(id1).captureChannel == CaptureChannel.mac)
+        #expect(s1.label == .suggested && s1.suggestedProfileID == karan.id)
+        let t1 = try trace(s1)
+        #expect(t1.kind == .ask && t1.reason == "otherChannel" && t1.probeChannel == CaptureChannel.mac)
+        #expect(abs((t1.score ?? 0) - 0.8) < 1e-4)
+
+        // 2. Yes: a confirmed 12 s sample, heard on the Mac.
+        _ = try h.store.confirmSuggestion(recordingID: id1, key: "S1")
+        let confirmed = try #require(karan.samples.first { $0.sourceSpeakerID == s1.id })
+        #expect(confirmed.origin == .confirmed && confirmed.isTrusted && confirmed.captureChannel == CaptureChannel.mac)
+        #expect(karan.samples.filter { $0.captureChannel == CaptureChannel.iphone }.count == 2)
+
+        // 3. The next Mac recording: the Mac sample (0.64) takes first place, an iPhone one (0.8) second: 0.72, auto.
+        let (_, s2) = try record(h, SyntheticVoices.vector(near: .karan, cosine: 0.8, variant: 37), at: 2)
+        #expect(s2.label == .autoLabelled && s2.profile?.id == karan.id)
+        #expect(abs((s2.matchScore ?? 0) - 0.72) < 1e-4)
+        let evidence = try #require(try trace(s2).profiles.first { $0.profileID == karan.id })
+        #expect(evidence.trustedCount == 1 && evidence.otherChannelTrustedCount == 1)
+    }
+
     @Test func aStrangerInTheSameCarIsNotAsked() throws {
         let h = try WP3Harness()
         defer { h.cleanup() }

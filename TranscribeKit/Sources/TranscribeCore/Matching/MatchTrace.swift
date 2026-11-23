@@ -6,18 +6,23 @@ public struct ProfileEvidence: Sendable, Codable, Equatable {
     public var score: Float            // §1.3 pair score
     public var trustedTop: Float?      // best cosine to a trusted sample (T[0])
     public var trustedScore: Float?    // mean of the top k trusted cosines
-    public var trustedCount: Int       // trusted samples of the probe's dimension
-    public var untrustedCount: Int     // untrusted samples of the probe's dimension
+    public var trustedCount: Int       // trusted samples of the probe's dimension on the probe's channel
+    public var untrustedCount: Int     // other samples of the probe's dimension (other-channel trusted ones included)
     public var askOnly: Bool           // no trusted sample: the profile can be asked about, never auto-labelled
     public var negativeMax: Float?     // §1.4
     public var blocked: Bool
     public var cohortMax: Float?       // §1.5; nil outside decideWithTrace
+    /// Trusted samples of the probe's dimension heard on another channel (§7): they only fill second place.
+    /// Nil in v1 traces.
+    public var otherChannelTrustedCount: Int?
 
     public init(profileID: UUID, score: Float, trustedTop: Float?, trustedScore: Float?, trustedCount: Int,
-                untrustedCount: Int, askOnly: Bool, negativeMax: Float?, blocked: Bool, cohortMax: Float?) {
+                untrustedCount: Int, askOnly: Bool, negativeMax: Float?, blocked: Bool, cohortMax: Float?,
+                otherChannelTrustedCount: Int? = nil) {
         self.profileID = profileID; self.score = score; self.trustedTop = trustedTop; self.trustedScore = trustedScore
         self.trustedCount = trustedCount; self.untrustedCount = untrustedCount; self.askOnly = askOnly
         self.negativeMax = negativeMax; self.blocked = blocked; self.cohortMax = cohortMax
+        self.otherChannelTrustedCount = otherChannelTrustedCount
     }
 }
 
@@ -27,11 +32,15 @@ public enum TraceKind: String, Sendable, Codable { case auto, ask, unknown }
 ///
 /// `reason` is the first rule that applies:
 /// - auto: `"auto"`;
-/// - ask: `"downgraded"`, `"askOnly"`, `"autoLabelOff"`, `"belowAuto"`, `"margin"`;
+/// - ask: `"downgraded"`, `"otherChannel"` (no trusted sample on the probe's channel, but some on another),
+///   `"askOnly"` (no trusted sample at all), `"autoLabelOff"`, `"belowAuto"`, `"margin"`;
 /// - unknown: `"noVector"`, `"tooShort"`, `"noEligibleProfiles"`, `"blocked"` (the top profile was blocked and
 ///   nothing else reached ask), `"taken"` (every profile that reached ask was taken), `"lowScore"`.
+///
+/// Version 2 (§7) adds `probeChannel` and `ProfileEvidence.otherChannelTrustedCount`; both are optional, so v1 JSON
+/// still decodes.
 public struct MatchTrace: Sendable, Codable, Equatable {
-    public static let currentVersion = 1
+    public static let currentVersion = 2
 
     public var version: Int
     public var key: SpeakerKey
@@ -49,16 +58,19 @@ public struct MatchTrace: Sendable, Codable, Equatable {
     public var autoLabelMin: Float
     public var autoLabelMargin: Float
     public var askMin: Float
+    /// The capture channel of the probe's recording (v2); nil when unknown and in v1 traces.
+    public var probeChannel: String?
 
     public init(version: Int = MatchTrace.currentVersion, key: SpeakerKey, cleanSeconds: Double, kind: TraceKind,
                 profileID: UUID?, reason: String, score: Float?, runnerUp: Float?, margin: Float?,
                 profiles: [ProfileEvidence], cohortSize: Int, cohortTopMean: Float?, cohortTopStd: Float?,
-                autoLabelMin: Float, autoLabelMargin: Float, askMin: Float) {
+                autoLabelMin: Float, autoLabelMargin: Float, askMin: Float, probeChannel: String? = nil) {
         self.version = version; self.key = key; self.cleanSeconds = cleanSeconds; self.kind = kind
         self.profileID = profileID; self.reason = reason; self.score = score; self.runnerUp = runnerUp
         self.margin = margin; self.profiles = profiles; self.cohortSize = cohortSize
         self.cohortTopMean = cohortTopMean; self.cohortTopStd = cohortTopStd
         self.autoLabelMin = autoLabelMin; self.autoLabelMargin = autoLabelMargin; self.askMin = askMin
+        self.probeChannel = probeChannel
     }
 }
 

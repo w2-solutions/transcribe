@@ -73,6 +73,7 @@ struct MergeForgetTests {
                                      embeddingModelKey: EmbeddingModelID.fake.key, origin: .confirmed,
                                      addedAt: Seeds.Dates.d.addingTimeInterval(Double(v)), speechSeconds: 12)
             h.context.insert(sample)
+            sample.captureChannel = CaptureChannel.iphone   // Karan's channel: the cap is per channel (D12)
             sample.profile = source
         }
         try h.context.save()

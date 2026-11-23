@@ -13,9 +13,13 @@ public final class LibraryStore: LibraryStoring {
     let clock: AppClock
     let policy: MatchPolicy
     let alignment: AlignmentConfig
+    /// This device's capture channel (`CaptureChannel.current`, or `LaunchConfig.channel` in the fake engine and UI
+    /// tests). New recordings get it, and `stampCaptureChannels()` gives it to rows that have none.
+    public let localChannel: String
 
-    /// Key of the install id the store was last reconciled with (§5.5). It lives in a small plist next to
-    /// the store file, so it travels with the store (backup/restore) but never with the Keychain item.
+    /// Key of the install id first recorded with this store. It lives in a small plist next to the store file, so it
+    /// travels with the store (backup/restore) but never with the Keychain item. Informational only: nothing is
+    /// ever deleted because it differs from the current install id.
     public static let storeDeviceIDKey = "transcribe.storeDeviceID"
 
     /// A `ModelContext` does not keep its container alive, and SwiftData traps on any fetch once the container
@@ -23,10 +27,12 @@ public final class LibraryStore: LibraryStoring {
     /// it keeps the container alive itself.
     private let container: ModelContainer
 
-    public init(context: ModelContext, paths: AppPaths, deviceIdentity: any DeviceIdentity, clock: AppClock) {
+    public init(context: ModelContext, paths: AppPaths, deviceIdentity: any DeviceIdentity, clock: AppClock,
+                localChannel: String) {
         self.context = context; self.container = context.container
         self.paths = paths; self.deviceIdentity = deviceIdentity; self.clock = clock
         self.policy = .default; self.alignment = .default
+        self.localChannel = localChannel
     }
 
     // MARK: Lookup helpers
@@ -132,13 +138,17 @@ public final class LibraryStore: LibraryStoring {
     }
 
     /// Curated insert of one embedding into a profile (§5.3). Returns false when skipped as a near-duplicate.
+    ///
+    /// `channel` is the capture channel of the sample's source recording (D10), never this device's; `input` is that
+    /// recording's input route, for the log only. The 12-sample cap, the duplicate check and the protection of the
+    /// earliest `.named` sample apply per channel (D12), so a sample never evicts one heard on another channel.
     @discardableResult
     func insertSample(into profile: VoiceProfile, vector: VoiceVector, modelKey: String, origin: SampleOrigin,
                       speechSeconds: Double, sourceRecordingID: UUID?, sourceSpeakerID: UUID?,
-                      clip: TimeRange?, quote: String?) -> Bool {
+                      clip: TimeRange?, quote: String?, channel: String?, input: String?) -> Bool {
         let live = profile.samples.filter { $0.embeddingModelKey == profile.embeddingModelKey }
         if live.isEmpty && profile.embeddingModelKey != modelKey {
-            // A profile with no usable samples (device wipe or model change) re-enrols on the new model.
+            // A profile with no usable samples (all removed, or a model change) re-enrols on the new model.
             // Its negatives were measured on the old model too, so they go with the samples.
             for stale in profile.samples { context.delete(stale) }
             profile.samples.removeAll()
@@ -148,7 +158,8 @@ public final class LibraryStore: LibraryStoring {
         }
         guard profile.embeddingModelKey == modelKey else { return false }
         let existing: [CuratedSample] = profile.samples.compactMap { s in
-            guard s.embeddingModelKey == modelKey, let v = s.vector, v.dimension == vector.dimension else { return nil }
+            guard s.embeddingModelKey == modelKey, s.captureChannel == channel,
+                  let v = s.vector, v.dimension == vector.dimension else { return nil }
             return CuratedSample(id: s.id, vector: v, origin: s.origin, addedAt: s.addedAt, speechSeconds: s.speechSeconds)
         }
         let new = CuratedSample(id: UUID(), vector: vector, origin: origin, addedAt: clock.now, speechSeconds: speechSeconds)
@@ -162,6 +173,8 @@ public final class LibraryStore: LibraryStoring {
         sample.clipStart = clip?.start
         sample.clipEnd = clip?.end
         sample.quote = quote
+        sample.captureChannel = channel
+        sample.captureInput = input
         sample.profile = profile
         let evicted = Set(result.evicted)
         for s in profile.samples where evicted.contains(s.id) && s.id != sample.id { context.delete(s) }
@@ -181,7 +194,8 @@ public final class LibraryStore: LibraryStoring {
         let clip = s.recording.flatMap { firstClip(for: s.key, in: $0) }
         let added = insertSample(into: profile, vector: vector, modelKey: key, origin: origin,
                                  speechSeconds: s.cleanSeconds, sourceRecordingID: s.recording?.id,
-                                 sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote)
+                                 sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote,
+                                 channel: s.recording?.captureChannel, input: Self.captureInput(of: s.recording))
         return added ? (true, nil) : (false, .duplicate)
     }
 
@@ -217,7 +231,7 @@ public final class LibraryStore: LibraryStoring {
         }
     }
 
-    // MARK: Device (per-device voices)
+    // MARK: Device
 
     var deviceFileURL: URL { paths.root.appendingPathComponent("StoreDevice.plist", isDirectory: false) }
 
@@ -234,41 +248,12 @@ public final class LibraryStore: LibraryStoring {
         try data.write(to: deviceFileURL, options: .atomic)
     }
 
-    public func reconcileDevice() throws -> Bool {
-        let current = deviceIdentity.installID()
-        guard !current.isEmpty else { return false }            // identity unavailable (e.g. Keychain locked): never wipe
-        guard let stored = storedDeviceID() else {
-            try writeDeviceID(current)                          // first launch with this store
-            return false
-        }
-        guard stored != current else { return false }
-        // Restored onto another device: voices were learnt with another microphone (CLAUDE.md), so wipe them.
-        for sample in try context.fetch(FetchDescriptor<VoiceSample>()) { context.delete(sample) }
-        for negative in try context.fetch(FetchDescriptor<VoiceNegative>()) { context.delete(negative) }
-        for p in try context.fetch(FetchDescriptor<VoiceProfile>()) {
-            p.samples.removeAll()
-            p.negatives.removeAll()
-            p.needsResample = true
-        }
-        // Speaker vectors in existing recordings came from the old device's microphone too: drop them (and the
-        // numbers measured from them) so a profile can only re-enrol from recordings made on this device.
-        for s in try context.fetch(FetchDescriptor<RecordingSpeaker>()) {
-            s.vectorData = nil
-            s.embeddingModelKey = nil
-            s.vectorCoherence = nil
-            s.matchTraceData = nil
-        }
-        for r in try context.fetch(FetchDescriptor<Recording>()) { r.movedSpeakerTracesData = nil }
-        try context.save()
-        try writeDeviceID(current)
-        return true
-    }
-
     // MARK: Recording lifecycle
 
     public func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws {
         let recording = Recording(id: id, createdAt: createdAt, audioFileName: audioFileName, source: source)
         context.insert(recording)
+        recording.captureChannel = localChannel   // imports too: imported audio counts as heard on this device (D9)
         try context.save()
     }
 
@@ -277,6 +262,7 @@ public final class LibraryStore: LibraryStoring {
         r.duration = audio.duration
         r.marks = audio.marks
         r.peaks = audio.peaks
+        if let detail = audio.detail { r.captureDetailJSON = detail.json() }
         if case .language(let code) = language { r.languageRaw = code } else { r.languageRaw = nil }
         r.stage = .queued
         r.queueReasonRaw = nil
@@ -341,7 +327,8 @@ public final class LibraryStore: LibraryStoring {
     }
 
     static func probe(_ s: RecordingSpeaker) -> SpeakerProbe {
-        SpeakerProbe(key: s.key, vector: s.vector, cleanSeconds: s.cleanSeconds, rejectedProfileIDs: Set(s.rejectedProfileIDs))
+        SpeakerProbe(key: s.key, vector: s.vector, cleanSeconds: s.cleanSeconds, rejectedProfileIDs: Set(s.rejectedProfileIDs),
+                     channel: s.recording?.captureChannel)
     }
 
     public func matchCandidates(modelKey: String) throws -> [ProfileCandidate] {
@@ -369,15 +356,18 @@ public final class LibraryStore: LibraryStoring {
                 s.matchScore = Double(score)
                 s.matchMargin = Double(margin)
                 // An automatic sample needs the profile's trusted samples alone to match strongly (§1.7), measured
-                // before the insert, so an automatic sample never vouches for the next one.
+                // before the insert, so an automatic sample never vouches for the next one. Only trusted samples
+                // heard on this recording's channel count (§7).
                 if let vector = s.vector, let key = s.embeddingModelKey, key == p.embeddingModelKey,
                    SampleCurator.shouldAddAutomaticSample(
                        decision: decision,
-                       trustedScore: VoiceMatcher.evidence(vector, against: Self.candidate(p, policy: policy), policy: policy)?.trustedScore,
+                       trustedScore: VoiceMatcher.evidence(vector, against: Self.candidate(p, policy: policy),
+                                                           probeChannel: r.captureChannel, policy: policy)?.trustedScore,
                        coherence: s.coherence, cleanSeconds: s.cleanSeconds, policy: policy) {
                     let clip = firstClip(for: s.key, in: r)
                     insertSample(into: p, vector: vector, modelKey: key, origin: .strongMatch, speechSeconds: s.cleanSeconds,
-                                 sourceRecordingID: r.id, sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote)
+                                 sourceRecordingID: r.id, sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote,
+                                 channel: r.captureChannel, input: Self.captureInput(of: r))
                 }
             case .ask(let profileID, let score)?:
                 s.label = .suggested
@@ -503,11 +493,16 @@ public final class LibraryStore: LibraryStoring {
     /// Row, speakers (cascade) and audio file. Samples keep their vectors: they hold plain ids only.
     /// The caller cancels any processing job first (`ProcessingCoordinator.cancel`).
     public func delete(id: UUID) throws {
-        let r = try recording(id)
+        removeRecordingRow(try recording(id))
+        try context.save()
+    }
+
+    /// Deletes a recording's audio file (if present), its speakers and the row; samples keep their vectors.
+    /// Shared by `delete(id:)` and a remote delete (§8.4), so both have the same side effects. Does not save.
+    func removeRecordingRow(_ r: Recording) {
         removeAudio(of: r)
         deleteSpeakers(of: r)
         context.delete(r)
-        try context.save()
     }
 
     public func createFolder(name: String) throws -> UUID {
@@ -576,7 +571,8 @@ public final class LibraryStore: LibraryStoring {
                 let clip = firstClip(for: s.key, in: r)
                 let stored = insertSample(into: p, vector: vector, modelKey: modelKey, origin: .named,
                                           speechSeconds: s.cleanSeconds, sourceRecordingID: r.id, sourceSpeakerID: s.id,
-                                          clip: clip?.range, quote: clip?.quote)
+                                          clip: clip?.range, quote: clip?.quote,
+                                          channel: r.captureChannel, input: Self.captureInput(of: r))
                 s.profile = p
                 s.nameSnapshot = nil
                 adoptSlot(of: p, for: s, in: r)
@@ -805,12 +801,13 @@ public final class LibraryStore: LibraryStoring {
                 if !s.rejectedProfileIDs.contains(dst.id) { s.rejectedProfileIDs.append(dst.id) }
             }
         }
-        // Samples keep their origin, so trust survives the merge.
+        // Samples keep their origin and channel, so trust survives the merge on the channel it was earned on.
         for sample in src.sortedSamples {
             guard let v = sample.vector else { continue }
             insertSample(into: dst, vector: v, modelKey: sample.embeddingModelKey, origin: sample.origin,
                          speechSeconds: sample.speechSeconds, sourceRecordingID: sample.sourceRecordingID,
-                         sourceSpeakerID: sample.sourceSpeakerID, clip: sample.clipRange, quote: sample.quote)
+                         sourceSpeakerID: sample.sourceSpeakerID, clip: sample.clipRange, quote: sample.quote,
+                         channel: sample.captureChannel, input: sample.captureInput)
         }
         try mergeNegatives(from: src, into: dst)
         if src.isMe { dst.isMe = true }
@@ -821,29 +818,39 @@ public final class LibraryStore: LibraryStoring {
     }
 
     public func forgetProfile(_ profileID: UUID) throws {
-        let p = try profile(profileID)
+        forgetCleanup(try profile(profileID))
+        try context.save()
+    }
+
+    /// Forgets a profile: its speakers keep the name as a snapshot, suggestions of it are cleared, rejections of it
+    /// are dropped, then the profile (with its samples and negatives) is deleted. Shared by `forgetProfile` and a
+    /// remote profile delete (§8.4), so both have the same side effects. Does not save.
+    func forgetCleanup(_ p: VoiceProfile) {
+        let profileID = p.id
         var touched: [UUID: Recording] = [:]
-        for s in Array(p.speakers) {
+        // Read the links from the speakers' side: after a remote apply the profile's inverse may not have caught up.
+        let all = (try? allSpeakers()) ?? []
+        let linked = all.filter { $0.profile?.id == profileID }
+        for s in linked {
             s.nameSnapshot = p.name
             s.profile = nil
             s.label = .named
             if let r = s.recording { touched[r.id] = r }
         }
-        for s in try allSpeakers() {
+        for s in all {
             if s.suggestedProfileID == profileID {
                 s.suggestedProfileID = nil
                 s.matchScore = nil
                 s.matchMargin = nil
                 if s.label == .suggested { s.label = .unnamed }
             }
-            s.rejectedProfileIDs.removeAll { $0 == profileID }
+            if s.rejectedProfileIDs.contains(profileID) { s.rejectedProfileIDs.removeAll { $0 == profileID } }
         }
         context.delete(p)
         for r in touched.values {
             r.hasUnseenResult = r.speakers.contains { $0.label == .autoLabelled }
             rebuildSearchText(r)
         }
-        try context.save()
     }
 
     public func addSample(profileID: UUID, fromSpeaker recordingSpeakerID: UUID) throws -> NameResult {

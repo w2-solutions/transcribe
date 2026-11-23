@@ -122,6 +122,7 @@ enum AX {
     enum NameSpeaker {
         static let sheet = "nameSpeaker.sheet"
         static let subtitle = "nameSpeaker.subtitle"       // "Speaker 2 · spoke for 0:13"
+        static let askPrompt = "nameSpeaker.askPrompt"     // "Karan was named on your iPhone. … Is this Karan?"
         static let title = "nameSpeaker.title"             // "Who is this?" / "Who said this?"
         static let closeButton = "nameSpeaker.closeButton"
         static func clip(_ i: Int) -> String { "nameSpeaker.clip.\(i)" }

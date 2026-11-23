@@ -75,6 +75,14 @@ public final class NameSpeakerModel {
         }
     }
 
+    /// Why "Is this Karan?" is only a question (§7): the suggested voice was learned on another device.
+    public enum AskContext: Sendable, Equatable {
+        /// The suggested profile has trusted samples, but none heard on this recording's capture channel. `channel`
+        /// is the channel holding most of them ("iphone", "ipad" or "mac"; ties go to the first by name). The UI turns
+        /// it into device copy (`DeviceCopy.askFromOtherDevice`).
+        case otherDevice(channel: String)
+    }
+
     public static let maxNameLength = 60
 
     public let recordingID: UUID
@@ -83,6 +91,8 @@ public final class NameSpeakerModel {
     public let profiles: [ProfileOption]            // "me" first, then by name
     public let otherSpeakers: [SpeakerOption]       // correct mode only; speakers not already offered as a saved voice
     public let clips: [Clip]
+    /// Set when the subject is suggested as a voice learned only on another device; nil otherwise.
+    public let askContext: AskContext?
     /// Turns in the recording (for counting and "Just this turn").
     private let turns: [Turn]
     private let speakerProfiles: [SpeakerKey: UUID]
@@ -100,9 +110,10 @@ public final class NameSpeakerModel {
 
     public init(recordingID: UUID, mode: Mode, subject: Subject, profiles: [ProfileOption],
                 speakers: [SpeakerOption], speakerProfiles: [SpeakerKey: UUID], turns: [Turn], clips: [Clip],
-                platform: DevicePlatform = .current, syncOn: Bool = false) {
+                askContext: AskContext? = nil, platform: DevicePlatform = .current, syncOn: Bool = false) {
         self.copy = DeviceCopy(platform: platform, syncOn: syncOn)
         self.recordingID = recordingID
+        self.askContext = subject.label == .suggested ? askContext : nil
         self.mode = mode
         self.subject = subject
         self.profiles = profiles.sorted { a, b in
@@ -150,10 +161,38 @@ public final class NameSpeakerModel {
         }
         var links: [SpeakerKey: UUID] = [:]
         for s in recording.speakers { if let p = s.profile { links[s.key] = p.id } }
+        let suggested = subject.suggestedProfileID.flatMap { id in profiles.first { $0.id == id } }
         self.init(recordingID: recording.id, mode: mode, subject: subject,
                   profiles: profiles.map { ProfileOption(id: $0.id, name: $0.name, slot: $0.colourSlot, isMe: $0.isMe) },
                   speakers: speakerOptions, speakerProfiles: links, turns: turns, clips: clips,
+                  askContext: suggested.flatMap { Self.askContext(for: $0, recordingChannel: recording.captureChannel) },
                   platform: platform, syncOn: syncOn)
+    }
+
+    /// `.otherDevice` when `profile` has trusted samples on its model but none heard on `recordingChannel` (§7): the
+    /// matcher could then only ask, with reason `otherChannel`. Nil otherwise, and when the other samples' channel is
+    /// unknown.
+    public static func askContext(for profile: VoiceProfile, recordingChannel: String?,
+                                  policy: MatchPolicy = .default) -> AskContext? {
+        let trusted = profile.samples.filter {
+            $0.embeddingModelKey == profile.embeddingModelKey
+                && SampleTrust.isTrusted(origin: $0.origin, speechSeconds: $0.speechSeconds, policy: policy)
+        }
+        guard !trusted.contains(where: { $0.captureChannel == recordingChannel }) else { return nil }
+        var counts: [String: Int] = [:]
+        for sample in trusted { if let c = sample.captureChannel { counts[c, default: 0] += 1 } }
+        let top = counts.sorted { $0.value != $1.value ? $0.value > $1.value : $0.key < $1.key }.first
+        return top.map { .otherDevice(channel: $0.key) }
+    }
+
+    /// The other-device question for the sheet ("Karan was named on your iPhone. … Is this Karan?"), or nil when the
+    /// suggestion is not an other-device ask or the channel is not a known device class.
+    public var askPrompt: String? {
+        guard case .otherDevice(let channel)? = askContext,
+              let other = DevicePlatform(channel: channel),
+              let suggested = subject.suggestedProfileID,
+              let p = profiles.first(where: { $0.id == suggested }) else { return nil }
+        return copy.askFromOtherDevice(name: p.name, other: other)
     }
 
     // MARK: Derived text

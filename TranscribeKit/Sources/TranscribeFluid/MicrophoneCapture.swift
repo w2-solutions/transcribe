@@ -1,4 +1,7 @@
 @preconcurrency import AVFoundation
+#if os(macOS)
+import CoreAudio
+#endif
 import Foundation
 import os
 import TranscribeCore
@@ -35,6 +38,91 @@ protocol CaptureSource: AnyObject, Sendable {
     /// rebuilding the converter if the input format changed).
     func resume() async throws
     func stop() async
+    /// The hardware and input route of this capture (log-only, §6.1). Read after `stop()`; nil when unknown.
+    func captureDetail() async -> CaptureDetail?
+}
+
+extension CaptureSource {
+    func captureDetail() async -> CaptureDetail? { nil }
+}
+
+// MARK: - Input route detection (log-only, never throws)
+
+/// Maps the platform's description of the current input to `CaptureDetail.Input` values.
+enum CaptureRouteDetection {
+    #if os(iOS)
+    static func input(portType: AVAudioSession.Port) -> String {
+        switch portType {
+        case .builtInMic: CaptureDetail.Input.builtInMic
+        case .headsetMic: CaptureDetail.Input.headsetMic
+        case .bluetoothHFP, .bluetoothLE: CaptureDetail.Input.bluetoothHFP
+        case .usbAudio, .carAudio: CaptureDetail.Input.usbAudio
+        case .continuityMicrophone: CaptureDetail.Input.continuity
+        case .virtual: CaptureDetail.Input.virtual
+        default: CaptureDetail.Input.unknown
+        }
+    }
+
+    /// The first input of the session's current route.
+    static func currentDetail() -> CaptureDetail {
+        guard let port = AVAudioSession.sharedInstance().currentRoute.inputs.first else {
+            return CaptureDetail(hardwareModel: CaptureChannel.hardwareModel, input: CaptureDetail.Input.unknown)
+        }
+        return CaptureDetail(hardwareModel: CaptureChannel.hardwareModel, input: input(portType: port.portType),
+                             inputName: port.portName, inputModelUID: port.uid)
+    }
+    #endif
+
+    #if os(macOS)
+    /// `kAudioDevicePropertyTransportType` → input.
+    static func input(transportType: UInt32) -> String {
+        switch transportType {
+        case kAudioDeviceTransportTypeBuiltIn: CaptureDetail.Input.builtInMic
+        case kAudioDeviceTransportTypeBluetooth, kAudioDeviceTransportTypeBluetoothLE: CaptureDetail.Input.bluetoothHFP
+        case kAudioDeviceTransportTypeUSB: CaptureDetail.Input.usbAudio
+        case kAudioDeviceTransportTypeContinuityCaptureWired, kAudioDeviceTransportTypeContinuityCaptureWireless:
+            CaptureDetail.Input.continuity
+        case kAudioDeviceTransportTypeAggregate, kAudioDeviceTransportTypeAutoAggregate: CaptureDetail.Input.aggregate
+        case kAudioDeviceTransportTypeVirtual: CaptureDetail.Input.virtual
+        default: CaptureDetail.Input.unknown
+        }
+    }
+
+    /// Reads the engine input node's Core Audio device through the HAL.
+    static func detail(deviceID: AudioObjectID) -> CaptureDetail {
+        guard deviceID != AudioObjectID(kAudioObjectUnknown) else {
+            return CaptureDetail(hardwareModel: CaptureChannel.hardwareModel, input: CaptureDetail.Input.unknown)
+        }
+        let transport = uint32(deviceID, kAudioDevicePropertyTransportType)
+        return CaptureDetail(hardwareModel: CaptureChannel.hardwareModel,
+                             input: transport.map(input(transportType:)) ?? CaptureDetail.Input.unknown,
+                             inputName: string(deviceID, kAudioObjectPropertyName),
+                             inputModelUID: string(deviceID, kAudioDevicePropertyModelUID))
+    }
+
+    private static func address(_ selector: AudioObjectPropertySelector) -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(mSelector: selector, mScope: kAudioObjectPropertyScopeGlobal,
+                                   mElement: kAudioObjectPropertyElementMain)
+    }
+
+    private static func uint32(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> UInt32? {
+        var addr = address(selector)
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        guard AudioObjectGetPropertyData(id, &addr, 0, nil, &size, &value) == noErr else { return nil }
+        return value
+    }
+
+    private static func string(_ id: AudioObjectID, _ selector: AudioObjectPropertySelector) -> String? {
+        var addr = address(selector)
+        var value: Unmanaged<CFString>?
+        var size = UInt32(MemoryLayout<Unmanaged<CFString>?>.size)
+        let status = withUnsafeMutablePointer(to: &value) { AudioObjectGetPropertyData(id, &addr, 0, nil, &size, $0) }
+        guard status == noErr, let value else { return nil }
+        let s = value.takeRetainedValue() as String
+        return s.isEmpty ? nil : s
+    }
+    #endif
 }
 
 // MARK: - Converter used on the tap thread
@@ -109,8 +197,12 @@ actor MicrophoneCapture: CaptureSource {
     private var running = false
     private var stopped = false
     private var observers: [any NSObjectProtocol] = []
+    /// The input this capture started on, plus whether it changed while recording (log-only).
+    private var detail: CaptureDetail?
 
     init() {}
+
+    func captureDetail() async -> CaptureDetail? { detail }
 
     func start(_ deliver: @escaping @Sendable (CaptureInput) -> Void) async throws {
         guard self.deliver == nil, !stopped else { throw EngineError.failed("Capture already started") }
@@ -121,6 +213,7 @@ actor MicrophoneCapture: CaptureSource {
             engine.prepare()
             try engine.start()
             running = true
+            detail = detectDetail()
             observeNotifications()
         } catch {
             teardown()
@@ -217,6 +310,23 @@ actor MicrophoneCapture: CaptureSource {
         #endif
     }
 
+    /// Reads the current input route. Detection is log-only: it never throws, and anything unreadable is "unknown".
+    private func detectDetail() -> CaptureDetail {
+        #if os(iOS)
+        return CaptureRouteDetection.currentDetail()
+        #elseif os(macOS)
+        return CaptureRouteDetection.detail(deviceID: engine.inputNode.auAudioUnit.deviceID)
+        #else
+        return CaptureDetail(hardwareModel: CaptureChannel.hardwareModel, input: CaptureDetail.Input.unknown)
+        #endif
+    }
+
+    /// The input changed during the recording (any engine configuration change, or an iOS route change).
+    private func noteRouteChanged() {
+        guard deliver != nil, !stopped else { return }
+        detail?.routeChanged = true
+    }
+
     // MARK: Notifications
 
     private func observeNotifications() {
@@ -242,9 +352,12 @@ actor MicrophoneCapture: CaptureSource {
             deliver(.event(.interruptionEnded(shouldResume: context?.recommendation == .shouldResume)))
         })
         observers.append(center.addObserver(forName: AVAudioSession.routeChangeNotification, object: session, queue: nil) {
-            note in
+            [weak self] note in
             guard let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-                  AVAudioSession.RouteChangeReason(rawValue: raw) == .oldDeviceUnavailable else { return }
+                  let reason = AVAudioSession.RouteChangeReason(rawValue: raw) else { return }
+            // Our own category changes are not a new input.
+            if reason != .categoryChange { Task { await self?.noteRouteChanged() } }
+            guard reason == .oldDeviceUnavailable else { return }
             deliver(.event(.routeLost))
         })
         observers.append(center.addObserver(forName: AVAudioSession.mediaServicesWereResetNotification, object: session,
@@ -258,6 +371,7 @@ actor MicrophoneCapture: CaptureSource {
     /// capturing, rebuild the tap for the new format and restart; if that fails, report the route as lost.
     private func engineConfigurationChanged() {
         guard running, !stopped else { return }
+        detail?.routeChanged = true
         log.info("Audio engine configuration changed; restarting capture")
         do {
             try installTapIfNeeded()

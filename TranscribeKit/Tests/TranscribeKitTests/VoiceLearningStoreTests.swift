@@ -208,7 +208,7 @@ struct VoiceLearningStoreTests {
         try h.seed(.library)
         let karan = try #require(try h.profile(named: "Karan"))
         let ticking = LibraryStore(context: h.context, paths: h.paths, deviceIdentity: FixedDeviceIdentity("device-A"),
-                                   clock: TickingClock(start: Seeds.Dates.d).clock)
+                                   clock: TickingClock(start: Seeds.Dates.d).clock, localChannel: h.store.localChannel)
         var sources: [UUID] = []
         for i in 0..<9 {   // nine distinct voices (pairwise cosine 0.25), each suggested as Karan and rejected
             let id = try oneSpeaker(h, SyntheticVoices.vector(near: .stranger, cosine: 0.5, variant: 30 + i), clean: 8,

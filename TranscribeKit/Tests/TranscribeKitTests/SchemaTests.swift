@@ -8,15 +8,80 @@ import TranscribeCore
 @Suite("WP3: schema")
 @MainActor
 struct SchemaTests {
-    @Test func migrationPlanListsV1AndV2() {
+    @Test func migrationPlanListsV1V2V3() {
         let schemas = TranscribeMigrationPlan.schemas
-        #expect(schemas.count == 2)
-        #expect(schemas.first == TranscribeSchemaV1.self && schemas.last == TranscribeSchemaV2.self)
-        #expect(TranscribeMigrationPlan.stages.count == 1)
+        #expect(schemas.count == 3)
+        #expect(schemas[0] == TranscribeSchemaV1.self && schemas[1] == TranscribeSchemaV2.self && schemas[2] == TranscribeSchemaV3.self)
+        #expect(TranscribeMigrationPlan.stages.count == 2)
         #expect(TranscribeSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
         #expect(TranscribeSchemaV1.models.count == 5)
         #expect(TranscribeSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
         #expect(TranscribeSchemaV2.models.count == 6)
+        #expect(TranscribeSchemaV3.versionIdentifier == Schema.Version(3, 0, 0))
+        #expect(TranscribeSchemaV3.models.count == 8)
+        let v3Names = Set(TranscribeSchemaV3.models.map { String(describing: $0) })
+        #expect(v3Names == ["Recording", "RecordingSpeaker", "VoiceProfile", "VoiceSample", "Folder", "VoiceNegative",
+                            "SyncRecordState", "SyncAccountState"])
+        // The aliases name the current schema.
+        #expect(Recording.self == TranscribeSchemaV3.Recording.self && VoiceNegative.self == TranscribeSchemaV3.VoiceNegative.self)
+        #expect(SyncRecordState.self == TranscribeSchemaV3.SyncRecordState.self)
+    }
+
+    @Test func v3StoreRoundTripsChannelsAndSyncState() throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("v3-schema-\(UUID().uuidString)", isDirectory: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let paths = AppPaths(root: root)
+        try paths.prepare()
+        let entity = UUID()
+        let detail = CaptureDetail(hardwareModel: "Mac15,3", input: CaptureDetail.Input.usbAudio, inputName: "Desk mic",
+                                   inputModelUID: "usb:1234", routeChanged: true)
+        let id = Seeds.ID.recordingB
+        do {
+            let container = try ModelContainerFactory.make(inMemory: false, url: paths.storeURL)
+            let store = LibraryStore(context: container.mainContext, paths: paths, deviceIdentity: FixedDeviceIdentity("d"),
+                                     clock: .frozen(Seeds.Dates.d), localChannel: CaptureChannel.mac)
+            try store.createRecording(id: id, createdAt: Seeds.Dates.b, audioFileName: "b.wav", source: .microphone)
+            try store.finishCapture(id: id, audio: CapturedAudio(url: paths.audioURL(fileName: "b.wav"), duration: 24,
+                                                                 marks: [], peaks: [], detail: detail), language: .automatic)
+            let state = SyncRecordState(recordName: "\(SyncRecordType.recording.prefix).\(entity.uuidString)",
+                                        type: .recording, entityID: entity, now: Seeds.Dates.d)
+            state.pendingRaw = 1
+            container.mainContext.insert(state)
+            let account = SyncAccountState()
+            account.zoneReady = true
+            account.engineState = Data([1, 2, 3])
+            container.mainContext.insert(account)
+            try container.mainContext.save()
+        }
+
+        let container = try ModelContainerFactory.make(inMemory: false, url: paths.storeURL)
+        let context = container.mainContext
+        let r = try #require(try context.fetch(FetchDescriptor<Recording>()).first)
+        #expect(r.captureChannel == CaptureChannel.mac)
+        #expect(CaptureDetail.decode(r.captureDetailJSON) == detail)
+        let state = try #require(try context.fetch(FetchDescriptor<SyncRecordState>()).first)
+        #expect(state.recordName == "rec.\(entity.uuidString)" && state.typeRaw == "Recording" && state.entityID == entity)
+        #expect(state.baseHashesJSON == Data("{}".utf8) && state.systemFields == nil && state.pendingRaw == 1)
+        #expect(state.unresolvedLinksJSON == nil && state.updatedAt == Seeds.Dates.d)
+        let account = try #require(try context.fetch(FetchDescriptor<SyncAccountState>()).first)
+        #expect(account.key == "default" && account.zoneReady && account.engineState == Data([1, 2, 3]))
+        #expect(account.accountHash == nil && account.pausedReasonRaw == nil && account.lastFetchAt == nil)
+    }
+
+    @Test func syncRecordStateNamesAreUnique() throws {
+        let container = try ModelContainerFactory.make(inMemory: true, url: nil)
+        let context = container.mainContext
+        let entity = UUID()
+        let name = "vs.\(entity.uuidString)"
+        context.insert(SyncRecordState(recordName: name, type: .sample, entityID: entity, now: Seeds.Dates.a))
+        try context.save()
+        let again = SyncRecordState(recordName: name, type: .sample, entityID: entity, now: Seeds.Dates.b)
+        again.pendingRaw = 2
+        context.insert(again)
+        try context.save()
+        // `.unique` upserts: one row, with the later values.
+        let rows = try context.fetch(FetchDescriptor<SyncRecordState>())
+        #expect(rows.count == 1 && rows.first?.pendingRaw == 2)
     }
 
     @Test func v2StoreRoundTripsNegativesAndTraces() throws {
@@ -71,7 +136,8 @@ struct SchemaTests {
         do {
             let container = try ModelContainerFactory.make(inMemory: false, url: paths.storeURL)
             let store = LibraryStore(context: container.mainContext, paths: paths,
-                                     deviceIdentity: FixedDeviceIdentity("d"), clock: .frozen(Seeds.Dates.d))
+                                     deviceIdentity: FixedDeviceIdentity("d"), clock: .frozen(Seeds.Dates.d),
+                                     localChannel: CaptureChannel.iphone)
             let id = Seeds.ID.recordingB
             try store.createRecording(id: id, createdAt: Seeds.Dates.b, audioFileName: "b.wav", source: .imported)
             try store.finishCapture(id: id, audio: CapturedAudio(url: paths.audioURL(fileName: "b.wav"), duration: 24,
@@ -84,7 +150,7 @@ struct SchemaTests {
             _ = try store.applyMatches(id: id, decisions: [:], policy: .default)
             _ = try store.nameSpeaker(recordingID: id, key: "S2", as: .newPerson(name: "Karan"), remember: true)
             _ = try store.createFolder(name: "Work")
-            _ = try store.reconcileDevice()
+            _ = try store.stampCaptureChannels()
         }
 
         let container = try ModelContainerFactory.make(inMemory: false, url: paths.storeURL)
@@ -98,7 +164,9 @@ struct SchemaTests {
         #expect(karan.name == "Karan" && karan.samples.count == 1 && karan.samples[0].vector == vector)
         #expect(karan.samples[0].origin == .named && karan.speakers.count == 1)
         #expect(try context.fetchCount(FetchDescriptor<Folder>()) == 1)
-        let store = LibraryStore(context: context, paths: paths, deviceIdentity: FixedDeviceIdentity("d"), clock: .system)
-        #expect(try store.reconcileDevice() == false)
+        #expect(r.captureChannel == CaptureChannel.iphone && karan.samples[0].captureChannel == CaptureChannel.iphone)
+        let store = LibraryStore(context: context, paths: paths, deviceIdentity: FixedDeviceIdentity("d"), clock: .system,
+                                 localChannel: CaptureChannel.iphone)
+        #expect(try store.stampCaptureChannels() == 0)
     }
 }

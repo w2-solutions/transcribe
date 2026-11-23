@@ -10,11 +10,11 @@ private func near(_ a: Float?, _ b: Float) -> Bool { a.map { approx($0, b) } ?? 
 struct VoiceLearningMatcherTests {
 
     private func decide(_ probe: SpeakerProbe, _ profiles: [ProfileCandidate], cohort: [VoiceVector] = []) throws -> MatchDecision {
-        try #require(VoiceMatcher.decide(probes: [probe], profiles: profiles, modelKey: TV.modelKey, cohort: cohort)[probe.key])
+        try #require(GoldenMatcher.decide(probes: [probe], profiles: profiles, modelKey: TV.modelKey, cohort: cohort)[probe.key])
     }
 
     private func run(_ probe: SpeakerProbe, _ profiles: [ProfileCandidate], cohort: [VoiceVector] = []) throws -> (MatchDecision, MatchTrace) {
-        let r = VoiceMatcher.decideWithTrace(probes: [probe], profiles: profiles, modelKey: TV.modelKey, cohort: cohort)
+        let r = GoldenMatcher.decideWithTrace(probes: [probe], profiles: profiles, modelKey: TV.modelKey, cohort: cohort)
         return (try #require(r.decisions[probe.key]), try #require(r.traces[probe.key]))
     }
 
@@ -63,7 +63,7 @@ struct VoiceLearningMatcherTests {
                                     rejectedProfileIDs: rejected)
             }
             // Both sides get the frozen policy, so a change to `MatchPolicy.default` cannot hide a difference.
-            let new = VoiceMatcher.decide(probes: probes, profiles: profiles, modelKey: TV.modelKey,
+            let new = GoldenMatcher.decide(probes: probes, profiles: profiles, modelKey: TV.modelKey,
                                           policy: LegacyMatcher.frozenPolicy)
             let old = LegacyMatcher.decide(probes: probes, profiles: profiles, modelKey: TV.modelKey,
                                            policy: LegacyMatcher.frozenPolicy)
@@ -154,7 +154,7 @@ struct VoiceLearningMatcherTests {
         let d = try decide(SpeakerProbe(key: "S1", vector: vector, cleanSeconds: 30, rejectedProfileIDs: []), [liam])
         guard case .ask(_, let s) = d else { Issue.record("expected ask, got \(d)"); return }
         #expect(approx(s, 0.525))
-        let e = try #require(VoiceMatcher.evidence(vector, against: liam))
+        let e = try #require(GoldenMatcher.evidence(vector, against: liam))
         #expect(approx(try #require(e.trustedScore), 0.3))
         #expect(!SampleCurator.shouldAddAutomaticSample(decision: .autoLabel(profileID: TV.liamID, score: 0.9, margin: 0.9),
                                                         trustedScore: e.trustedScore, coherence: 1, cleanSeconds: 30))
@@ -244,10 +244,10 @@ struct VoiceLearningMatcherTests {
         let a = (id: TV.uuid(0x2A), vector: TV.vector([3: 0.75], residual: 44))
         let b = (id: TV.uuid(0x2B), vector: TV.vector([3: 0.6], residual: 45))
         #expect(approx(vector.cosine(a.vector), 0.525) && approx(vector.cosine(b.vector), 0.42))
-        #expect(VoiceMatcher.conflictingNegatives(vector, profile: TV.liam, negatives: [a, b]) == [a.id])
+        #expect(GoldenMatcher.conflictingNegatives(vector, profile: TV.liam, negatives: [a, b]) == [a.id])
         // A profile with no comparable sample conflicts with nothing.
         let empty = TV.profile(TV.liamID, name: "Liam", axes: [], negatives: [])
-        #expect(VoiceMatcher.conflictingNegatives(vector, profile: empty, negatives: [a, b]).isEmpty)
+        #expect(GoldenMatcher.conflictingNegatives(vector, profile: empty, negatives: [a, b]).isEmpty)
     }
 
     // MARK: Traces
@@ -263,7 +263,7 @@ struct VoiceLearningMatcherTests {
         guard case .autoLabel(let id, let s, let m) = d else { Issue.record("expected auto, got \(d)"); return }
         #expect(id == TV.liamID && approx(s, 0.6) && approx(m, 0.4))
 
-        #expect(t.version == 1 && t.key == "S1" && t.cleanSeconds == 12.5)
+        #expect(t.version == 2 && t.key == "S1" && t.cleanSeconds == 12.5)
         #expect(t.kind == .auto && t.profileID == TV.liamID && t.reason == "auto")
         #expect(near(t.score, 0.6) && near(t.runnerUp, 0.2) && near(t.margin, 0.4))
         #expect(t.autoLabelMin == 0.55 && t.autoLabelMargin == 0.10 && t.askMin == 0.40)
@@ -285,11 +285,11 @@ struct VoiceLearningMatcherTests {
         // `evidence` alone gives the same numbers without the cohort.
         var alone = l
         alone.cohortMax = nil
-        #expect(VoiceMatcher.evidence(try #require(probe.vector), against: liam) == alone)
+        #expect(GoldenMatcher.evidence(try #require(probe.vector), against: liam) == alone)
 
         // Pre-filtered probes still get a trace, with no profiles.
         let silent = SpeakerProbe(key: "S2", vector: nil, cleanSeconds: 30, rejectedProfileIDs: [])
-        let r = VoiceMatcher.decideWithTrace(probes: [silent], profiles: [liam], modelKey: TV.modelKey)
+        let r = GoldenMatcher.decideWithTrace(probes: [silent], profiles: [liam], modelKey: TV.modelKey)
         let st = try #require(r.traces["S2"])
         #expect(st.kind == .unknown && st.reason == "noVector" && st.profiles.isEmpty && st.score == nil)
 
@@ -321,7 +321,7 @@ struct VoiceLearningMatcherTests {
         #expect(try reason(TV.probe("S1", [0: 0.9], residual: 40, rejected: [TV.liamID]), [liam]) == "noEligibleProfiles")
 
         // Two speakers want Liam; the weaker one is left with nothing that reaches ask.
-        let r = VoiceMatcher.decideWithTrace(probes: [TV.probe("S1", [0: 0.9], residual: 40),
+        let r = GoldenMatcher.decideWithTrace(probes: [TV.probe("S1", [0: 0.9], residual: 40),
                                                      TV.probe("S2", [0: 0.6], residual: 41)],
                                              profiles: [liam], modelKey: TV.modelKey)
         #expect(r.traces["S1"]?.reason == "auto" && r.traces["S2"]?.reason == "taken")
@@ -349,7 +349,7 @@ struct VoiceLearningMatcherTests {
         ]
         let cohort = [TV.vector([9: 0.8], residual: 53), TV.vector([3: 0.5], residual: 54), TV.vector([0: 0.2], residual: 55),
                       TV.vector([4: 0.3, 9: 0.5], residual: 56), TV.vector([6: 0.7], residual: 57)]
-        let baseline = VoiceMatcher.decideWithTrace(probes: probes, profiles: profiles, modelKey: TV.modelKey, cohort: cohort)
+        let baseline = GoldenMatcher.decideWithTrace(probes: probes, profiles: profiles, modelKey: TV.modelKey, cohort: cohort)
         #expect(baseline.decisions.values.contains { $0.isAuto } && baseline.decisions.values.contains { $0.isAsk })
         #expect(baseline.traces.values.contains { $0.reason == "blocked" })
 
@@ -361,7 +361,7 @@ struct VoiceLearningMatcherTests {
                                         negatives: p.negatives.shuffled(using: &rng), modelKey: p.modelKey,
                                         autoLabel: p.autoLabel, needsResample: p.needsResample)
             }
-            let r = VoiceMatcher.decideWithTrace(probes: probes.shuffled(using: &rng), profiles: shuffledProfiles,
+            let r = GoldenMatcher.decideWithTrace(probes: probes.shuffled(using: &rng), profiles: shuffledProfiles,
                                                  modelKey: TV.modelKey, cohort: cohort.shuffled(using: &rng))
             #expect(r == baseline)
         }

@@ -82,6 +82,16 @@ private struct NameSpeakerForm: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 header
+                if let prompt = model.askPrompt {
+                    // The suggested voice was learned on another device (§7): say why this is only a question.
+                    Text(prompt)
+                        .scaledFont(size: 14, relativeTo: .subheadline)
+                        .foregroundStyle(DS.Colour.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.top, 10)
+                        .padding(.leading, 2)
+                        .accessibilityIdentifier(AX.NameSpeaker.askPrompt)
+                }
                 if !model.clips.isEmpty {
                     listen.padding(.top, 16)
                 }
