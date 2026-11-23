@@ -72,6 +72,11 @@ To check first on a real iPhone 15: that Parakeet TDT v3 loads (a different Para
 - Every control gets an `accessibilityIdentifier` from the first screen.
 - The simulator cannot stand in for the real iPhone 15 on model loading, memory, speed or microphone behaviour.
 
+## Subagents
+
+- **Every subagent runs on Opus 5.5** (`claude-opus-5-5`). Pass `model: "opus"` on every Agent tool call, and set the same model on every agent in a workflow script. This applies to all agent types (Explore, Plan, general-purpose, reviewers and the rest), even where the agent's own definition names a different model.
+- Do not use `subagent_type: "fork"`: a fork always inherits the main session's model and ignores the override.
+
 ## Open decisions
 
 - Match thresholds and minimum speech for a voice profile (tune on real recordings).
