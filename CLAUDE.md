@@ -149,6 +149,14 @@ Rules:
 - Push (`TRANSCRIBE_APS_ENV`) stays `development` in every configuration of both apps, because builds and archives are signed with a development profile, which allows nothing else. The Developer ID export sets `production` from its profile (`release-mac.sh` checks it). It picks the push gateway, not the CloudKit environment.
 - New record types or fields must be deployed to Production in the CloudKit Console before a release can sync. This cannot be undone.
 
+## Releasing the iPhone app to TestFlight
+
+- The App Store Connect app is "W2 Transcribe" (Apple ID 6838568557, bundle id `ai.w2solutions.transcribe`, SKU `w2-transcribe-ios`). The internal tester group "W2 Team" gets every build automatically.
+- `make testflight` (`scripts/testflight.sh`) archives Release and uploads. It signs in with the App Store Connect API key "Transcribe CI" (key id `93Y2L9PKNY`, file `~/.appstoreconnect/private_keys/AuthKey_93Y2L9PKNY.p8`), never the Apple account in Xcode, whose sign-in expires mid-upload. Never read, print or commit the key file.
+- `BUILD_NUMBER` must be higher than the last upload of the same version (default: UTC date and time). An interrupted upload keeps its build number reserved; use the next one. Builds 1 (stuck) and 2 were used on 2026-11-24.
+- CI: `.github/workflows/testflight.yml` runs on a tag `ios-v*` or by hand. It needs the repo secret `ASC_KEY_P8` and the variables `ASC_KEY_ID` and `ASC_ISSUER_ID`, and a runner image with Xcode 27. It had not run yet on 2026-11-24.
+- TestFlight builds use the Production CloudKit environment, like the Developer ID Mac build.
+
 ## Not yet verified (as of 2026-11-24)
 
 - No build signed with the iCloud entitlement has been made. Xcode had no Apple account signed in, and the App IDs `ai.w2solutions.transcribe` and `ai.w2solutions.transcribe.mac` with iCloud, and the container `iCloud.ai.w2solutions.transcribe`, were not registered in the developer portal.

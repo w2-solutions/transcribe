@@ -2,7 +2,7 @@ DESTINATION := platform=iOS Simulator,name=iPhone 15,OS=27.0
 MAC_DESTINATION := platform=macOS
 DERIVED     ?= $(or $(TMPDIR),/tmp)/transcribe-dd
 
-.PHONY: project build build-mac test-kit test-ui test-ui-mac sim shots models check-models archive archive-mac release-mac
+.PHONY: project build build-mac test-kit test-ui test-ui-mac sim shots models check-models archive archive-mac release-mac testflight
 
 project:
 	./scripts/bootstrap.sh
@@ -30,6 +30,10 @@ archive-mac: models
 # make release-mac SKIP_NOTARIZE=1 stops after the signed DMG on purpose. DERIVED and FROM pass through.
 release-mac:
 	./scripts/release-mac.sh $(if $(SKIP_NOTARIZE),--skip-notarize)
+
+# iPhone: archive (Release) and upload to App Store Connect for TestFlight, signed in with an API key.
+testflight: models
+	./scripts/testflight.sh
 
 build:
 	xcodebuild -project Transcribe.xcodeproj -scheme Transcribe -destination '$(DESTINATION)' -derivedDataPath '$(DERIVED)' build
