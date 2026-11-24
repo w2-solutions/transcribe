@@ -5,6 +5,14 @@ public enum SyncPauseReason: String, Sendable, Codable {
     case noAccount, accountChanged, quotaFull, zoneRemoved, massDelete, needsUpdate, restricted
 }
 
+/// The last thing that went wrong while syncing (a failed fetch or send, or records the server did not take), shown
+/// under the status line until a later sync goes through. Never holds names, transcript text or voice data.
+public struct SyncProblem: Sendable, Equatable {
+    public let message: String
+    public let at: Date
+    public init(message: String, at: Date) { self.message = message; self.at = at }
+}
+
 /// What the Settings status line shows.
 public enum SyncStatus: Sendable, Equatable {
     case off

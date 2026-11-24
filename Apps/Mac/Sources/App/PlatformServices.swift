@@ -24,17 +24,10 @@ import TranscribeKit
         NSApplication.shared.registerForRemoteNotifications()
     }
 
-    private static var activationSync: Task<Void, Never>?
-
-    /// The Mac syncs each time the app becomes active (§8.4 item 9), after the launch's own sync start, and never
-    /// twice at once.
-    static func syncOnActivation(_ env: AppEnvironment) {
-        guard env.isLaunched, env.settings.syncEnabled, let sync = env.sync, activationSync == nil else { return }
-        let launch = env.syncLaunch
-        activationSync = Task {
-            await launch?.value
-            await sync.syncNow()
-            activationSync = nil
-        }
+    /// The Mac syncs each time the app becomes active, and fetches every couple of minutes while it stays active
+    /// (§8.4 item 9; `SyncCoordinator.setForeground`), so a missed push only delays a change. A launch's own sync start
+    /// is never doubled: the coordinator skips a refresh while it starts.
+    static func syncOnActivation(_ env: AppEnvironment, active: Bool) {
+        env.syncForeground(active)
     }
 }

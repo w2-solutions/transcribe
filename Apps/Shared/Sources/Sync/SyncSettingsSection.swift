@@ -109,7 +109,8 @@ struct SyncSettingsSection: View {
     /// The status line, refreshed every 30 s so "2 min ago" moves on.
     private func statusRow(_ sync: SyncCoordinator) -> some View {
         TimelineView(.periodic(from: .now, by: 30)) { _ in
-            let line = SyncCopy.statusLine(sync.status, now: env.clock.now, heldDeletes: sync.heldDeleteCount) ?? ""
+            let line = SyncCopy.statusLine(sync.status, now: env.clock.now, heldDeletes: sync.heldDeleteCount,
+                                           problem: sync.lastError) ?? ""
             HStack(alignment: .firstTextBaseline, spacing: 12) {
                 Image(systemName: Self.symbol(sync.status))
                     .font(.system(size: 15, weight: .semibold))

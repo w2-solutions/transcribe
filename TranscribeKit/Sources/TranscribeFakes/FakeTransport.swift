@@ -22,6 +22,9 @@ public actor FakeTransport: SyncTransport {
     public var fetchPageSize = 400
     public private(set) var fetchCount = 0
     public private(set) var sendCount = 0
+    /// How often one `sendChanges` tries a record. 3 by default; 1 behaves like `CKSyncEngine`, which does not send a
+    /// record queued again after a merged conflict until a later send.
+    public private(set) var maxAttemptsPerSend = 3
 
     struct EngineState: Codable {
         var token: FakeToken?
@@ -40,6 +43,7 @@ public actor FakeTransport: SyncTransport {
     public var signedInAccount: String? { account }
     public var pendingCount: Int { pendingSaves.count + pendingDeletes.count }
     public var isStarted: Bool { started }
+    public func setMaxAttemptsPerSend(_ n: Int) { maxAttemptsPerSend = max(1, n) }
 
     public func signOut() async {
         account = nil
@@ -123,16 +127,16 @@ public actor FakeTransport: SyncTransport {
         guard started else { throw SyncTransportError.notStarted }
         guard let account else { throw SyncTransportError.noAccount }
         sendCount += 1
-        // Like the engine, keep sending while changes are pending (a record queued again after a merge goes out in a
-        // later batch of the same send), but try one record at most three times per call.
+        // Keep sending while changes are pending (a record queued again after a merge goes out in a later batch of the
+        // same send), but try one record at most `maxAttemptsPerSend` times per call.
         var batches = 0
         var attempts: [SyncRecordID: Int] = [:]
         while started, batches < 40 {
             var deletes: [SyncRecordID] = []
-            for id in pendingDeletes where deletes.count < FakeCloud.batchLimit && attempts[id, default: 0] < 3 { deletes.append(id) }
+            for id in pendingDeletes where deletes.count < FakeCloud.batchLimit && attempts[id, default: 0] < maxAttemptsPerSend { deletes.append(id) }
             let room = FakeCloud.batchLimit - deletes.count
             var saveIDs: [SyncRecordID] = []
-            for id in pendingSaves where saveIDs.count < room && attempts[id, default: 0] < 3 { saveIDs.append(id) }
+            for id in pendingSaves where saveIDs.count < room && attempts[id, default: 0] < maxAttemptsPerSend { saveIDs.append(id) }
             guard !deletes.isEmpty || !saveIDs.isEmpty else { break }
             batches += 1
             var saves: [SyncRecord] = []

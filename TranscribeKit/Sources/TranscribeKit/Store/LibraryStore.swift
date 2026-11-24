@@ -628,7 +628,9 @@ public final class LibraryStore: LibraryStoring {
         s.suggestedProfileID = nil
         s.matchScore = nil
         s.matchMargin = nil
-        s.profile?.namedAt = clock.now
+        // `namedAt` is when the person was first named (set when the profile is made). Naming or confirming a saved
+        // voice leaves the profile record alone: it syncs, and rewriting it on every naming made two devices naming
+        // the same person conflict on it.
         if let previous, previous.id != s.profile?.id { pruneAfterRollBack(previous, movedAway: s) }
         r.hasUnseenResult = r.speakers.contains { $0.label == .autoLabelled }
         rebuildSearchText(r)

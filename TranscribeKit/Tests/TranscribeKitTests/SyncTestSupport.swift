@@ -47,6 +47,7 @@ final class FakeDevice {
         sync = SyncCoordinator(store: store, transport: transport, settings: settings, clock: clock.appClock,
                                modelKey: EmbeddingModelID.fake.key)
         sync.debounce = .seconds(3600)   // tests flush explicitly
+        sync.followUpDelays = [.seconds(3600)]   // and sync explicitly; a test that wants the follow-up shortens it
     }
 
     /// An app restart: unsaved changes are lost; a new transport restarts from the saved engine state.
@@ -57,6 +58,7 @@ final class FakeDevice {
         sync = SyncCoordinator(store: store, transport: transport, settings: settings, clock: clock.appClock,
                                modelKey: EmbeddingModelID.fake.key)
         sync.debounce = .seconds(3600)
+        sync.followUpDelays = [.seconds(3600)]
     }
 
     func cleanup() { try? FileManager.default.removeItem(at: paths.root) }

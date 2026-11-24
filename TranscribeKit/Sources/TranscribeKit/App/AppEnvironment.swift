@@ -97,17 +97,27 @@ public final class AppEnvironment {
         isLaunched = true
     }
 
-    /// background: recorder.appDidEnterBackground; active: models.prepareIfInstalled + recorder foreground
+    /// background: sync leaves the front, recorder.appDidEnterBackground; active: sync comes to the front (it fetches
+    /// now and then every couple of minutes, in case an iCloud push was missed), models.prepareIfInstalled + recorder
+    /// foreground. The Mac also follows the app becoming and resigning active (`syncForeground`).
     public func onPhase(_ phase: AppPhase) async {
         switch phase {
         case .background:
+            sync?.setForeground(false)
             await recorder.appDidEnterBackground()
         case .active:
+            if !config.uiTesting { sync?.setForeground(true) }
             guard isLaunched else { return }
             await models.prepareIfInstalled()
             await recorder.appWillEnterForeground()
         case .inactive:
             break
         }
+    }
+
+    /// The Mac app became (true) or resigned (false) active: sync fetches in front only.
+    public func syncForeground(_ active: Bool) {
+        guard !config.uiTesting else { return }
+        sync?.setForeground(active)
     }
 }

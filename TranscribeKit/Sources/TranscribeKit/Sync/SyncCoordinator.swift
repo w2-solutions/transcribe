@@ -19,6 +19,8 @@ public final class SyncCoordinator {
     public private(set) var duplicateNames: [String] = []
     /// While paused for a mass delete: how many records the breaker held back.
     public private(set) var heldDeleteCount = 0
+    /// The last failed fetch or send, or records the server did not take; cleared by a sync round that goes through.
+    public private(set) var lastError: SyncProblem?
 
     @ObservationIgnored let store: LibraryStore
     @ObservationIgnored let transport: any SyncTransport
@@ -28,11 +30,28 @@ public final class SyncCoordinator {
     @ObservationIgnored let applier: RemoteApplier
     /// The local change debounce (§8.4: 1 s).
     @ObservationIgnored public var debounce: Duration = .seconds(1)
+    /// Waits before the coordinator's own follow-up sync after a send left work behind (a merged conflict, a record to
+    /// retry, a failed send), one per attempt in a row; the last repeats. `CKSyncEngine` does not reliably send these
+    /// again by itself.
+    @ObservationIgnored public var followUpDelays: [Duration] = [.seconds(3), .seconds(15), .seconds(60), .seconds(300)]
+    /// While the app is in front: how often it fetches, in case an iCloud push was missed.
+    @ObservationIgnored public var foregroundPollInterval: Duration = .seconds(120)
+    /// Coming to the front again within this long after the last refresh does not fetch again.
+    @ObservationIgnored public var minRefreshGap: Duration = .seconds(10)
 
     @ObservationIgnored private(set) var running = false
     @ObservationIgnored private(set) var crashed = false
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     @ObservationIgnored private var flushTask: Task<Void, Never>?
+    @ObservationIgnored private(set) var followUpTask: Task<Void, Never>?
+    @ObservationIgnored private var followUpAttempt = 0
+    @ObservationIgnored private(set) var pollTask: Task<Void, Never>?
+    @ObservationIgnored private var lastRefresh: ContinuousClock.Instant?
+    @ObservationIgnored private var refreshing = false
+    /// `start` or `enable` is between its first await and running: a refresh then would start sync a second time.
+    @ObservationIgnored private var starting = false
+    /// Counts `noteProblem` calls, so a round can tell whether it went through.
+    @ObservationIgnored private var problemCount = 0
     /// Hashes of the projection handed to the transport, by record name, until its send result arrives.
     @ObservationIgnored private var inFlight: [String: [String: String]] = [:]
     @ObservationIgnored private var heldDeletes: [SyncRecordID] = []
@@ -95,6 +114,9 @@ public final class SyncCoordinator {
         guard settings.syncEnabled else { status = .off; return }
         guard !crashed else { return }
         if running { await sync(fullScan: true); return }
+        guard !starting else { return }   // already starting (the launch's start and an activation's)
+        starting = true
+        defer { starting = false }
         ensureEventLoop()
         let account = self.account
         if account.pausedReason == .zoneRemoved { status = .paused(.zoneRemoved); return }
@@ -107,6 +129,8 @@ public final class SyncCoordinator {
     public func enable() async {
         guard !crashed else { return }
         settings.syncEnabled = true
+        starting = true
+        defer { starting = false }
         ensureEventLoop()
         guard let hash = await transport.accountHash() else { pause(.noAccount); return }
         if let stored = account.accountHash, stored != hash { pause(.accountChanged); return }
@@ -185,6 +209,79 @@ public final class SyncCoordinator {
         await sync(fullScan: true)
     }
 
+    // MARK: In front
+
+    /// The app came to the front (true) or went to the background (false). In front, sync fetches now and then every
+    /// `foregroundPollInterval`, so a change made on another device arrives even when its iCloud push is missed.
+    /// Each refresh runs in its own task, so leaving the front (which ends the timer) never cancels a sync half-way.
+    public func setForeground(_ active: Bool) {
+        guard active else {
+            pollTask?.cancel()
+            pollTask = nil
+            return
+        }
+        Task { await self.refresh(fullScan: true) }
+        guard pollTask == nil else { return }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let interval = self?.foregroundPollInterval else { return }
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { return }
+                Task { await self.refresh(fullScan: false) }
+            }
+        }
+    }
+
+    /// One catch-up sync, skipped within `minRefreshGap` of the last one, while another runs, or while sync starts.
+    /// `fullScan` (coming to the front) also scans and retries a pause the next sync can end (full quota, no account);
+    /// the timer's refresh only fetches and sends, and does nothing while paused.
+    func refresh(fullScan: Bool) async {
+        guard settings.syncEnabled, !crashed, !starting, !refreshing else { return }
+        if status.isPaused {
+            guard fullScan else { return }
+        } else {
+            guard running else { return }
+        }
+        let now = ContinuousClock.now
+        if let lastRefresh, now - lastRefresh < minRefreshGap { return }
+        lastRefresh = now
+        refreshing = true
+        defer { refreshing = false }
+        log.notice("Refresh (\(fullScan ? "in front" : "timer", privacy: .public))")
+        await sync(fullScan: fullScan)
+    }
+
+    // MARK: Problems and follow-ups
+
+    private func noteProblem(_ message: String) {
+        problemCount += 1
+        lastError = SyncProblem(message: message, at: clock.now)
+    }
+
+    /// A round with no new problem and nothing left to send ends the shown problem and the follow-up backoff.
+    private func roundWentThrough(since mark: Int) {
+        guard problemCount == mark, running, !crashed, !status.isPaused, pendingCount() == 0 else { return }
+        if lastError != nil { log.notice("Sync went through; clearing the last problem") }
+        lastError = nil
+        followUpAttempt = 0
+    }
+
+    /// The coordinator's own sync a little later, after a send left work behind. Never runs inside an event handler
+    /// (the engine waits for that handler), and backs off while the problem lasts.
+    private func scheduleFollowUp() {
+        guard running, !crashed, followUpTask == nil, let last = followUpDelays.last else { return }
+        let delay = followUpAttempt < followUpDelays.count ? followUpDelays[followUpAttempt] : last
+        followUpAttempt += 1
+        log.notice("Follow-up sync in \(delay.description, privacy: .public) (attempt \(self.followUpAttempt, privacy: .public))")
+        followUpTask = Task { [weak self] in
+            try? await Task.sleep(for: delay)
+            guard !Task.isCancelled, let self else { return }
+            self.followUpTask = nil
+            guard self.running, !self.crashed, !self.status.isPaused else { return }
+            await self.sync(fullScan: false)
+        }
+    }
+
     // MARK: Running
 
     func sync(fullScan: Bool) async {
@@ -200,6 +297,7 @@ public final class SyncCoordinator {
             }
         }
         guard running else { await start(); return }
+        let mark = problemCount
         await flushAndEnqueue()
         await fetch()
         guard running, !status.isPaused else { return }
@@ -209,6 +307,7 @@ public final class SyncCoordinator {
             await flushAndEnqueue()
         }
         await sendAll()
+        roundWentThrough(since: mark)
     }
 
     private func run(hash: String, joining: Bool) async {
@@ -238,7 +337,8 @@ public final class SyncCoordinator {
         do {
             try await transport.fetchChanges()
         } catch {
-            log.info("Fetch failed: \(error.localizedDescription, privacy: .public)")
+            log.error("Fetch failed: \(String(describing: error), privacy: .public)")
+            noteProblem("Couldn't check iCloud for changes: \(error.localizedDescription)")
         }
     }
 
@@ -271,7 +371,9 @@ public final class SyncCoordinator {
             do {
                 try await transport.sendChanges()
             } catch {
-                log.info("Send failed: \(error.localizedDescription, privacy: .public)")
+                log.error("Send failed with \(pending, privacy: .public) pending: \(String(describing: error), privacy: .public)")
+                noteProblem("Couldn't upload to iCloud: \(error.localizedDescription)")
+                scheduleFollowUp()
                 break
             }
             let after = pendingCount()
@@ -316,6 +418,9 @@ public final class SyncCoordinator {
         running = false
         flushTask?.cancel()
         flushTask = nil
+        followUpTask?.cancel()
+        followUpTask = nil
+        followUpAttempt = 0
         detector.stopObserving()
         inFlight = [:]
     }
@@ -435,6 +540,7 @@ public final class SyncCoordinator {
     }
 
     private func handleFetched(_ modifications: [SyncRecord], _ deletions: [SyncRecordID]) async {
+        log.notice("Fetched \(modifications.count, privacy: .public) changed and \(deletions.count, privacy: .public) deleted records: \(Self.names(modifications.map(\.id) + deletions), privacy: .public)")
         await flushAndEnqueue()
         if modifications.contains(where: { SyncSchema.recordVersion($0) > SyncSchema.version }) {
             otherDeviceNeedsUpdate = true
@@ -466,6 +572,7 @@ public final class SyncCoordinator {
             duplicateNames = repair.duplicateNames
             account.lastFetchAt = clock.now
             try context.save()
+            log.notice("Fetch finished")
         } catch {
             log.error("Finishing a fetch failed: \(error.localizedDescription, privacy: .public)")
         }
@@ -474,12 +581,14 @@ public final class SyncCoordinator {
     }
 
     private func handleSent(_ saved: [SyncRecord], _ deleted: [SyncRecordID], _ failures: [SendFailure]) async {
+        log.notice("Sent \(saved.count, privacy: .public) saves and \(deleted.count, privacy: .public) deletes, \(failures.count, privacy: .public) failed. Saved: \(Self.names(saved.map(\.id) + deleted), privacy: .public)")
         await flushAndEnqueue()
         var effects = RemoteApplier.Effects()
         let projector = RecordProjector(context: context)
         let names = saved.map(\.id.recordName) + deleted.map(\.recordName) + failures.map(\.recordID.recordName)
         let rows = (try? detector.stateRows(named: names)) ?? [:]
         var zoneGone = false, quotaFull = false
+        var merged = 0, retry = 0, refused: [String] = []
 
         for record in saved {
             let name = record.id.recordName
@@ -523,22 +632,40 @@ public final class SyncCoordinator {
             case .serverRecordChanged(let server):
                 inFlight.removeValue(forKey: id.recordName)
                 applier.merge(server: server, state: rows[id.recordName], effects: &effects)
+                let again = rows[id.recordName]?.pending == .save
+                if again { merged += 1 }
+                log.notice("\(id.type.rawValue, privacy: .public) \(id.recordName, privacy: .public) changed on the server: merged\(again ? ", sending again" : "", privacy: .public)")
             case .unknownItem:
                 // The server no longer has it: delete wins.
                 inFlight.removeValue(forKey: id.recordName)
                 applier.applyDeletion(id, state: rows[id.recordName], effects: &effects)
+                log.notice("\(id.type.rawValue, privacy: .public) \(id.recordName, privacy: .public) is gone from the server: deleted here")
             case .zoneNotFound:
+                log.error("\(id.type.rawValue, privacy: .public) \(id.recordName, privacy: .public): zone not found\(self.deletedZoneItself ? " (deleted here)" : "", privacy: .public)")
                 if !deletedZoneItself { zoneGone = true }
             case .quotaExceeded:
+                log.error("\(id.type.rawValue, privacy: .public) \(id.recordName, privacy: .public): iCloud quota exceeded")
                 quotaFull = true
             case .retryable:
-                break
+                // Queued again here: the engine is not relied on to keep it, and the follow-up sends it.
+                inFlight.removeValue(forKey: id.recordName)
+                retry += 1
+                if let row = rows[id.recordName] {
+                    switch row.pending {
+                    case .save: effects.saves.append(id)
+                    case .delete: effects.deletes.append(id)
+                    case .none, .parkedDelete: break
+                    }
+                }
+                log.error("\(id.type.rawValue, privacy: .public) \(id.recordName, privacy: .public): not saved, will retry")
             case .permanent(_, let message):
                 inFlight.removeValue(forKey: id.recordName)
-                log.error("Record \(id.recordName, privacy: .public) was refused: \(message, privacy: .public)")
+                refused.append(message)
+                log.error("\(id.type.rawValue, privacy: .public) \(id.recordName, privacy: .public) was refused: \(message, privacy: .public)")
                 if let row = rows[id.recordName], row.pending == .save { row.pending = .none }
             }
         }
+        if !saved.isEmpty || !deleted.isEmpty { account.lastSendAt = clock.now }
         applier.refreshSearchText(effects.touchedRecordings)
         do {
             try fault?(.beforeSendResultSave)
@@ -555,7 +682,34 @@ public final class SyncCoordinator {
             return
         }
         await enqueue(effects.saves, effects.deletes)
-        if quotaFull { pause(.quotaFull) }
+        if quotaFull { pause(.quotaFull); return }
+        if let message = Self.sendProblem(merged: merged, retry: retry, refused: refused) { noteProblem(message) }
+        if merged > 0 || retry > 0 {
+            scheduleFollowUp()
+        } else if failures.isEmpty, pendingCount() == 0 {
+            // An automatic send by the engine drained everything: the status line says so.
+            switch status {
+            case .syncing, .joining: status = .idle(lastSync: account.lastSendAt)
+            default: break
+            }
+        }
+    }
+
+    /// The status line's wording for records a send did not save. Counts and error codes only.
+    static func sendProblem(merged: Int, retry: Int, refused: [String]) -> String? {
+        func items(_ n: Int) -> String { "\(n) \(n == 1 ? "item" : "items")" }
+        var parts: [String] = []
+        if merged > 0 { parts.append("\(items(merged)) changed on another device (merged, sending again)") }
+        if retry > 0 { parts.append("\(items(retry)) not saved (retrying)") }
+        if let first = refused.first { parts.append("\(items(refused.count)) refused (\(first))") }
+        return parts.isEmpty ? nil : parts.joined(separator: "; ")
+    }
+
+    /// Record names for the log, capped so a large batch stays one readable line. Record names hold only a type and
+    /// a UUID, never a name or text.
+    static func names(_ ids: [SyncRecordID], limit: Int = 40) -> String {
+        let shown = ids.prefix(limit).map(\.recordName).joined(separator: " ")
+        return ids.count > limit ? shown + " … (+\(ids.count - limit))" : shown
     }
 
     /// A pause that only the user can end (`resolveAccountChange`, `resolveMassDelete`, or turning the switch on again).

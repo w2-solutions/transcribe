@@ -17,6 +17,13 @@ import TranscribeKit
 ///   zone deleted on another device is never silently recreated here.
 /// - Nothing touches CloudKit until sync starts or asks for the account. Without the container entitlement (a Mac
 ///   build signed to run locally) every call reads as "no account".
+/// - `fetchChanges` (Sync Now, coming to the front, the in-front timer) asks the engine and then catches up with its
+///   own `recordZoneChanges` from a change token of its own. On real devices the engine's `fetchChanges` finished
+///   without asking the server when no push had arrived (2026-11-24), so a missed push left a device stale. Records
+///   reach the coordinator through the same events either way; one older than a copy already seen this session is
+///   dropped, so the catch-up never undoes a newer save or fetch.
+/// - Every send and fetch outcome is logged (subsystem `ai.w2solutions.transcribe`, category `cloudkit`) with record
+///   types, record names (a type prefix and a UUID) and CKError codes as public. Field values never are.
 public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
     public static let containerIdentifier = "iCloud.ai.w2solutions.transcribe"
 
@@ -38,6 +45,10 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
     private var observer: AccountObserver?
     /// The last account seen (nil inside = no account); nil = not asked yet.
     private var knownAccount: String??
+    /// The newest server modification date seen this session, by record name (fetched, saved or conflict copies).
+    private var newestSeen: [String: Date] = [:]
+    private var catchingUp = false
+    private var catchUpTokenKey: String { "sync.cloudkit.catchUpToken.\(identifier).\(codec.zoneID.zoneName)" }
 
     public init(containerIdentifier: String = CloudKitTransport.containerIdentifier, codec: CKRecordCodec = CKRecordCodec()) {
         identifier = containerIdentifier
@@ -51,6 +62,10 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         self.provider = provider
         self.state = state.flatMap { try? JSONDecoder().decode(CKSyncEngine.State.Serialization.self, from: $0) }
         if state != nil && self.state == nil { log.error("Saved engine state did not decode; starting fresh") }
+        // A fresh engine fetches everything again; so does the catch-up.
+        if self.state == nil { saveCatchUpToken(nil) }
+        newestSeen = [:]
+        log.notice("Started (\(self.state == nil ? "fresh" : "saved state", privacy: .public))")
         if let old = engine {
             engine = nil
             Task.detached { await old.cancelOperations() }
@@ -97,13 +112,116 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
     public func fetchChanges() async throws {
         guard started else { throw SyncTransportError.notStarted }
         guard let engine = makeEngine() else { throw SyncTransportError.noAccount }
-        try await engine.fetchChanges()
+        log.notice("Fetch requested")
+        var engineError: (any Error)?
+        do {
+            try await engine.fetchChanges()
+        } catch {
+            engineError = error
+            log.error("Engine fetch failed: \(Self.describe(error), privacy: .public)")
+        }
+        guard started, engine === self.engine else { return }
+        try await catchUp(engine.database)
+        if let engineError { throw engineError }
     }
 
     public func sendChanges() async throws {
         guard started else { throw SyncTransportError.notStarted }
         guard let engine = makeEngine() else { throw SyncTransportError.noAccount }
-        try await engine.sendChanges()
+        log.notice("Send requested: \(engine.state.pendingRecordZoneChanges.count, privacy: .public) pending record changes")
+        do {
+            try await engine.sendChanges()
+        } catch {
+            log.error("Engine send failed: \(Self.describe(error), privacy: .public)")
+            throw error
+        }
+    }
+
+    // MARK: Catch-up fetch
+
+    /// Fetches the zone's changes since this transport's own token, without the engine, and delivers them like the
+    /// engine's. The token is saved only after the coordinator has handled (and saved) each page.
+    private func catchUp(_ database: CKDatabase) async throws {
+        guard !catchingUp else { return }
+        catchingUp = true
+        defer { catchingUp = false }
+        var token = loadCatchUpToken()
+        var pages = 0, total = 0, removed = 0, stale = 0
+        while started {
+            let page: (modificationResultsByID: [CKRecord.ID: Result<CKDatabase.RecordZoneChange.Modification, any Error>],
+                       deletions: [CKDatabase.RecordZoneChange.Deletion], changeToken: CKServerChangeToken, moreComing: Bool)
+            do {
+                page = try await database.recordZoneChanges(inZoneWith: codec.zoneID, since: token)
+            } catch let error as CKError where error.code == .changeTokenExpired && token != nil {
+                log.notice("Catch-up token expired; fetching the zone from the start")
+                token = nil
+                saveCatchUpToken(nil)
+                continue
+            } catch let error as CKError where error.code == .zoneNotFound || error.code == .userDeletedZone {
+                // The engine reports a deleted zone itself (`fetchedDatabaseChanges`); nothing to catch up.
+                log.notice("Catch-up: zone not found (\(Self.describe(error), privacy: .public))")
+                saveCatchUpToken(nil)
+                return
+            } catch {
+                log.error("Catch-up fetch failed: \(Self.describe(error), privacy: .public)")
+                throw error
+            }
+            pages += 1
+            var modifications: [SyncRecord] = []
+            for (recordID, result) in page.modificationResultsByID {
+                switch result {
+                case .success(let modification):
+                    let record = modification.record
+                    guard isNewest(record) else { stale += 1; continue }
+                    do {
+                        if let decoded = try codec.decode(record) { modifications.append(decoded) }
+                    } catch {
+                        log.error("Catch-up skipped \(record.recordType, privacy: .public) \(recordID.recordName, privacy: .public): \(String(describing: error), privacy: .public)")
+                    }
+                case .failure(let error):
+                    log.error("Catch-up could not read \(recordID.recordName, privacy: .public): \(Self.describe(error), privacy: .public)")
+                }
+            }
+            let deletions = page.deletions.compactMap { codec.syncID($0.recordID) }
+            total += modifications.count
+            removed += deletions.count
+            if !modifications.isEmpty || !deletions.isEmpty {
+                await deliver(.fetched(modifications: modifications, deletions: deletions))
+            }
+            guard started else { return }
+            token = page.changeToken
+            saveCatchUpToken(token)
+            if !page.moreComing { break }
+        }
+        guard started else { return }
+        log.notice("Catch-up fetch: \(total, privacy: .public) changed, \(removed, privacy: .public) deleted, \(stale, privacy: .public) older than seen, \(pages, privacy: .public) pages")
+        if total > 0 || removed > 0 { await deliver(.fetchFinished) }
+    }
+
+    private func loadCatchUpToken() -> CKServerChangeToken? {
+        guard let data = UserDefaults.standard.data(forKey: catchUpTokenKey) else { return nil }
+        return try? NSKeyedUnarchiver.unarchivedObject(ofClass: CKServerChangeToken.self, from: data)
+    }
+
+    private func saveCatchUpToken(_ token: CKServerChangeToken?) {
+        guard let token, let data = try? NSKeyedArchiver.archivedData(withRootObject: token, requiringSecureCoding: true) else {
+            UserDefaults.standard.removeObject(forKey: catchUpTokenKey)
+            return
+        }
+        UserDefaults.standard.set(data, forKey: catchUpTokenKey)
+    }
+
+    /// False for a copy older than one already seen this session (a fetch that raced a newer save or fetch); notes
+    /// the date of a newer one.
+    private func isNewest(_ record: CKRecord) -> Bool {
+        guard let date = record.modificationDate else { return true }
+        let name = record.recordID.recordName
+        if let seen = newestSeen[name], date < seen {
+            log.notice("Dropped an older copy of \(name, privacy: .public)")
+            return false
+        }
+        newestSeen[name] = date
+        return true
     }
 
     public func accountHash() async -> String? {
@@ -219,6 +337,7 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
             await deliver(.accountChange(mapped))
 
         case .fetchedDatabaseChanges(let changes):
+            log.notice("Engine fetched database changes: \(changes.modifications.count, privacy: .public) zones changed, \(changes.deletions.count, privacy: .public) deleted")
             for deletion in changes.deletions where deletion.zoneID == codec.zoneID {
                 let reason: ZoneDeletionReason
                 switch deletion.reason {
@@ -231,8 +350,10 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
             }
 
         case .fetchedRecordZoneChanges(let changes):
+            log.notice("Engine fetched \(changes.modifications.count, privacy: .public) changed and \(changes.deletions.count, privacy: .public) deleted records")
             var modifications: [SyncRecord] = []
             for modification in changes.modifications {
+                guard isNewest(modification.record) else { continue }
                 do {
                     if let record = try codec.decode(modification.record) { modifications.append(record) }
                 } catch {
@@ -252,24 +373,39 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
             await deliver(.fetched(modifications: modifications, deletions: deletions))
 
         case .sentRecordZoneChanges(let sent):
+            log.notice("Engine sent: \(sent.savedRecords.count, privacy: .public) saved, \(sent.deletedRecordIDs.count, privacy: .public) deleted, \(sent.failedRecordSaves.count, privacy: .public) saves and \(sent.failedRecordDeletes.count, privacy: .public) deletes failed")
             let event = await mapSent(sent, engine: syncEngine)
             codec.removeOutgoingAssets(recordNames: sent.savedRecords.map(\.recordID.recordName)
                 + sent.failedRecordSaves.map(\.record.recordID.recordName))
             await deliver(event)
 
         case .sentDatabaseChanges(let sent):
+            log.notice("Engine sent database changes: \(sent.savedZones.count, privacy: .public) zones saved, \(sent.deletedZoneIDs.count, privacy: .public) deleted")
             for failure in sent.failedZoneSaves {
-                log.error("Zone save failed: \(failure.error.localizedDescription, privacy: .public)")
+                log.error("Zone save of \(failure.zone.zoneID.zoneName, privacy: .public) failed: \(Self.describe(failure.error), privacy: .public)")
             }
             for (zone, error) in sent.failedZoneDeletes {
-                log.error("Zone delete of \(zone.zoneName, privacy: .public) failed: \(error.localizedDescription, privacy: .public)")
+                log.error("Zone delete of \(zone.zoneName, privacy: .public) failed: \(Self.describe(error), privacy: .public)")
             }
 
         case .didFetchChanges:
+            log.notice("Engine finished fetching")
             await deliver(.fetchFinished)
 
-        case .willFetchChanges, .willFetchRecordZoneChanges, .didFetchRecordZoneChanges, .willSendChanges, .didSendChanges:
-            break
+        case .willFetchChanges:
+            log.notice("Engine will fetch")
+        case .willFetchRecordZoneChanges(let e):
+            log.notice("Engine will fetch zone \(e.zoneID.zoneName, privacy: .public)")
+        case .didFetchRecordZoneChanges(let e):
+            if let error = e.error {
+                log.error("Engine fetch of zone \(e.zoneID.zoneName, privacy: .public) failed: \(Self.describe(error), privacy: .public)")
+            } else {
+                log.notice("Engine fetched zone \(e.zoneID.zoneName, privacy: .public)")
+            }
+        case .willSendChanges(let e):
+            log.notice("Engine will send (\(String(describing: e.context.reason), privacy: .public))")
+        case .didSendChanges(let e):
+            log.notice("Engine finished sending (\(String(describing: e.context.reason), privacy: .public))")
 
         @unknown default:
             break
@@ -282,6 +418,7 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         let scope = context.options.scope
         let pending = syncEngine.state.pendingRecordZoneChanges.filter { scope.contains($0) }
         guard !pending.isEmpty else { return nil }
+        log.notice("Building a batch (\(String(describing: context.reason), privacy: .public)) from \(pending.count, privacy: .public) pending")
         return await CKSyncEngine.RecordZoneChangeBatch(pendingChanges: pending) { recordID in
             await self.recordToSave(recordID, engine: syncEngine)
         }
@@ -297,8 +434,15 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
                 log.error("Could not encode \(id.recordName, privacy: .public): \(String(describing: error), privacy: .public)")
             }
         }
+        log.notice("Skipped \(recordID.recordName, privacy: .public): nothing to send")
         engine.state.remove(pendingRecordZoneChanges: [.saveRecord(recordID)])
         return nil
+    }
+
+    public func nextFetchChangesOptions(_ context: CKSyncEngine.FetchChangesContext,
+                                        syncEngine: CKSyncEngine) async -> CKSyncEngine.FetchChangesOptions {
+        log.notice("Engine fetch starting (\(String(describing: context.reason), privacy: .public))")
+        return context.options
     }
 
     // MARK: Mapping send results
@@ -311,6 +455,7 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         var saved: [SyncRecord] = []
         for record in sent.savedRecords {
             guard let id = codec.syncID(record.recordID) else { continue }
+            if let date = record.modificationDate { newestSeen[record.recordID.recordName] = date }
             let decoded = (try? codec.decode(record)) ?? nil
             saved.append(decoded ?? SyncRecord(id: id, fields: [:], systemFields: CKRecordCodec.systemFields(record)))
         }
@@ -318,8 +463,10 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         var failures: [SendFailure] = []
         for failure in sent.failedRecordSaves {
             guard let id = codec.syncID(failure.record.recordID) else { continue }
+            log.error("Save of \(failure.record.recordType, privacy: .public) \(id.recordName, privacy: .public) failed: \(Self.describe(failure.error), privacy: .public)")
             switch failure.error.code {
             case .serverRecordChanged:
+                if let date = failure.error.serverRecord?.modificationDate { newestSeen[id.recordName] = date }
                 if let server = failure.error.serverRecord, let record = try? codec.decode(server) {
                     failures.append(.serverRecordChanged(record))
                     continue
@@ -331,18 +478,22 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
                     failures.append(.unknownItem(id))   // deleted meanwhile: delete wins
                 case .failed(let why):
                     // Offline or busy: keep the save pending in the engine, which retries it (and this refetch) later.
-                    log.info("Refetching \(id.recordName, privacy: .public) after a conflict failed: \(why, privacy: .public)")
+                    log.error("Refetching \(id.recordName, privacy: .public) after a conflict failed: \(why, privacy: .public)")
                     engine.state.add(pendingRecordZoneChanges: [.saveRecord(failure.record.recordID)])
                     failures.append(.retryable(id))
                 case .unreadable(let why):
                     failures.append(.permanent(id, "The server copy cannot be read: \(why)"))
                 }
             default:
-                failures.append(Self.failure(id, failure.error))
+                let mapped = Self.failure(id, failure.error)
+                // The coordinator queues it again as well; adding a pending change twice is harmless.
+                if case .retryable = mapped { engine.state.add(pendingRecordZoneChanges: [.saveRecord(failure.record.recordID)]) }
+                failures.append(mapped)
             }
         }
         for (recordID, error) in sent.failedRecordDeletes {
             guard let id = codec.syncID(recordID) else { continue }
+            log.error("Delete of \(id.type.rawValue, privacy: .public) \(id.recordName, privacy: .public) failed: \(Self.describe(error), privacy: .public)")
             if error.code == .unknownItem {
                 deleted.append(id)   // already gone: the delete is done
             } else {
@@ -383,6 +534,57 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         case .failure(let error):
             if (error as? CKError)?.code == .unknownItem { return .gone }
             return .failed(error.localizedDescription)
+        }
+    }
+
+    /// "CKError 14 serverRecordChanged" plus retry-after and partial errors' codes, for the log. Never field values.
+    static func describe(_ error: any Error) -> String {
+        guard let ck = error as? CKError else { return String(describing: error) }
+        var text = "CKError \(ck.code.rawValue) \(codeName(ck.code))"
+        if let after = ck.retryAfterSeconds { text += " retryAfter=\(after)s" }
+        if let partial = ck.partialErrorsByItemID, !partial.isEmpty {
+            let items = partial.prefix(20).map { key, value -> String in
+                let name = (key as? CKRecord.ID)?.recordName ?? (key as? CKRecordZone.ID)?.zoneName ?? "\(key)"
+                let code = (value as? CKError).map { "\($0.code.rawValue) \(codeName($0.code))" } ?? "?"
+                return "\(name)=\(code)"
+            }
+            text += " partial[\(partial.count)]: " + items.sorted().joined(separator: ", ")
+        }
+        return text
+    }
+
+    static func codeName(_ code: CKError.Code) -> String {
+        switch code {
+        case .internalError: "internalError"
+        case .partialFailure: "partialFailure"
+        case .networkUnavailable: "networkUnavailable"
+        case .networkFailure: "networkFailure"
+        case .badContainer: "badContainer"
+        case .serviceUnavailable: "serviceUnavailable"
+        case .requestRateLimited: "requestRateLimited"
+        case .missingEntitlement: "missingEntitlement"
+        case .notAuthenticated: "notAuthenticated"
+        case .permissionFailure: "permissionFailure"
+        case .unknownItem: "unknownItem"
+        case .invalidArguments: "invalidArguments"
+        case .serverRecordChanged: "serverRecordChanged"
+        case .serverRejectedRequest: "serverRejectedRequest"
+        case .assetFileNotFound: "assetFileNotFound"
+        case .assetFileModified: "assetFileModified"
+        case .incompatibleVersion: "incompatibleVersion"
+        case .constraintViolation: "constraintViolation"
+        case .operationCancelled: "operationCancelled"
+        case .changeTokenExpired: "changeTokenExpired"
+        case .batchRequestFailed: "batchRequestFailed"
+        case .zoneBusy: "zoneBusy"
+        case .badDatabase: "badDatabase"
+        case .quotaExceeded: "quotaExceeded"
+        case .zoneNotFound: "zoneNotFound"
+        case .limitExceeded: "limitExceeded"
+        case .userDeletedZone: "userDeletedZone"
+        case .serverResponseLost: "serverResponseLost"
+        case .accountTemporarilyUnavailable: "accountTemporarilyUnavailable"
+        default: "code"
         }
     }
 

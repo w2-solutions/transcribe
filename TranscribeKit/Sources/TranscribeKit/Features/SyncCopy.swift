@@ -13,6 +13,13 @@ public enum SyncCopy {
         """
 
     /// The status line, or nil when sync is off.
+    /// With a `problem` (and sync not off), its message follows on a second line.
+    public static func statusLine(_ status: SyncStatus, now: Date, heldDeletes: Int = 0, problem: SyncProblem?) -> String? {
+        guard let line = statusLine(status, now: now, heldDeletes: heldDeletes) else { return nil }
+        guard let problem else { return line }
+        return line + "\nLast problem \(ago(problem.at, now: now)): \(problem.message)"
+    }
+
     public static func statusLine(_ status: SyncStatus, now: Date, heldDeletes: Int = 0) -> String? {
         switch status {
         case .off: nil

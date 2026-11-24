@@ -30,7 +30,10 @@ import TranscribeKit
                     if on, env.sync != nil, !env.config.uiTesting { PlatformServices.registerForRemoteNotifications() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-                    PlatformServices.syncOnActivation(env)
+                    PlatformServices.syncOnActivation(env, active: true)
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
+                    PlatformServices.syncOnActivation(env, active: false)
                 }
         }
         .defaultSize(width: 1280, height: 820)
