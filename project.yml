@@ -52,6 +52,8 @@ targets:
       path: Apps/iPhone/Info.plist
       properties:
         CFBundleDisplayName: Transcribe
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: "Transcribe records conversations on this iPhone to turn them into text. Audio never leaves the device."
         # remote-notification: CKSyncEngine fetches when iCloud pushes a change (only while sync is on).
@@ -65,6 +67,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe
+        # TestFlight needs a build number higher than the last upload for this version.
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
