@@ -155,7 +155,12 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         info.shouldSendContentAvailable = true   // silent: no alert, the app just fetches
         let subscription: CKSubscription
         #if os(macOS)
-        subscription = CKRecordZoneSubscription(zoneID: zoneID, subscriptionID: "zone-changes." + bundle)
+        // An empty sound name makes this a user-facing push, which Apple sends at high priority at once, where a
+        // purely silent one may wait (2026-11-24: the first silent push to the Mac took 99 s). Nothing plays or shows.
+        // A new id, because a saved subscription's contents cannot be relied on to change in place.
+        info.soundName = ""
+        subscription = CKRecordZoneSubscription(zoneID: zoneID, subscriptionID: "zone-changes-2." + bundle)
+        _ = try? await database.deleteSubscription(withID: "zone-changes." + bundle)
         #else
         subscription = CKDatabaseSubscription(subscriptionID: "changes." + bundle)
         #endif
