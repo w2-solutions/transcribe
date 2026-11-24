@@ -28,6 +28,9 @@ struct MacRecordingList: View {
     @State private var errorText: String?
     @State private var isDropTargeted = false
     @FocusState private var searchFocused: Bool
+
+    /// Mac wording, sync-aware ("Delete from all your devices?" while sync is on).
+    private var macCopy: DeviceCopy { DeviceCopy(platform: .mac, syncOn: env.copy.syncOn) }
     /// The list holds keyboard focus after a click on a card, so ⌫ and the arrow keys act on the selection.
     @FocusState private var listFocused: Bool
 
@@ -87,14 +90,14 @@ struct MacRecordingList: View {
                 pendingDelete = id
             }
         }
-        .confirmationDialog("Delete recording?",
+        .confirmationDialog(macCopy.deleteRecordingTitle,
                             isPresented: Binding(get: { pendingDelete != nil }, set: { if !$0 { pendingDelete = nil } }),
                             titleVisibility: .visible) {
             Button("Delete", role: .destructive) { if let id = pendingDelete { delete(id) } }
                 .accessibilityIdentifier(AX.Library.deleteConfirm)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(DeviceCopy(platform: .mac).deleteRecordingMessage)
+            Text(macCopy.deleteRecordingMessage)
         }
         .alert("Rename recording", isPresented: Binding(get: { renaming != nil }, set: { if !$0 { renaming = nil } })) {
             TextField("Title", text: Binding(get: { renaming?.title ?? "" }, set: { renaming?.title = $0 }))

@@ -11,6 +11,7 @@ struct MacSidebar: View {
 
     @Environment(AppEnvironment.self) private var env
     @Environment(MacSelection.self) private var selection
+    @Environment(\.openSettings) private var openSettings
     @Query(sort: \Folder.createdAt) private var folders: [Folder]
     @Query private var profiles: [VoiceProfile]
     @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
@@ -91,11 +92,7 @@ struct MacSidebar: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 12) {
-            Label(DeviceCopy(platform: .mac).sidebarFooter, systemImage: "lock")
-                .font(DS.Typo.caption)
-                .foregroundStyle(DS.Colour.secondary)
-                .padding(.horizontal, 10)
-                .accessibilityIdentifier(AX.Mac.sidebarFooter)
+            syncFooter
             Button(action: onRecord) {
                 HStack(spacing: 10) {
                     Circle()
@@ -117,6 +114,27 @@ struct MacSidebar: View {
         .padding(.horizontal, 12)
         .padding(.bottom, 12)
         .padding(.top, 8)
+    }
+
+    /// The privacy line, or the iCloud status while sync is on (§8.6). Clicking it opens Settings.
+    private var syncFooter: some View {
+        let status = env.sync.map { env.settings.syncEnabled ? $0.status : .off } ?? .off
+        let text = SyncCopy.footer(status, copy: DeviceCopy(platform: .mac, syncOn: env.copy.syncOn))
+        let symbol = status == .off ? "lock" : SyncSettingsSection.symbol(status)
+        return Button { openSettings() } label: {
+            Label(text, systemImage: symbol)
+                .font(DS.Typo.caption)
+                .foregroundStyle(status.isPaused ? DS.Colour.unnamedText : DS.Colour.secondary)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 10)
+        .help("iCloud sync settings")
+        .accessibilityLabel(text)
+        .accessibilityValue(text)
+        .accessibilityHint("Opens Settings")
+        .accessibilityIdentifier(AX.Mac.sidebarFooter)
     }
 
     private func saveFolder(_ editor: FolderEditor) {

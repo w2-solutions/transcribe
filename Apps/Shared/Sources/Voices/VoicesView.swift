@@ -6,24 +6,36 @@ import TranscribeKit
 
 /// Screen 7 (§6.7): saved voices, speakers waiting for a name, and the per-device privacy note.
 struct VoicesView: View {
+    @Environment(AppEnvironment.self) private var env
     @Environment(Router.self) private var router
     @Query private var profiles: [VoiceProfile]
     @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
     /// Row subtitles are 14 pt in the mockup (between footnote and subheadline); scale with Dynamic Type.
     @ScaledMetric(relativeTo: .subheadline) private var subtitleSize: CGFloat = 14
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @State private var mergeRequest: MergeRequest?
 
     var body: some View {
         let model = VoicesListModel(profiles: profiles, recordings: recordings)
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                Text("People Transcribe can recognise. Stored only on this device.")
+                Text(env.copy.voicesIntro)
                     .font(DS.Typo.subheadline)
                     .lineSpacing(3)
                     .foregroundStyle(DS.Colour.secondary)
                     .fixedSize(horizontal: false, vertical: true)
                     .padding(.horizontal, 4)
                     .padding(.top, 6)
+                    .accessibilityIdentifier(AX.Voices.intro)
+
+                // After sync (§8.6): two voices with one name, and another device on a different build.
+                ForEach(DuplicateVoiceBanner.duplicates(profiles), id: \.newer) { d in
+                    DuplicateVoiceBanner(name: d.name) { mergeRequest = MergeRequest(id: d.newer) }
+                        .padding(.top, 16)
+                }
+                if env.sync?.otherDeviceNeedsUpdate == true {
+                    UpdateOtherDevicesBanner().padding(.top, 16)
+                }
 
                 if model.saved.isEmpty {
                     emptyState.padding(.top, 26)
@@ -55,6 +67,18 @@ struct VoicesView: View {
         .navigationTitle("Voices")
         .largeNavigationTitle()
         .screenBackground()
+        .sheet(item: $mergeRequest) { request in
+            VoiceMergeSheet(profileID: request.id) { mergeRequest = nil }
+                .sheetSizing(minWidth: 480, minHeight: 560)
+        }
+    }
+
+    /// The other-device question for a suggested voice ("Karan was named on your iPhone. … Is this Karan?").
+    private func askPrompt(_ row: WaitingVoiceRow) -> String? {
+        guard row.isSuggested, let r = recordings.first(where: { $0.id == row.recordingID }),
+              let id = r.speaker(row.key)?.suggestedProfileID else { return nil }
+        return NameSpeakerModel.askPrompt(suggested: profiles.first { $0.id == id }, recordingChannel: r.captureChannel,
+                                          copy: env.copy)
     }
 
     // MARK: Saved
@@ -104,44 +128,57 @@ struct VoicesView: View {
         // At accessibility text sizes the Name link moves under the row, so the name never breaks mid-word.
         let layout = dynamicTypeSize.isAccessibilitySize
             ? AnyLayout(VStackLayout(alignment: .leading, spacing: 0)) : AnyLayout(HStackLayout(spacing: 8))
-        return layout {
-            Button { router.showTranscript(row.recordingID) } label: {
-                HStack(spacing: 14) {
-                    VoiceAvatar(initial: "", slot: nil, style: .unnamed)
-                    VStack(alignment: .leading, spacing: 3) {
-                        HStack(spacing: 7) {
-                            SpeakerDot(slot: nil, diameter: 8)
-                            Text(row.name)
-                                .font(DS.Typo.headline)
-                                .tracking(-0.2)
-                                .foregroundStyle(DS.Colour.ink)
-                                .layoutPriority(1)
-                            if row.isSuggested { StatusPill("Suggested", compact: true) }
+        return VStack(alignment: .leading, spacing: 0) {
+            layout {
+                Button { router.showTranscript(row.recordingID) } label: {
+                    HStack(spacing: 14) {
+                        VoiceAvatar(initial: "", slot: nil, style: .unnamed)
+                        VStack(alignment: .leading, spacing: 3) {
+                            HStack(spacing: 7) {
+                                SpeakerDot(slot: nil, diameter: 8)
+                                Text(row.name)
+                                    .font(DS.Typo.headline)
+                                    .tracking(-0.2)
+                                    .foregroundStyle(DS.Colour.ink)
+                                    .layoutPriority(1)
+                                if row.isSuggested { StatusPill("Suggested", compact: true) }
+                            }
+                            Text("\(row.dateText) · \(Text(row.durationText).font(DS.Typo.mono)) recording")
+                                .font(.system(size: subtitleSize))
+                                .foregroundStyle(DS.Colour.secondary)
+                                .lineLimit(1)
+                                .minimumScaleFactor(0.8)
                         }
-                        Text("\(row.dateText) · \(Text(row.durationText).font(DS.Typo.mono)) recording")
-                            .font(.system(size: subtitleSize))
-                            .foregroundStyle(DS.Colour.secondary)
-                            .lineLimit(1)
-                            .minimumScaleFactor(0.8)
+                        Spacer(minLength: 0)
                     }
-                    Spacer(minLength: 0)
+                    .frame(minHeight: DS.Size.voiceRow)
+                    .contentShape(Rectangle())
                 }
-                .frame(minHeight: DS.Size.voiceRow)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .accessibilityElement(children: .combine)
-            .accessibilityLabel("\(row.name), \(row.dateText), \(DisplayFormat.spokenDuration(row.duration)) recording")
-            .accessibilityHint("Opens the transcript")
-            .accessibilityIdentifier(AX.Voices.waiting(i))
+                .buttonStyle(.plain)
+                .accessibilityElement(children: .combine)
+                .accessibilityLabel("\(row.name), \(row.dateText), \(DisplayFormat.spokenDuration(row.duration)) recording")
+                .accessibilityHint("Opens the transcript")
+                .accessibilityIdentifier(AX.Voices.waiting(i))
 
-            LinkButton("Name", font: .callout.weight(.semibold)) {
-                router.nameSpeaker(NameSpeakerContext(recordingID: row.recordingID, key: row.key))
+                LinkButton("Name", font: .callout.weight(.semibold)) {
+                    router.nameSpeaker(NameSpeakerContext(recordingID: row.recordingID, key: row.key))
+                }
+                .padding(.horizontal, dynamicTypeSize.isAccessibilitySize ? 0 : 12)
+                .padding(.leading, dynamicTypeSize.isAccessibilitySize ? 58 : 0)
+                .accessibilityLabel("Name \(row.name)")
+                .accessibilityIdentifier(AX.Voices.waitingName(i))
             }
-            .padding(.horizontal, dynamicTypeSize.isAccessibilitySize ? 0 : 12)
-            .padding(.leading, dynamicTypeSize.isAccessibilitySize ? 58 : 0)
-            .accessibilityLabel("Name \(row.name)")
-            .accessibilityIdentifier(AX.Voices.waitingName(i))
+            if let ask = askPrompt(row) {
+                Text(ask)
+                    .font(DS.Typo.meta)
+                    .lineSpacing(2)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 58)
+                    .padding(.trailing, 8)
+                    .padding(.bottom, 12)
+                    .accessibilityIdentifier(AX.Voices.waitingAsk(i))
+            }
         }
         .padding(.leading, 16)
         .padding(.trailing, 8)
@@ -161,7 +198,7 @@ struct VoicesView: View {
                 }
                 .accessibilityHidden(true)
             VStack(alignment: .leading, spacing: 0) {
-                Text(DeviceCopy().voicesFooter)
+                Text(env.copy.voicesFooter)
                     .font(DS.Typo.subheadline)
                     .lineSpacing(3)
                     .foregroundStyle(DS.Colour.secondary)
@@ -230,3 +267,6 @@ struct DividedCard<Content: View>: View {
         .cardSurface(padding: EdgeInsets())
     }
 }
+
+/// The voice a duplicate-name banner merges away.
+struct MergeRequest: Identifiable, Hashable { let id: UUID }

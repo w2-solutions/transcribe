@@ -12,6 +12,14 @@ public protocol LibraryStoring: AnyObject, Sendable {
     /// only when something changed. Never deletes anything. Returns the number of rows stamped.
     func stampCaptureChannels() throws -> Int
 
+    // MARK: Local audio (§8.5)
+    /// Whether this device has the recording's audio. A recording synced from another device never does (audio does
+    /// not sync), and neither does one whose file was lost.
+    func hasLocalAudio(_ recording: Recording) -> Bool
+    /// Launch sweep: deletes `Audio/*.wav` files that no recording row names, when older than `minimumAge` (so a
+    /// capture that has not saved its row yet is never touched). Returns the number of files deleted.
+    @discardableResult func sweepOrphanAudio(minimumAge: TimeInterval, now: Date) throws -> Int
+
     // MARK: Recording lifecycle
     func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws   // stage .capturing
     func finishCapture(id: UUID, audio: CapturedAudio, language: LanguageHint) throws                         // → .queued

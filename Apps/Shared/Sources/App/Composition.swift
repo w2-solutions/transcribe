@@ -21,22 +21,34 @@ import TranscribeFakes
         #endif
         let identity = PlatformServices.deviceIdentity(uiTesting: config.uiTesting)
         let background = PlatformServices.backgroundBridge(uiTesting: config.uiTesting)
-        return try! AppEnvironment(config: config, engine: engine, background: background, deviceIdentity: identity, seeder: seeder,
-                                   syncTransport: Self.syncTransport(config: config))
+        #if DEBUG
+        let fakeSync = (config.uiTesting || config.useFakeEngine) ? FakeCloud.scenario(config.sync, clock: config.clock) : nil
+        let transport: (any SyncTransport)? = fakeSync?.transport ?? Self.syncTransport(config: config)
+        #else
+        let transport = Self.syncTransport(config: config)
+        #endif
+        let env = try! AppEnvironment(config: config, engine: engine, background: background, deviceIdentity: identity, seeder: seeder,
+                                      syncTransport: transport)
+        #if DEBUG
+        // UI tests only (§8.6): the scenario's sync bookkeeping goes into the in-memory store, and `fake:*` scenarios
+        // other than `fresh` start with the switch on, in this run's own defaults suite. Seeding never touches sync
+        // rows, so this can run before `onLaunch` seeds. Plain fake-engine runs keep the switch and store as they are.
+        if config.uiTesting, let fakeSync {
+            do { try fakeSync.prepare(env.container.mainContext, now: config.clock.now) } catch {
+                assertionFailure("Preparing the fake sync scenario failed: \(error)")
+            }
+            if fakeSync.startsOn { env.settings.syncEnabled = true }
+        }
+        #endif
+        return env
     }
 
     /// iCloud sync's transport (§8.3). The real app always gets `CloudKitTransport`, which touches nothing in iCloud
     /// until the "Sync with iCloud" switch is on. UI tests and fake-engine runs get a `FakeTransport` on an in-memory
-    /// `FakeCloud`, so they never reach CloudKit or the user's iCloud (§8.6); a Release build has no fakes and so no
-    /// sync in those modes.
+    /// `FakeCloud` seeded for `TRANSCRIBE_SYNC=fake:<scenario>` (`FakeCloud+Scenarios.swift`), so they never reach
+    /// CloudKit or the user's iCloud (§8.6); a Release build has no fakes and so no sync in those modes.
     static func syncTransport(config: LaunchConfig) -> (any SyncTransport)? {
-        if config.uiTesting || config.useFakeEngine {
-            #if DEBUG
-            return FakeTransport(cloud: FakeCloud(), account: "uitest-account")
-            #else
-            return nil
-            #endif
-        }
+        if config.uiTesting || config.useFakeEngine { return nil }
         return CloudKitTransport()
     }
 

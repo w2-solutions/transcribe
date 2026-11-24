@@ -36,6 +36,8 @@ final class NamingSpyStore: LibraryStoring {
     }
 
     func stampCaptureChannels() throws -> Int { 0 }
+    func hasLocalAudio(_ recording: Recording) -> Bool { true }
+    func sweepOrphanAudio(minimumAge: TimeInterval, now: Date) throws -> Int { 0 }
     func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws {}
     func finishCapture(id: UUID, audio: CapturedAudio, language: LanguageHint) throws {}
     func discardRecording(id: UUID) throws {}

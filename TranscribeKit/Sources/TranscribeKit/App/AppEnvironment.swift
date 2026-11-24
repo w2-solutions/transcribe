@@ -73,7 +73,8 @@ public final class AppEnvironment {
         }
     }
 
-    /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.stampCaptureChannels → models.refresh →
+    /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.stampCaptureChannels →
+    /// store.sweepOrphanAudio → models.refresh →
     /// coordinator.recoverOnLaunch → sync.start (its own task, when the switch is on) → models.prepareIfInstalled (detached)
     /// → isLaunched = true.
     public func onLaunch() async {
@@ -86,6 +87,8 @@ public final class AppEnvironment {
             do { try seeder(seed, container.mainContext, paths, clock) } catch { launchError = "Seed \(seed.rawValue) failed: \(error)" }
         }
         do { _ = try store.stampCaptureChannels() } catch { launchError = "Capture channel stamping failed: \(error)" }
+        // Audio files no row names (a delete synced from another device after a crash, say), older than an hour.
+        _ = try? store.sweepOrphanAudio(minimumAge: 3_600, now: Date())
         await models.refresh()
         await coordinator.recoverOnLaunch()
         if settings.syncEnabled, let sync { syncLaunch = Task { await sync.start() } }

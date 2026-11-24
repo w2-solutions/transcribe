@@ -82,6 +82,7 @@ struct MacRootView: View {
             Text(RecordingStatus.systemStopMessage(stop.reason))
         }
         .modifier(AutoCopyObserver())
+        .syncPrompts()
         .onChange(of: router.isRecordingPresented) { _, presented in
             if presented { openWindow(id: "recording") } else { dismissWindow(id: "recording") }
         }

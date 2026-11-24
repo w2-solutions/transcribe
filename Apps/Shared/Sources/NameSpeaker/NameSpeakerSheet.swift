@@ -18,7 +18,7 @@ struct NameSpeakerSheet: View {
     var body: some View {
         Group {
             if let model {
-                NameSpeakerForm(model: model, audioURL: audioURL, onClose: { close() }, onSaved: { advance() },
+                NameSpeakerForm(model: model, audioURL: hasLocalAudio ? audioURL : nil, onClose: { close() }, onSaved: { advance() },
                                 onNotNow: { advance() })
             } else {
                 Color.clear
@@ -43,6 +43,9 @@ struct NameSpeakerSheet: View {
 
     private var audioURL: URL? { recording.map { env.paths.audioURL(fileName: $0.audioFileName) } }
 
+    /// Without local audio (a recording synced from another device) the listen clips are quotes (§8.5).
+    private var hasLocalAudio: Bool { recording.map(env.store.hasLocalAudio) ?? false }
+
     private func makeModel() -> NameSpeakerModel? {
         guard let recording else { return nil }
         let profiles = (try? env.container.mainContext.fetch(FetchDescriptor<VoiceProfile>())) ?? []
@@ -51,7 +54,8 @@ struct NameSpeakerSheet: View {
         case .name: mode = .name
         case .correct(let turnID): mode = .correct(turnID: turnID)
         }
-        return NameSpeakerModel(recording: recording, key: context.key, mode: mode, profiles: profiles)
+        return NameSpeakerModel(recording: recording, key: context.key, mode: mode, profiles: profiles,
+                                syncOn: env.copy.syncOn)
     }
 
     private func close() { dismiss() }
@@ -163,10 +167,10 @@ private struct NameSpeakerForm: View {
 
     private var listen: some View {
         VStack(alignment: .leading, spacing: 8) {
-            sectionLabel("Listen")
+            sectionLabel(audioURL == nil ? "What they said" : "Listen")
             ForEach(Array(model.clips.enumerated()), id: \.element.id) { i, clip in
                 ClipRow(quote: clip.quote, duration: clip.range.duration, slot: model.subject.slot, peaks: clip.peaks,
-                        isPlaying: env.player.playingClipID == clip.id) {
+                        isPlaying: env.player.playingClipID == clip.id, canPlay: audioURL != nil) {
                     toggleClip(clip)
                 }
                 .accessibilityIdentifier(AX.NameSpeaker.clip(i))

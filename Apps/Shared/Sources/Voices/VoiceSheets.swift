@@ -88,6 +88,7 @@ struct VoiceEditSheet: View {
             .scrollContentBackground(.hidden)
             .navigationTitle("Edit voice")
             .inlineNavigationTitle()
+            .macSheetIdentifier(AX.VoiceDetail.Edit.sheet)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) { dismiss() }
@@ -189,6 +190,7 @@ struct VoiceMergeSheet: View {
             .scrollContentBackground(.hidden)
             .navigationTitle("Merge \(sourceName)")
             .inlineNavigationTitle()
+            .macSheetIdentifier(AX.VoiceDetail.Merge.sheet)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) { dismiss() }
@@ -262,6 +264,7 @@ struct VoiceAddSampleSheet: View {
             .scrollContentBackground(.hidden)
             .navigationTitle("Add a sample")
             .inlineNavigationTitle()
+            .macSheetIdentifier(AX.VoiceDetail.AddSample.sheet)
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Cancel", role: .cancel) { dismiss() }

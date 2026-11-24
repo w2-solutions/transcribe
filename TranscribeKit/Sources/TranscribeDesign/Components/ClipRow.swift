@@ -4,48 +4,63 @@ import TranscribeCore
 public struct ClipRow: View {
     /// Name sheet "Listen" row: 48 tall plainCapsule; 36 pt disc (slot fill, slot-text play icon / pause when playing),
     /// 9 MiniBars (20 tall, slot dot), quote 15 one line truncating, duration mono 13.
+    /// Without local audio (`canPlay` false, a recording synced from another device) the row is a quote: a quote mark
+    /// in the disc, no button.
     let quote: String
     let duration: TimeInterval
     let slot: Int
     let peaks: [Float]
     let isPlaying: Bool
+    let canPlay: Bool
     let action: () -> Void
 
-    public init(quote: String, duration: TimeInterval, slot: Int, peaks: [Float], isPlaying: Bool, action: @escaping () -> Void) {
+    public init(quote: String, duration: TimeInterval, slot: Int, peaks: [Float], isPlaying: Bool, canPlay: Bool = true,
+                action: @escaping () -> Void) {
         self.quote = quote; self.duration = duration; self.slot = slot; self.peaks = peaks
-        self.isPlaying = isPlaying; self.action = action
+        self.isPlaying = isPlaying; self.canPlay = canPlay; self.action = action
     }
 
     public var body: some View {
-        let palette = SpeakerPalette.colour(slot: slot)
-        Button(action: action) {
-            HStack(spacing: 10) {
-                Circle().fill(palette.fill)
-                    .frame(width: 36, height: 36)
-                    .overlay {
-                        Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                            .font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.text)
-                    }
-                MiniBars(peaks: fixedCount(peaks, 9), color: palette.dot, maxHeight: 20)
-                Text(quote)
-                    .font(.subheadline)
-                    .foregroundStyle(DS.Colour.ink)
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-                Spacer(minLength: 4)
-                Text(DisplayFormat.duration(duration))
-                    .font(DS.Typo.mono)
-                    .foregroundStyle(DS.Colour.secondary)
-            }
-            .padding(.leading, 6)
-            .padding(.trailing, 14)
-            .frame(height: 48)
-            .plainCapsule()
-            .contentShape(Capsule())
+        if canPlay {
+            Button(action: action) { row }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(isPlaying ? "Pause" : "Play") clip: \(quote)")
+                .accessibilityValue(DisplayFormat.spokenDuration(duration))
+        } else {
+            row
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel("Quote: \(quote)")
+                .accessibilityValue(DisplayFormat.spokenDuration(duration))
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(isPlaying ? "Pause" : "Play") clip: \(quote)")
-        .accessibilityValue(DisplayFormat.spokenDuration(duration))
+    }
+
+    private var row: some View {
+        let palette = SpeakerPalette.colour(slot: slot)
+        return HStack(spacing: 10) {
+            Circle().fill(palette.fill)
+                .frame(width: 36, height: 36)
+                .overlay {
+                    Image(systemName: canPlay ? (isPlaying ? "pause.fill" : "play.fill") : "quote.opening")
+                        .font(.system(size: 13, weight: .semibold)).foregroundStyle(palette.text)
+                }
+            if canPlay {
+                MiniBars(peaks: fixedCount(peaks, 9), color: palette.dot, maxHeight: 20)
+            }
+            Text(quote)
+                .font(.subheadline)
+                .foregroundStyle(DS.Colour.ink)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            Spacer(minLength: 4)
+            Text(DisplayFormat.duration(duration))
+                .font(DS.Typo.mono)
+                .foregroundStyle(DS.Colour.secondary)
+        }
+        .padding(.leading, 6)
+        .padding(.trailing, 14)
+        .frame(height: 48)
+        .plainCapsule()
+        .contentShape(Capsule())
     }
 }
 

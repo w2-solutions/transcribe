@@ -89,6 +89,9 @@ struct SettingsView: View {
                     .accessibilityIdentifier(AX.Settings.autoCopyRow)
                 }
 
+                // ICLOUD (§8.6): off by default.
+                SyncSettingsSection()
+
                 // ABOUT
                 SectionHeader("About").padding(.top, 14).padding(.bottom, 6)
                 SettingsCard {
@@ -99,7 +102,7 @@ struct SettingsView: View {
                     .accessibilityIdentifier(AX.Settings.acknowledgementsRow)
                     VStack(alignment: .leading, spacing: 0) {
                         Button { withAnimation(.snappy) { privacyExpanded.toggle() } } label: {
-                            ValueRow(systemImage: "lock.shield", tint: .neutral, title: "Privacy", value: DeviceCopy().privacyValue,
+                            ValueRow(systemImage: "lock.shield", tint: .neutral, title: "Privacy", value: env.copy.privacyValue,
                                      accessory: .none)
                         }
                         .buttonStyle(.plain)
@@ -107,7 +110,7 @@ struct SettingsView: View {
                         .accessibilityHint("Shows how your data is stored")
                         .accessibilityIdentifier(AX.Settings.privacyRow)
                         if privacyExpanded {
-                            Text(DeviceCopy().privacyDetail)
+                            Text(env.copy.privacyDetail)
                                 .font(DS.Typo.meta)
                                 .lineSpacing(3)
                                 .foregroundStyle(DS.Colour.secondary)
@@ -116,6 +119,7 @@ struct SettingsView: View {
                                 .padding(.trailing, 16)
                                 .padding(.bottom, 14)
                                 .transition(.opacity)
+                                .accessibilityIdentifier(AX.Settings.privacyDetail)
                         }
                     }
                     ValueRow(systemImage: "info.circle", tint: .neutral, title: "Version", value: Self.versionText, accessory: .none)

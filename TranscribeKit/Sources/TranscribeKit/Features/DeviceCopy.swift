@@ -99,15 +99,32 @@ public struct DeviceCopy: Sendable, Equatable {
         "Audio is on your \(other.noun). The transcript and names are synced; audio stays on the device that recorded it."
     }
 
+    /// `audioElsewhere` for a recording's capture channel: "your other Mac" when it was another device of this kind,
+    /// and plain wording when the channel is unknown.
+    public func audioElsewhere(channel: String?) -> String {
+        guard let other = DevicePlatform(channel: channel) else {
+            return "Audio is on the device that recorded it. The transcript and names are synced; audio never syncs."
+        }
+        guard other == platform else { return audioElsewhere(other: other) }
+        return "Audio is on your other \(other.noun). The transcript and names are synced; audio stays on the device that recorded it."
+    }
+
     /// Settings → Acknowledgements, first line.
     public var attributionsIntro: String { "Transcribe runs these models and libraries on your \(noun)." }
 
     /// Settings → Privacy row value.
-    public var privacyValue: String { "On this \(noun) only" }
+    public var privacyValue: String { syncOn ? "Audio on this \(noun) only" : "On this \(noun) only" }
 
     /// Settings → Privacy explanation.
     public var privacyDetail: String {
-        "Audio, transcripts and voice profiles are stored only on this \(noun). Voice profiles are never synced or shared."
+        syncOn
+            ? "Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles sync through your private iCloud. Speech is processed on each device; nothing is shared with anyone else."
+            : "Audio, transcripts and voice profiles are stored only on this \(noun). Voice profiles are never synced or shared."
+    }
+
+    /// The line under the Voices title.
+    public var voicesIntro: String {
+        syncOn ? "People Transcribe can recognise. Synced with your iCloud." : "People Transcribe can recognise. Stored only on this device."
     }
 
     /// Speech models screen, intro.
@@ -122,16 +139,35 @@ public struct DeviceCopy: Sendable, Equatable {
     public var lowStorageStop: String { "Recording stopped — \(noun) storage is almost full" }
 
     /// Processing panel footnote.
-    public var nothingLeaves: String { "Nothing leaves this \(noun)" }
+    public var nothingLeaves: String { syncOn ? "Processed on this \(noun)" : "Nothing leaves this \(noun)" }
 
     /// Microphone denied sheet.
     public var micDeniedBody: String { "Transcribe needs the microphone to record. Audio stays on this \(noun)." }
 
+    /// Delete confirmation title on a transcript.
+    public var deleteTranscriptTitle: String { syncOn ? "Delete from all your devices?" : "Delete this recording?" }
+
     /// Delete confirmation on a transcript.
-    public var deleteTranscriptMessage: String { "The audio and transcript are removed from this \(noun). Saved voices are kept." }
+    public var deleteTranscriptMessage: String {
+        syncOn
+            ? "The transcript is removed from all your devices, and the audio from the device that recorded it. Saved voices are kept."
+            : "The audio and transcript are removed from this \(noun). Saved voices are kept."
+    }
+
+    /// Delete confirmation title in the Library.
+    public var deleteRecordingTitle: String { syncOn ? "Delete from all your devices?" : "Delete recording?" }
 
     /// Delete confirmation in the Library.
-    public var deleteRecordingMessage: String { "The audio and transcript are removed from this \(noun)." }
+    public var deleteRecordingMessage: String {
+        syncOn
+            ? "The transcript is removed from all your devices, and the audio from the device that recorded it."
+            : "The audio and transcript are removed from this \(noun)."
+    }
+
+    /// "Forget Karan?" confirmation.
+    public func forgetVoiceMessage(_ name: String) -> String {
+        syncOn ? "\(name) is forgotten on all your devices. Past transcripts keep the name." : "Past transcripts keep the name."
+    }
 
     /// Library empty state.
     public var libraryEmptyHint: String {
@@ -146,5 +182,5 @@ public struct DeviceCopy: Sendable, Equatable {
     }
 
     /// Voice profile with no recordings.
-    public var notInAnyRecording: String { "Not in any recording on this \(noun) yet." }
+    public var notInAnyRecording: String { syncOn ? "Not in any recording yet." : "Not in any recording on this \(noun) yet." }
 }

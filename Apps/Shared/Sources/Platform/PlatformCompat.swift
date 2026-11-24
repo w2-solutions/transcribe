@@ -42,6 +42,16 @@ extension View {
         #endif
     }
 
+    /// iOS: unchanged (the sheet's root carries its identifier). On the Mac a sheet whose root is a `NavigationStack`
+    /// loses the root's identifier, so the content inside the stack carries it as well.
+    func macSheetIdentifier(_ id: String) -> some View {
+        #if os(iOS)
+        self
+        #else
+        accessibilityElement(children: .contain).accessibilityIdentifier(id)
+        #endif
+    }
+
     /// iOS: unchanged (sheets fill the screen). Sizes a sheet on the Mac.
     func sheetSizing(minWidth: CGFloat, minHeight: CGFloat) -> some View {
         #if os(iOS)

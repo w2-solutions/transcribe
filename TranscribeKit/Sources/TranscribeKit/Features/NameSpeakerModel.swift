@@ -185,6 +185,14 @@ public final class NameSpeakerModel {
         return top.map { .otherDevice(channel: $0.key) }
     }
 
+    /// The other-device question for a suggested voice outside the sheet (the transcript's ask banner, the Voices list):
+    /// "Karan was named on your iPhone. … Is this Karan?", or nil when the suggestion is an ordinary ask.
+    public static func askPrompt(suggested profile: VoiceProfile?, recordingChannel: String?, copy: DeviceCopy) -> String? {
+        guard let profile, case .otherDevice(let channel)? = askContext(for: profile, recordingChannel: recordingChannel),
+              let other = DevicePlatform(channel: channel) else { return nil }
+        return copy.askFromOtherDevice(name: profile.name, other: other)
+    }
+
     /// The other-device question for the sheet ("Karan was named on your iPhone. … Is this Karan?"), or nil when the
     /// suggestion is not an other-device ask or the channel is not a known device class.
     public var askPrompt: String? {

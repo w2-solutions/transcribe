@@ -124,7 +124,7 @@ struct ProcessingPanel: View {
     private var privacyLine: some View {
         HStack(spacing: 5) {
             Image(systemName: "lock").font(.system(size: 11, weight: .semibold))
-            Text(DeviceCopy().nothingLeaves).fixedSize(horizontal: false, vertical: true)
+            Text(env.copy.nothingLeaves).fixedSize(horizontal: false, vertical: true)
         }
         .accessibilityElement(children: .combine)
     }

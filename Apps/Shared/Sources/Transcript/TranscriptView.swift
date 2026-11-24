@@ -159,14 +159,19 @@ struct TranscriptView: View {
         let hits = isSearching ? state.searchHits(query, removeFillers: removeFillers) : []
         let current = hits.isEmpty ? nil : hits[Swift.min(hitIndex, hits.count - 1)]
         let url = audioURL(recording)
+        // A recording synced from another device has no audio here (§8.5): no player, no clips, no audio to share.
+        let hasAudio = env.store.hasLocalAudio(recording)
         return ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
-                    banner(recording, state)
+                    if !hasAudio {
+                        AudioElsewhereBanner(channel: recording.captureChannel)
+                    }
+                    banner(recording, state, hasAudio: hasAudio)
                     TranscriptMetaLine(date: recording.createdAt, duration: recording.duration)
                     if !state.turns.isEmpty {
-                        TranscriptTurnList(state: state, removeFillers: removeFillers, audioURL: url, hits: hits,
-                                           currentHit: current, lastTappedTurn: $lastTappedTurn,
+                        TranscriptTurnList(state: state, removeFillers: removeFillers, audioURL: url, canPlay: hasAudio,
+                                           hits: hits, currentHit: current, lastTappedTurn: $lastTappedTurn,
                                            actions: turnActions(recording, state))
                             .cardSurface(padding: EdgeInsets(top: 16, leading: 18, bottom: 16, trailing: 18))
                     }
@@ -198,7 +203,7 @@ struct TranscriptView: View {
             // Copy shows in every ready state; the player hides while a recording runs (§6.4).
             TranscriptPlayer(audioURL: url, peaks: recording.peaks, duration: recording.duration, turns: state.turns,
                              marks: recording.marks, slotForKey: { state.speaker($0)?.slot },
-                             showsCopy: !state.turns.isEmpty, showsPlayer: !env.recorder.isActive,
+                             showsCopy: !state.turns.isEmpty, showsPlayer: !env.recorder.isActive, hasAudio: hasAudio,
                              onCopy: { copyAll(state, document: cache.document(recording.transcriptData)) })
         }
         // The search field sits at the top; keep the player at the bottom behind the keyboard.
@@ -218,12 +223,12 @@ struct TranscriptView: View {
         } message: {
             Text("Leave it empty to use the date.")
         }
-        .confirmationDialog("Delete this recording?", isPresented: $isConfirmingDelete, titleVisibility: .visible) {
+        .confirmationDialog(env.copy.deleteTranscriptTitle, isPresented: $isConfirmingDelete, titleVisibility: .visible) {
             Button("Delete recording", role: .destructive) { delete(recording) }
                 .accessibilityIdentifier(AX.Transcript.Menu.deleteConfirm)
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(DeviceCopy().deleteTranscriptMessage)
+            Text(env.copy.deleteTranscriptMessage)
         }
         .screenBackground()
     }
@@ -248,7 +253,7 @@ struct TranscriptView: View {
                 folderID: recording.folder?.id,
                 folders: folders,
                 shareText: { shareText(recording, state) },
-                audioURL: audioURL(recording),
+                audioURL: env.store.hasLocalAudio(recording) ? audioURL(recording) : nil,
                 shareTitle: recording.displayTitle,
                 onRename: {
                     renameText = recording.title ?? ""
@@ -264,7 +269,7 @@ struct TranscriptView: View {
     // MARK: Banner
 
     @ViewBuilder
-    private func banner(_ recording: Recording, _ state: TranscriptViewState) -> some View {
+    private func banner(_ recording: Recording, _ state: TranscriptViewState, hasAudio: Bool) -> some View {
         switch state.banner {
         case .failed(let message):
             FailedCard(message: message) {
@@ -273,7 +278,8 @@ struct TranscriptView: View {
         case .noSpeech:
             NoSpeechCard()
         case .ask(let speaker):
-            AskBanner(speaker: speaker, isPlaying: env.player.playingClipID == askClipID(speaker.key),
+            AskBanner(speaker: speaker, detail: askDetail(speaker, recording: recording), canPlay: hasAudio,
+                      isPlaying: env.player.playingClipID == askClipID(speaker.key),
                       onPlay: { playAskClip(speaker, recording: recording, state: state) },
                       onYes: { perform { _ = try env.store.confirmSuggestion(recordingID: recordingID, key: speaker.key) } },
                       onNo: {
@@ -296,6 +302,13 @@ struct TranscriptView: View {
     }
 
     private func askClipID(_ key: SpeakerKey) -> String { "ask-\(recordingID.uuidString)-\(key)" }
+
+    /// Under "Is this Karan?": why it asks when Karan was learned on another device (§7), else nil (the banner then
+    /// says "Speaker 2 sounds like Karan.").
+    private func askDetail(_ speaker: TranscriptSpeaker, recording: Recording) -> String? {
+        let suggested = speaker.suggestedProfileID.flatMap { id in profiles.first { $0.id == id } }
+        return NameSpeakerModel.askPrompt(suggested: suggested, recordingChannel: recording.captureChannel, copy: env.copy)
+    }
 
     private func playAskClip(_ speaker: TranscriptSpeaker, recording: Recording, state: TranscriptViewState) {
         let id = askClipID(speaker.key)
@@ -444,6 +457,8 @@ private struct TranscriptTurnList: View {
     let state: TranscriptViewState
     let removeFillers: Bool
     let audioURL: URL
+    /// False without local audio: timestamps are plain text, not "play from here".
+    let canPlay: Bool
     let hits: [TranscriptViewState.TextSpan]
     let currentHit: TranscriptViewState.TextSpan?
     @Binding var lastTappedTurn: Int?
@@ -471,6 +486,7 @@ private struct TranscriptTurnList: View {
                                 searchHits: hitsByTurn[i]?.map(\.range) ?? [],
                                 currentHit: currentHit?.turnIndex == i ? currentHit?.range : nil),
                             showsChangeLink: nowPlaying?.turnIndex == i || lastTappedTurn == i,
+                            canPlay: canPlay,
                             actions: box)
                         .equatable()
                 }

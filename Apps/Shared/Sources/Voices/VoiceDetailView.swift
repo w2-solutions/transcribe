@@ -117,8 +117,8 @@ struct VoiceDetailView: View {
         let lead: Text
         let spoken: String
         if profile.needsResample {
-            lead = Text(DeviceCopy().needsSample).foregroundStyle(DS.Colour.unnamedText)
-            spoken = DeviceCopy().needsSample
+            lead = Text(env.copy.needsSample).foregroundStyle(DS.Colour.unnamedText)
+            spoken = env.copy.needsSample
         } else if profile.autoLabel {
             lead = Text("\(Image(systemName: "checkmark.circle")) Recognised automatically")
                 .foregroundStyle(DS.Colour.accentText)
@@ -154,9 +154,19 @@ struct VoiceDetailView: View {
             }
             .padding(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
 
-            ForEach(Array(samples.enumerated()), id: \.element.id) { i, sample in
-                if i > 0 { divider(inset: 72) }
-                sampleRow(sample, index: i, slot: profile.colourSlot, recording: sample.sourceRecordingID.flatMap { recordingsByID[$0] })
+            // Grouped by the device that heard each sample (§7) once more than one device has: each microphone hears
+            // a voice a little differently. Row indexes stay global, in `sortedSamples` order.
+            let groups = Self.sampleGroups(samples, localChannel: localChannel)
+            let showsHeaders = groups.count > 1 || groups.contains { $0.channel != localChannel }
+            ForEach(groups) { group in
+                if showsHeaders {
+                    sampleGroupHeader(group)
+                }
+                ForEach(Array(group.items.enumerated()), id: \.element.sample.id) { j, item in
+                    if j > 0 || (!showsHeaders && item.index > 0) { divider(inset: 72) }
+                    sampleRow(item.sample, index: item.index, slot: profile.colourSlot,
+                              recording: item.sample.sourceRecordingID.flatMap { recordingsByID[$0] })
+                }
             }
 
             divider(inset: 16)
@@ -190,6 +200,54 @@ struct VoiceDetailView: View {
         }
     }
 
+    /// This device's capture channel (the fake engine and UI tests may set it).
+    private var localChannel: String { env.config.channel ?? CaptureChannel.current }
+
+    struct SampleGroup: Identifiable {
+        let channel: String
+        var items: [(index: Int, sample: VoiceSample)]
+        var id: String { channel }
+    }
+
+    /// Samples by capture channel: this device's first, then the others by size. A sample with no channel is this
+    /// device's (the launch stamp gives it one).
+    static func sampleGroups(_ samples: [VoiceSample], localChannel: String) -> [SampleGroup] {
+        var groups: [String: SampleGroup] = [:]
+        for (i, sample) in samples.enumerated() {
+            let channel = sample.captureChannel ?? localChannel
+            groups[channel, default: SampleGroup(channel: channel, items: [])].items.append((i, sample))
+        }
+        return groups.values.sorted { a, b in
+            if (a.channel == localChannel) != (b.channel == localChannel) { return a.channel == localChannel }
+            if a.items.count != b.items.count { return a.items.count > b.items.count }
+            return a.channel < b.channel
+        }
+    }
+
+    /// "On this Mac · 2" / "On your iPhone · 3"
+    private func sampleGroupHeader(_ group: SampleGroup) -> some View {
+        let platform = DevicePlatform(channel: group.channel)
+        let place: String = {
+            guard let platform else { return "On another device" }
+            return group.channel == localChannel ? "On this \(platform.noun)" : "On your \(platform.noun)"
+        }()
+        let text = "\(place) · \(group.items.count)"
+        return HStack(spacing: 6) {
+            Image(systemName: AudioElsewhereBanner.symbol(group.channel))
+                .font(.system(size: 12, weight: .semibold))
+                .accessibilityHidden(true)
+            Text(text)
+        }
+        .font(DS.Typo.chip)
+        .foregroundStyle(DS.Colour.secondary)
+        .padding(EdgeInsets(top: 10, leading: 16, bottom: 4, trailing: 16))
+        .accessibilityElement(children: .ignore)
+        .accessibilityAddTraits(.isHeader)
+        .accessibilityLabel(text)
+        .accessibilityValue(text)
+        .accessibilityIdentifier(AX.Voices.sampleGroup(group.channel))
+    }
+
     private func sampleRow(_ sample: VoiceSample, index i: Int, slot: Int, recording: Recording?) -> some View {
         let clipID = sample.id.uuidString
         let range = sample.clipRange
@@ -215,7 +273,7 @@ struct VoiceDetailView: View {
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel(isAvailable
                     ? "\(isPlaying ? "Pause" : "Play") sample: \(quote), \(DisplayFormat.spokenDuration(duration))"
-                    : "Sample: \(quote). Recording deleted")
+                    : "Sample: \(quote). \(recording == nil ? "Recording deleted" : "Audio is on another device")")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { play() }
                 .accessibilityAction(named: "Remove sample") { pendingRemoval = sample.id }
@@ -258,7 +316,7 @@ struct VoiceDetailView: View {
             .padding(EdgeInsets(top: 14, leading: 16, bottom: 4, trailing: 16))
 
             if appearances.isEmpty {
-                Text(DeviceCopy().notInAnyRecording)
+                Text(env.copy.notInAnyRecording)
                     .font(.subheadline).foregroundStyle(DS.Colour.secondary)
                     .padding(EdgeInsets(top: 6, leading: 16, bottom: 14, trailing: 16))
             }
@@ -360,7 +418,7 @@ struct VoiceDetailView: View {
                     .accessibilityIdentifier(AX.VoiceDetail.forgetConfirm)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("Past transcripts keep the name.")
+                Text(env.copy.forgetVoiceMessage(profile.name))
             }
         }
         .frame(maxWidth: .infinity)

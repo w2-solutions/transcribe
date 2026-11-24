@@ -15,6 +15,8 @@ struct TranscriptPlayer: View {
     let showsCopy: Bool
     /// False while a recording runs (§6.4: playback would fight capture for the audio session).
     var showsPlayer: Bool = true
+    /// False when the audio is on another device (§8.5): no player at all; the transcript shows `AudioElsewhereBanner`.
+    var hasAudio: Bool = true
     let onCopy: () -> Void
 
     var body: some View {
@@ -26,7 +28,9 @@ struct TranscriptPlayer: View {
                     .accessibilityIdentifier(AX.Transcript.copyButton)
                     .padding(.trailing, 4)
             }
-            if showsPlayer {
+            if !hasAudio {
+                EmptyView()
+            } else if showsPlayer {
                 // The bar count follows the scrubber's measured width (PlayerBar), so Dynamic Type never
                 // pushes the waveform under the buttons.
                 let covering = Self.coveringTurns(turns, duration: duration)
@@ -46,6 +50,8 @@ struct TranscriptPlayer: View {
                     .accessibilityIdentifier("player.offWhileRecording")
             }
         }
+        // Full width, so Copy keeps to the trailing edge even with no player under it (audio on another device).
+        .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, 12)
         .padding(.bottom, 2)
     }

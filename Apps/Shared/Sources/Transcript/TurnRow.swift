@@ -25,12 +25,14 @@ struct TurnRow: View, Equatable {
     let hasMark: Bool
     let highlights: TurnHighlights
     let showsChangeLink: Bool
+    /// False when the audio is on another device: the timestamp is plain text.
+    var canPlay: Bool = true
     let actions: TurnActionsBox
 
     static func == (a: TurnRow, b: TurnRow) -> Bool {
         a.index == b.index && a.speaker == b.speaker && a.timestamp == b.timestamp && a.text == b.text
             && a.hasMark == b.hasMark && a.highlights == b.highlights && a.showsChangeLink == b.showsChangeLink
-            && a.actions === b.actions
+            && a.canPlay == b.canPlay && a.actions === b.actions
     }
 
     private func onChip() { actions.current?.chip(index) }
@@ -72,6 +74,16 @@ struct TurnRow: View, Equatable {
         .accessibilityIdentifier(AX.Transcript.turn(index))
     }
 
+    private var timestampText: some View {
+        Text(timestamp)
+            .font(DS.Typo.mono)
+            .foregroundStyle(DS.Colour.secondary)
+            .lineLimit(1)
+            .fixedSize()
+            .frame(minWidth: 32, minHeight: DS.Space.hit, alignment: .leading)
+            .contentShape(Rectangle())
+    }
+
     private var chipRow: some View {
         HStack(spacing: 10) {
             if let speaker {
@@ -88,21 +100,21 @@ struct TurnRow: View, Equatable {
                 .accessibilityHint(chipHint(speaker))
                 .accessibilityIdentifier(AX.Transcript.turnChip(index))
             }
-            Button { onTimestamp() } label: {
-                Text(timestamp)
-                    .font(DS.Typo.mono)
-                    .foregroundStyle(DS.Colour.secondary)
-                    .lineLimit(1)
-                    .fixedSize()
-                    .frame(minWidth: 32, minHeight: DS.Space.hit, alignment: .leading)
-                    .contentShape(Rectangle())
+            if canPlay {
+                Button { onTimestamp() } label: { timestampText }
+                    .buttonStyle(.plain)
+                    .layoutPriority(1)   // a long name truncates in the chip before the time wraps
+                    .padding(.vertical, -8)
+                    .accessibilityLabel(timestamp)
+                    .accessibilityHint("Plays from here")
+                    .accessibilityIdentifier(AX.Transcript.turnTimestamp(index))
+            } else {
+                timestampText
+                    .layoutPriority(1)
+                    .padding(.vertical, -8)
+                    .accessibilityLabel(timestamp)
+                    .accessibilityIdentifier(AX.Transcript.turnTimestamp(index))
             }
-            .buttonStyle(.plain)
-            .layoutPriority(1)   // a long name truncates in the chip before the time wraps
-            .padding(.vertical, -8)
-            .accessibilityLabel(timestamp)
-            .accessibilityHint("Plays from here")
-            .accessibilityIdentifier(AX.Transcript.turnTimestamp(index))
             if hasMark {
                 Image(systemName: "bookmark.fill")
                     .font(.system(size: 12, weight: .semibold))

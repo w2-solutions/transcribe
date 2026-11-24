@@ -54,6 +54,34 @@ public actor FakeCloud {
 
     public init() {}
 
+    /// A cloud that already holds records, for the UI-test scenarios (`FakeCloud+Scenarios.swift`): each account's
+    /// records are saved in order as `inject` would (change tags 1, 2, 3 …), then the zones in `removed` are deleted as
+    /// another device would. Synchronous, so the app can build it before its first frame.
+    init(accounts: [String: [SyncRecord]], removed: [String: ZoneDeletionReason] = [:]) {
+        var dbs: [String: Database] = [:]
+        for (account, records) in accounts {
+            var db = Database()
+            db.zoneExists = true
+            for record in records {
+                db.nextTag += 1
+                db.records[record.id.recordName] = Stored(fields: record.fields, tag: db.nextTag)
+                db.seq += 1
+                db.changed[record.id.recordName] = db.seq
+            }
+            dbs[account] = db
+        }
+        for (account, reason) in removed {
+            var db = dbs[account] ?? Database()
+            db.zoneExists = false
+            db.records = [:]
+            db.changed = [:]
+            db.generation += 1
+            db.deletionReason = reason
+            dbs[account] = db
+        }
+        databases = dbs
+    }
+
     // MARK: Test controls
 
     public func setQuotaFull(_ on: Bool) { quotaFull = on }

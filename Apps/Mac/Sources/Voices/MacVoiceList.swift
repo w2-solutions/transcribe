@@ -7,12 +7,17 @@ import TranscribeKit
 /// The middle column for People → Voices (§5): saved voices and the speakers waiting for a name, from the shared
 /// `VoicesListModel`. Selecting a saved voice shows its profile in the detail column; "Name…" opens the name sheet.
 struct MacVoiceList: View {
+    @Environment(AppEnvironment.self) private var env
     @Environment(Router.self) private var router
     @Environment(MacSelection.self) private var selection
     @Query private var profiles: [VoiceProfile]
     @Query(sort: \Recording.createdAt, order: .reverse) private var recordings: [Recording]
 
     @State private var searchText = ""
+    @State private var mergeRequest: MergeRequest?
+
+    /// Mac wording, sync-aware.
+    private var macCopy: DeviceCopy { DeviceCopy(platform: .mac, syncOn: env.copy.syncOn) }
 
     var body: some View {
         let model = VoicesListModel(profiles: profiles, recordings: recordings, platform: .mac)
@@ -22,6 +27,15 @@ struct MacVoiceList: View {
             VStack(alignment: .leading, spacing: 6) {
                 header(count: model.saved.count)
                 searchField.padding(.bottom, 6)
+
+                // After sync (§8.6): two voices with one name, and another device on a different build.
+                ForEach(DuplicateVoiceBanner.duplicates(profiles), id: \.newer) { d in
+                    DuplicateVoiceBanner(name: d.name) { mergeRequest = MergeRequest(id: d.newer) }
+                        .padding(.bottom, 6)
+                }
+                if env.sync?.otherDeviceNeedsUpdate == true {
+                    UpdateOtherDevicesBanner().padding(.bottom, 6)
+                }
 
                 if model.saved.isEmpty {
                     Text("No saved voices yet. Name a speaker in any transcript and Transcribe will recognise them next time.")
@@ -45,7 +59,7 @@ struct MacVoiceList: View {
                     }
                 }
 
-                Label(DeviceCopy(platform: .mac).voicesFooter, systemImage: "lock")
+                Label(macCopy.voicesFooter, systemImage: macCopy.syncOn ? "icloud" : "lock")
                     .font(DS.Typo.caption)
                     .foregroundStyle(DS.Colour.secondary)
                     .padding(.top, 14)
@@ -59,6 +73,10 @@ struct MacVoiceList: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Mac.voiceList)
         .screenBackground()
+        .sheet(item: $mergeRequest) { request in
+            VoiceMergeSheet(profileID: request.id) { mergeRequest = nil }
+                .sheetSizing(minWidth: 480, minHeight: 560)
+        }
         .onChange(of: profiles.map(\.id)) { _, ids in
             if let id = selection.voice, !ids.contains(id) { selection.voice = nil }
         }
@@ -145,7 +163,32 @@ struct MacVoiceList: View {
         .accessibilityIdentifier(AX.Voices.profile(AX.slug(row.name)))
     }
 
+    /// The other-device question for a suggested voice ("Karan was named on your iPhone. … Is this Karan?").
+    private func askPrompt(_ row: WaitingVoiceRow) -> String? {
+        guard row.isSuggested, let r = recordings.first(where: { $0.id == row.recordingID }),
+              let id = r.speaker(row.key)?.suggestedProfileID else { return nil }
+        return NameSpeakerModel.askPrompt(suggested: profiles.first { $0.id == id }, recordingChannel: r.captureChannel,
+                                          copy: macCopy)
+    }
+
     private func waitingRow(_ row: WaitingVoiceRow, index i: Int) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            waitingRowMain(row, index: i)
+            if let ask = askPrompt(row) {
+                Text(ask)
+                    .font(DS.Typo.meta)
+                    .lineSpacing(2)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, 48)
+                    .accessibilityIdentifier(AX.Voices.waitingAsk(i))
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+    }
+
+    private func waitingRowMain(_ row: WaitingVoiceRow, index i: Int) -> some View {
         HStack(spacing: 12) {
             VoiceAvatar(initial: "", slot: nil, style: .unnamed, diameter: 36)
             VStack(alignment: .leading, spacing: 2) {
@@ -164,8 +207,6 @@ struct MacVoiceList: View {
             .accessibilityLabel("Name \(row.name)")
             .accessibilityIdentifier(AX.Voices.waitingName(i))
         }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 10)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Voices.waiting(i))
     }

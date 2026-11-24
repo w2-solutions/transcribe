@@ -59,6 +59,9 @@ struct RecordingView: View {
         .accessibilityIdentifier(AX.Recording.screen)
         .onAppear { env.player.stop() }
         .onChange(of: recorder.isActive) { _, active in
+            // A new capture: the Mac's single Recording window keeps this view's state between recordings, so the
+            // previous recording's finished stop must not leave Stop disabled.
+            if active { isStopping = false; stopError = nil }
             // Ended elsewhere (discarded, or a failed start): nothing left to show. A system end shows its alert.
             if !active, !isStopping, recorder.systemEndReason == nil { dismiss() }
         }

@@ -213,7 +213,7 @@ struct LibraryView: View {
                 onDelete: { pendingDelete = PendingDelete(id: recording.id) },
                 onError: show))
             // On the row, so the iOS 27 popover points at the card being deleted (not the top of the list).
-            .confirmationDialog("Delete recording?",
+            .confirmationDialog(env.copy.deleteRecordingTitle,
                                 isPresented: Binding(get: { pendingDelete?.id == recording.id },
                                                      set: { if !$0, pendingDelete?.id == recording.id { pendingDelete = nil } }),
                                 titleVisibility: .visible) {
@@ -221,7 +221,7 @@ struct LibraryView: View {
                     .accessibilityIdentifier(AX.Library.deleteConfirm)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text(DeviceCopy().deleteRecordingMessage)
+                Text(env.copy.deleteRecordingMessage)
             }
     }
 

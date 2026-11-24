@@ -269,6 +269,27 @@ public final class LibraryStore: LibraryStoring {
         try context.save()
     }
 
+    public func hasLocalAudio(_ recording: Recording) -> Bool {
+        FileManager.default.fileExists(atPath: paths.audioURL(fileName: recording.audioFileName).path)
+    }
+
+    @discardableResult
+    public func sweepOrphanAudio(minimumAge: TimeInterval = 3_600, now: Date = Date()) throws -> Int {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
+        guard let files = try? fm.contentsOfDirectory(at: paths.audioDirectory, includingPropertiesForKeys: keys) else { return 0 }
+        // Every stage is at or above .capturing, so every row protects its file.
+        let named = Set(try context.fetch(FetchDescriptor<Recording>()).filter { $0.stage >= .capturing }.map(\.audioFileName))
+        var removed = 0
+        for url in files where url.pathExtension.lowercased() == "wav" && !named.contains(url.lastPathComponent) {
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            guard values?.isRegularFile == true, let modified = values?.contentModificationDate,
+                  now.timeIntervalSince(modified) >= minimumAge else { continue }
+            if (try? fm.removeItem(at: url)) != nil { removed += 1 }
+        }
+        return removed
+    }
+
     public func discardRecording(id: UUID) throws {
         let r = try recording(id)
         removeAudio(of: r)

@@ -9,7 +9,8 @@ struct TranscriptMoreMenu: View {
     let folderID: UUID?
     let folders: [Folder]
     let shareText: () -> String
-    let audioURL: URL
+    /// Nil when the audio is on another device: no "Share audio".
+    let audioURL: URL?
     let shareTitle: String
     let onRename: () -> Void
     let onToggleFavourite: () -> Void
@@ -35,10 +36,12 @@ struct TranscriptMoreMenu: View {
                 Label("Share transcript", systemImage: "square.and.arrow.up")
             }
             .accessibilityIdentifier(AX.Transcript.Menu.shareText)
-            ShareLink(item: audioURL, preview: SharePreview(shareTitle)) {
-                Label("Share audio", systemImage: "waveform")
+            if let audioURL {
+                ShareLink(item: audioURL, preview: SharePreview(shareTitle)) {
+                    Label("Share audio", systemImage: "waveform")
+                }
+                .accessibilityIdentifier(AX.Transcript.Menu.shareAudio)
             }
-            .accessibilityIdentifier(AX.Transcript.Menu.shareAudio)
             Divider()
             Button("Delete recording", systemImage: "trash", role: .destructive, action: onDelete)
                 .accessibilityIdentifier(AX.Transcript.Menu.delete)

@@ -108,6 +108,11 @@ struct RecognisedBanner: View {
 /// "Is this Karan?" (§6.6): plain card with play, Yes and No.
 struct AskBanner: View {
     let speaker: TranscriptSpeaker
+    /// The other-device copy (`DeviceCopy.askFromOtherDevice`) when the voice was learned elsewhere; nil gives
+    /// "Speaker 2 sounds like Karan."
+    var detail: String? = nil
+    /// False without local audio: no play button.
+    var canPlay: Bool = true
     let isPlaying: Bool
     let onPlay: () -> Void
     let onYes: () -> Void
@@ -122,27 +127,32 @@ struct AskBanner: View {
                     .font(.headline)
                     .tracking(-0.2)
                     .foregroundStyle(DS.Colour.ink)
-                Text("\(speaker.name) sounds like \(name).")
+                Text(detail ?? "\(speaker.name) sounds like \(name).")
                     .scaledFont(size: 14, relativeTo: .subheadline)
+                    .lineSpacing(2)
                     .foregroundStyle(DS.Colour.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier(AX.Transcript.askDetail)
             }
             HStack(spacing: 10) {
                 let palette = SpeakerPalette.colour(slot: speaker.slot)
-                Button(action: onPlay) {
-                    Circle()
-                        .fill(palette.fill)
-                        .frame(width: 36, height: 36)
-                        .overlay {
-                            Image(systemName: isPlaying ? "pause.fill" : "play.fill")
-                                .font(.system(size: 13, weight: .semibold))
-                                .foregroundStyle(palette.text)
-                        }
-                        .frame(width: DS.Space.hit, height: DS.Space.hit)
-                        .contentShape(Circle())
+                if canPlay {
+                    Button(action: onPlay) {
+                        Circle()
+                            .fill(palette.fill)
+                            .frame(width: 36, height: 36)
+                            .overlay {
+                                Image(systemName: isPlaying ? "pause.fill" : "play.fill")
+                                    .font(.system(size: 13, weight: .semibold))
+                                    .foregroundStyle(palette.text)
+                            }
+                            .frame(width: DS.Space.hit, height: DS.Space.hit)
+                            .contentShape(Circle())
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel(isPlaying ? "Pause clip" : "Play a clip of \(speaker.name)")
+                    .accessibilityIdentifier(AX.Transcript.askPlay)
                 }
-                .buttonStyle(.plain)
-                .accessibilityLabel(isPlaying ? "Pause clip" : "Play a clip of \(speaker.name)")
-                .accessibilityIdentifier(AX.Transcript.askPlay)
                 InkPillButton("Yes", action: onYes)
                     .fixedSize()
                     .accessibilityLabel("Yes, this is \(name)")

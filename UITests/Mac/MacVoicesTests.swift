@@ -44,7 +44,8 @@ final class MacVoicesTests: FlowTestCase {
         Wait.label(app.waitFor(AX.VoiceDetail.name), equals: "Karan")
 
         app.waitFor(AX.VoiceDetail.editButton).click()
-        // A Mac sheet does not carry the sheet's own identifier; its controls do.
+        // The sheet's content carries the sheet identifier on the Mac (`macSheetIdentifier`).
+        app.waitFor(AX.VoiceDetail.Edit.sheet)
         let field = app.waitFor(AX.VoiceDetail.Edit.nameField)
         field.click()
         field.typeKey(.rightArrow, modifierFlags: .command)     // the end of the name
@@ -64,6 +65,7 @@ final class MacVoicesTests: FlowTestCase {
         app.waitFor(AX.VoiceDetail.screen)
         app.scrollTo(AX.VoiceDetail.mergeButton).click()
 
+        app.waitFor(AX.VoiceDetail.Merge.sheet)
         app.waitFor(AX.VoiceDetail.Merge.target("liam")).click()
         app.button(AX.VoiceDetail.Merge.confirm, title: "Merge").click()
 
@@ -72,5 +74,15 @@ final class MacVoicesTests: FlowTestCase {
         app.waitForGone(AX.Voices.profile("karan"))
         app.waitFor(AX.Voices.profile("liam"))
         app.waitFor(AX.Mac.detailEmpty)
+    }
+
+    @MainActor func testAddSampleSheet() {
+        let app = launchVoices()
+        app.waitFor(AX.Voices.profile("karan")).click()
+        app.waitFor(AX.VoiceDetail.screen)
+        app.scrollTo(AX.VoiceDetail.addSample).click()
+        app.waitFor(AX.VoiceDetail.AddSample.sheet)
+        app.waitFor(AX.VoiceDetail.AddSample.cancelButton).click()
+        app.waitForGone(AX.VoiceDetail.AddSample.sheet)
     }
 }
