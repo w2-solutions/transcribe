@@ -371,6 +371,10 @@ public final class SyncCoordinator {
             if case .joining = status {} else { status = .syncing(pending: pending) }
             do {
                 try await transport.sendChanges()
+            } catch is CancellationError {
+                // The engine started its own send of the same changes first; it reports that one itself.
+                log.notice("Send overtaken by the engine's own send")
+                break
             } catch {
                 log.error("Send failed with \(pending, privacy: .public) pending: \(String(describing: error), privacy: .public)")
                 noteProblem("Couldn't upload to iCloud: \(error.localizedDescription)")
