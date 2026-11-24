@@ -99,6 +99,20 @@ extension SyncSuites {
             expectConverged(t.devices)
         }
 
+        /// With a background interval (the Mac), the app keeps fetching behind other apps.
+        @Test func behindOtherAppsTheMacKeepsFetching() async throws {
+            let t = try await TwoDevices.make()
+            defer { t.cleanup() }
+            t.a.sync.backgroundPollInterval = .milliseconds(40)
+            t.a.sync.minRefreshGap = .zero
+            t.a.sync.setForeground(false)
+            try t.b.store.rename(id: t.r1, title: "Renamed on the iPhone")
+            await t.b.sync.syncNow()
+            try await eventually { t.a.recording(t.r1)?.title == "Renamed on the iPhone" }
+            t.a.sync.backgroundPollInterval = nil
+            t.a.sync.setForeground(false)
+        }
+
         /// In front, the app fetches at once and then every interval, so a missed push only delays a change; in the
         /// background it stops.
         @Test func inFrontTheAppFetchesWithoutAPushAndStopsWhenItLeaves() async throws {

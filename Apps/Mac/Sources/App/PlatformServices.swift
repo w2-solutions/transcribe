@@ -28,6 +28,10 @@ import TranscribeKit
     /// (§8.4 item 9; `SyncCoordinator.setForeground`), so a missed push only delays a change. A launch's own sync start
     /// is never doubled: the coordinator skips a refresh while it starts.
     static func syncOnActivation(_ env: AppEnvironment, active: Bool) {
+        // On 2026-11-24 this Mac received no iCloud pushes at all, so polling is what brings changes in: every 30 s
+        // in front, every 2 min behind other apps (a Mac app keeps running there; plugged in, a fetch costs little).
+        env.sync?.foregroundPollInterval = .seconds(30)
+        env.sync?.backgroundPollInterval = .seconds(120)
         env.syncForeground(active)
     }
 }

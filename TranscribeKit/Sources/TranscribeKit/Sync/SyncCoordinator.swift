@@ -36,6 +36,9 @@ public final class SyncCoordinator {
     @ObservationIgnored public var followUpDelays: [Duration] = [.seconds(3), .seconds(15), .seconds(60), .seconds(300)]
     /// While the app is in front: how often it fetches, in case an iCloud push was missed.
     @ObservationIgnored public var foregroundPollInterval: Duration = .seconds(120)
+    /// While the app is not in front: how often it still fetches, or nil to stop (the iPhone, which is suspended there
+    /// anyway). The Mac keeps running behind other apps and gets no reliable pushes, so it sets one.
+    @ObservationIgnored public var backgroundPollInterval: Duration?
     /// Coming to the front again within this long after the last refresh does not fetch again.
     @ObservationIgnored public var minRefreshGap: Duration = .seconds(10)
 
@@ -213,20 +216,20 @@ public final class SyncCoordinator {
 
     /// The app came to the front (true) or went to the background (false). In front, sync fetches now and then every
     /// `foregroundPollInterval`, so a change made on another device arrives even when its iCloud push is missed.
+    /// Behind, it stops, or keeps fetching every `backgroundPollInterval` when one is set.
     /// Each refresh runs in its own task, so leaving the front (which ends the timer) never cancels a sync half-way.
     public func setForeground(_ active: Bool) {
-        guard active else {
-            pollTask?.cancel()
-            pollTask = nil
-            return
-        }
-        Task { await self.refresh(fullScan: true) }
-        guard pollTask == nil else { return }
+        pollTask?.cancel()
+        pollTask = nil
+        if active { Task { await self.refresh(fullScan: true) } }
+        guard active || backgroundPollInterval != nil else { return }
         pollTask = Task { [weak self] in
             while !Task.isCancelled {
-                guard let interval = self?.foregroundPollInterval else { return }
+                guard let self else { return }
+                // Read each round, so a changed interval applies from the next wait.
+                guard let interval = active ? self.foregroundPollInterval : self.backgroundPollInterval else { return }
                 try? await Task.sleep(for: interval)
-                guard !Task.isCancelled, let self else { return }
+                guard !Task.isCancelled else { return }
                 Task { await self.refresh(fullScan: false) }
             }
         }
