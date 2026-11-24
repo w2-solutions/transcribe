@@ -168,27 +168,47 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
             }
             pages += 1
             var modifications: [SyncRecord] = []
+            var deletedByRefetch: [SyncRecordID] = []
+            // A record that could not be fetched at all: the token must not move past it.
+            var incomplete = false
             for (recordID, result) in page.modificationResultsByID {
+                let why: String
                 switch result {
                 case .success(let modification):
                     let record = modification.record
                     guard isNewest(record) else { stale += 1; continue }
                     do {
                         if let decoded = try codec.decode(record) { modifications.append(decoded) }
+                        continue
                     } catch {
-                        log.error("Catch-up skipped \(record.recordType, privacy: .public) \(recordID.recordName, privacy: .public): \(String(describing: error), privacy: .public)")
+                        why = String(describing: error)
                     }
                 case .failure(let error):
-                    log.error("Catch-up could not read \(recordID.recordName, privacy: .public): \(Self.describe(error), privacy: .public)")
+                    why = Self.describe(error)
+                }
+                // Like the engine path: an asset's file may be unreadable here, so fetch the record again by id.
+                switch await refetch(recordID) {
+                case .record(let record):
+                    log.notice("Catch-up refetched \(recordID.recordName, privacy: .public) (\(why, privacy: .public))")
+                    modifications.append(record)
+                case .gone:
+                    if let id = codec.syncID(recordID) { deletedByRefetch.append(id) }
+                case .unreadable(let again):
+                    log.error("Catch-up skipped \(recordID.recordName, privacy: .public): \(why, privacy: .public); refetch: \(again, privacy: .public)")
+                case .failed(let again):
+                    log.error("Catch-up could not read \(recordID.recordName, privacy: .public): \(why, privacy: .public); refetch: \(again, privacy: .public). Will retry")
+                    incomplete = true
                 }
             }
-            let deletions = page.deletions.compactMap { codec.syncID($0.recordID) }
+            let deletions = page.deletions.compactMap { codec.syncID($0.recordID) } + deletedByRefetch
             total += modifications.count
             removed += deletions.count
             if !modifications.isEmpty || !deletions.isEmpty {
                 await deliver(.fetched(modifications: modifications, deletions: deletions))
             }
             guard started else { return }
+            // Stop here with the old token: the next catch-up fetches this page again (applying a record twice merges).
+            if incomplete { break }
             token = page.changeToken
             saveCatchUpToken(token)
             if !page.moreComing { break }
