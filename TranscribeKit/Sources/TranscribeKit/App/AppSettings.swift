@@ -26,6 +26,7 @@ public final class AppSettings {
         static let removeFillers = "settings.removeFillers"
         static let appearance = "settings.appearance"
         static let autoCopy = "settings.autoCopy"
+        static let syncEnabled = "settings.syncEnabled"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -36,6 +37,8 @@ public final class AppSettings {
     public var removeFillers: Bool { didSet { defaults.set(removeFillers, forKey: Key.removeFillers) } }               // default false
     public var appearance: AppearanceSetting { didSet { defaults.set(appearance.rawValue, forKey: Key.appearance) } }  // default .system
     public var autoCopy: CopyFormat { didSet { defaults.set(autoCopy.rawValue, forKey: Key.autoCopy) } }              // default .textOnly
+    /// "Sync with iCloud" on this device (§8.4, D3). Off by default.
+    public var syncEnabled: Bool { didSet { defaults.set(syncEnabled, forKey: Key.syncEnabled) } }                  // default false
 
     public init(defaults: UserDefaults) {
         self.defaults = defaults
@@ -45,6 +48,7 @@ public final class AppSettings {
         removeFillers = defaults.object(forKey: Key.removeFillers) as? Bool ?? false
         appearance = defaults.string(forKey: Key.appearance).flatMap(AppearanceSetting.init(rawValue:)) ?? .system
         autoCopy = defaults.string(forKey: Key.autoCopy).flatMap(CopyFormat.init(rawValue:)) ?? .textOnly
+        syncEnabled = defaults.object(forKey: Key.syncEnabled) as? Bool ?? false
     }
 
     public var pipeline: PipelineSettings {

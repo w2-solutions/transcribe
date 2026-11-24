@@ -37,22 +37,29 @@ public struct ProfileCandidate: Sendable, Equatable {
     public let samples: [VoiceVector]
     /// Same count as `samples`: whether each sample is trusted (§1.2). Untrusted samples only fill second place.
     public let trusted: [Bool]
-    /// Voices the user said are not this person (§1.4).
+    /// Same count as `samples`: the capture channel each sample was heard on (§7, D8); nil = unknown.
+    /// A trusted sample counts as trusted only for a probe on the same channel (nil equals nil, D11).
+    public let channels: [String?]
+    /// Voices the user said are not this person (§1.4). They count for probes on every channel.
     public let negatives: [VoiceVector]
     public let modelKey: String          // EmbeddingModelID.key
     public let autoLabel: Bool
     public let needsResample: Bool
 
-    /// Legacy: every sample trusted, no negatives.
-    public init(id: UUID, name: String, samples: [VoiceVector], modelKey: String, autoLabel: Bool, needsResample: Bool) {
+    /// Legacy: every sample trusted, no negatives. `channels` nil means every sample's channel is nil.
+    public init(id: UUID, name: String, samples: [VoiceVector], channels: [String?]? = nil, modelKey: String,
+                autoLabel: Bool, needsResample: Bool) {
         self.init(id: id, name: name, samples: samples, trusted: Array(repeating: true, count: samples.count),
-                  negatives: [], modelKey: modelKey, autoLabel: autoLabel, needsResample: needsResample)
+                  channels: channels, negatives: [], modelKey: modelKey, autoLabel: autoLabel, needsResample: needsResample)
     }
 
-    public init(id: UUID, name: String, samples: [VoiceVector], trusted: [Bool], negatives: [VoiceVector],
-                modelKey: String, autoLabel: Bool, needsResample: Bool) {
+    public init(id: UUID, name: String, samples: [VoiceVector], trusted: [Bool], channels: [String?]? = nil,
+                negatives: [VoiceVector], modelKey: String, autoLabel: Bool, needsResample: Bool) {
         precondition(trusted.count == samples.count, "one trust flag per sample")
-        self.id = id; self.name = name; self.samples = samples; self.trusted = trusted; self.negatives = negatives
+        let channels = channels ?? Array(repeating: nil, count: samples.count)
+        precondition(channels.count == samples.count, "one channel per sample")
+        self.id = id; self.name = name; self.samples = samples; self.trusted = trusted; self.channels = channels
+        self.negatives = negatives
         self.modelKey = modelKey; self.autoLabel = autoLabel; self.needsResample = needsResample
     }
 }
@@ -62,8 +69,12 @@ public struct SpeakerProbe: Sendable, Equatable {
     public let vector: VoiceVector?
     public let cleanSeconds: TimeInterval
     public let rejectedProfileIDs: Set<UUID>
-    public init(key: SpeakerKey, vector: VoiceVector?, cleanSeconds: TimeInterval, rejectedProfileIDs: Set<UUID>) {
+    /// The capture channel of the probe's recording (§7); nil = unknown.
+    public let channel: String?
+    public init(key: SpeakerKey, vector: VoiceVector?, cleanSeconds: TimeInterval, rejectedProfileIDs: Set<UUID>,
+                channel: String? = nil) {
         self.key = key; self.vector = vector; self.cleanSeconds = cleanSeconds; self.rejectedProfileIDs = rejectedProfileIDs
+        self.channel = channel
     }
 }
 

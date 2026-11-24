@@ -22,13 +22,18 @@ public final class AppEnvironment {
     public let models: ModelManager
     public let recorder: RecorderController
     public let player: PlaybackController
+    /// iCloud sync (§8.4); nil when the app was built without a transport.
+    public let sync: SyncCoordinator?
+    /// The launch's sync start (fetch, scan, send). It runs beside the rest of the launch, so a slow network never
+    /// delays the library or the models.
+    public private(set) var syncLaunch: Task<Void, Never>?
     public private(set) var isLaunched = false
     public private(set) var launchError: String?
 
     @ObservationIgnored private let seeder: Seeder?
 
     public init(config: LaunchConfig, engine: any SpeechEngine, background: any BackgroundTaskBridge,
-                deviceIdentity: any DeviceIdentity, seeder: Seeder?) throws {
+                deviceIdentity: any DeviceIdentity, seeder: Seeder?, syncTransport: (any SyncTransport)? = nil) throws {
         self.config = config
         self.clock = config.clock
         let paths = AppPaths(config: config)
@@ -48,7 +53,8 @@ public final class AppEnvironment {
         self.settings = settings
         let monitor = ProcessingMonitor()
         self.monitor = monitor
-        let store = LibraryStore(context: container.mainContext, paths: paths, deviceIdentity: deviceIdentity, clock: config.clock)
+        let store = LibraryStore(context: container.mainContext, paths: paths, deviceIdentity: deviceIdentity, clock: config.clock,
+                                 localChannel: config.channel ?? CaptureChannel.current)
         self.store = store
         let coordinator = ProcessingCoordinator(engine: engine, store: store, monitor: monitor, settings: settings,
                                                 paths: paths, background: background)
@@ -61,10 +67,16 @@ public final class AppEnvironment {
         let player = PlaybackController()
         player.isCaptureActive = { [weak recorder] in recorder?.isActive ?? false }
         self.player = player
+        let modelKey = engine.info.embeddingModel.key
+        self.sync = syncTransport.map {
+            SyncCoordinator(store: store, transport: $0, settings: settings, clock: config.clock, modelKey: modelKey)
+        }
     }
 
-    /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.reconcileDevice → models.refresh →
-    /// coordinator.recoverOnLaunch → models.prepareIfInstalled (detached) → isLaunched = true.
+    /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.stampCaptureChannels →
+    /// store.sweepOrphanAudio → models.refresh →
+    /// coordinator.recoverOnLaunch → sync.start (its own task, when the switch is on) → models.prepareIfInstalled (detached)
+    /// → isLaunched = true.
     public func onLaunch() async {
         guard !isLaunched else { return }
         do { try paths.prepare() } catch { launchError = "Couldn't prepare storage: \(error.localizedDescription)" }
@@ -74,25 +86,38 @@ public final class AppEnvironment {
         if let seed = config.seed, let seeder {
             do { try seeder(seed, container.mainContext, paths, clock) } catch { launchError = "Seed \(seed.rawValue) failed: \(error)" }
         }
-        do { _ = try store.reconcileDevice() } catch { launchError = "Device check failed: \(error)" }
+        do { _ = try store.stampCaptureChannels() } catch { launchError = "Capture channel stamping failed: \(error)" }
+        // Audio files no row names (a delete synced from another device after a crash, say), older than an hour.
+        _ = try? store.sweepOrphanAudio(minimumAge: 3_600, now: Date())
         await models.refresh()
         await coordinator.recoverOnLaunch()
+        if settings.syncEnabled, let sync { syncLaunch = Task { await sync.start() } }
         let models = self.models
         Task { await models.prepareIfInstalled() }
         isLaunched = true
     }
 
-    /// background: recorder.appDidEnterBackground; active: models.prepareIfInstalled + recorder foreground
+    /// background: sync leaves the front, recorder.appDidEnterBackground; active: sync comes to the front (it fetches
+    /// now and then every couple of minutes, in case an iCloud push was missed), models.prepareIfInstalled + recorder
+    /// foreground. The Mac also follows the app becoming and resigning active (`syncForeground`).
     public func onPhase(_ phase: AppPhase) async {
         switch phase {
         case .background:
+            sync?.setForeground(false)
             await recorder.appDidEnterBackground()
         case .active:
+            if !config.uiTesting { sync?.setForeground(true) }
             guard isLaunched else { return }
             await models.prepareIfInstalled()
             await recorder.appWillEnterForeground()
         case .inactive:
             break
         }
+    }
+
+    /// The Mac app became (true) or resigned (false) active: sync fetches in front only.
+    public func syncForeground(_ active: Bool) {
+        guard !config.uiTesting else { return }
+        sync?.setForeground(active)
     }
 }

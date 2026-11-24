@@ -96,7 +96,8 @@ struct RecorderControllerTests {
         let now = Seeds.Dates.b
         let clock = AppClock.frozen(now)
         let store = LibraryStore(context: container.mainContext, paths: paths,
-                                 deviceIdentity: FixedDeviceIdentity("test-device"), clock: clock)
+                                 deviceIdentity: FixedDeviceIdentity("test-device"), clock: clock,
+                                 localChannel: CaptureChannel.iphone)
         let settings = AppSettings(defaults: UserDefaults(suiteName: "recorder-\(UUID().uuidString)")!)
         let monitor = ProcessingMonitor()
         let engine = FakeSpeechEngine(config: config, script: FakeScript.named(config.script))

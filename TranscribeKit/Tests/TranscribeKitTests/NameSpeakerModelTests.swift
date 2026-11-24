@@ -35,7 +35,9 @@ final class NamingSpyStore: LibraryStoring {
         calls.append(.moveAll(recordingID, source, target))
     }
 
-    func reconcileDevice() throws -> Bool { false }
+    func stampCaptureChannels() throws -> Int { 0 }
+    func hasLocalAudio(_ recording: Recording) -> Bool { true }
+    func sweepOrphanAudio(minimumAge: TimeInterval, now: Date) throws -> Int { 0 }
     func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws {}
     func finishCapture(id: UUID, audio: CapturedAudio, language: LanguageHint) throws {}
     func discardRecording(id: UUID) throws {}
@@ -93,8 +95,10 @@ struct NameSpeakerModelTests {
             try #require(try context.fetch(FetchDescriptor<Recording>()).first { $0.id == id })
         }
         var profiles: [VoiceProfile] { (try? context.fetch(FetchDescriptor<VoiceProfile>())) ?? [] }
-        func model(_ id: UUID, _ key: SpeakerKey, mode: NameSpeakerModel.Mode = .name) throws -> NameSpeakerModel {
-            NameSpeakerModel(recording: try recording(id), key: key, mode: mode, profiles: profiles)
+        func model(_ id: UUID, _ key: SpeakerKey, mode: NameSpeakerModel.Mode = .name,
+                   platform: DevicePlatform = .iPhone, syncOn: Bool = false) throws -> NameSpeakerModel {
+            NameSpeakerModel(recording: try recording(id), key: key, mode: mode, profiles: profiles,
+                             platform: platform, syncOn: syncOn)
         }
     }
 
@@ -131,6 +135,16 @@ struct NameSpeakerModelTests {
         let f = try Fixture(.twoSpeakersUnnamed)
         let m = try f.model(Seeds.ID.recordingB, "S2")
         #expect(m.rememberHelp == "Saved on this iPhone only. Used to label them automatically next time.")
+    }
+
+    @Test func helpNamesTheMacAndSync() throws {
+        let f = try Fixture(.twoSpeakersUnnamed)
+        let mac = try f.model(Seeds.ID.recordingB, "S2", platform: .mac)
+        mac.name = "Karan"
+        #expect(mac.rememberHelp == "Saved on this Mac only. Used to label Karan automatically next time.")
+        let synced = try f.model(Seeds.ID.recordingB, "S2", platform: .mac, syncOn: true)
+        synced.name = "Karan"
+        #expect(synced.rememberHelp == "Saved to your voices and synced with iCloud. Used to label Karan automatically next time.")
     }
 
     @Test func namesAreTrimmedAndValidated() throws {

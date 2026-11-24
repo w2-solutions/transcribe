@@ -60,6 +60,10 @@ public struct ToggleRow: View {
                 IconTile(systemImage: systemImage, tint: tint)
                 Text(title).font(DS.Typo.rowTitle).tracking(-0.2).foregroundStyle(DS.Colour.ink)
             }
+            #if os(macOS)
+            // The Mac's switch sits right beside its label; push it to the trailing edge as on iOS.
+            .frame(maxWidth: .infinity, alignment: .leading)
+            #endif
         }
         .toggleStyle(.switch)
         .tint(DS.Colour.accent)

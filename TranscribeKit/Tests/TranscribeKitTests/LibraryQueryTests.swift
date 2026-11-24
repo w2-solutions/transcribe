@@ -150,7 +150,10 @@ struct LibraryQueryTests {
         #expect(LibraryCardPreview.make(previewText: "", stage: .transcribing, noSpeech: false)
                 == LibraryCardPreview(text: "Transcribing…", isPlaceholder: true))
         #expect(LibraryCardPreview.make(previewText: " ", stage: .ready, noSpeech: true).text == "No speech found")
-        #expect(LibraryCardPreview.make(previewText: "", stage: .capturing, noSpeech: false).text == "Tap to go back to the recording.")
+        #expect(LibraryCardPreview.make(previewText: "", stage: .capturing, noSpeech: false, platform: .iPhone).text
+                == "Tap to go back to the recording.")
+        #expect(LibraryCardPreview.make(previewText: "", stage: .capturing, noSpeech: false, platform: .mac).text
+                == "Click to go back to the recording.")
         #expect(LibraryCardPreview.make(previewText: "", stage: .failed, noSpeech: false).isPlaceholder)
     }
 }

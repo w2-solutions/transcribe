@@ -11,6 +11,7 @@ let package = Package(
         .library(name: "TranscribeDesign", targets: ["TranscribeDesign"]),
         .library(name: "TranscribeFluid", targets: ["TranscribeFluid"]),
         .library(name: "TranscribeFakes", targets: ["TranscribeFakes"]),
+        .library(name: "TranscribeCloudKit", targets: ["TranscribeCloudKit"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.18.4", traits: ["Diarizer"]),
@@ -23,8 +24,13 @@ let package = Package(
             "TranscribeCore", .product(name: "FluidAudio", package: "FluidAudio"),
         ]),
         .target(name: "TranscribeFakes", dependencies: ["TranscribeCore", "TranscribeKit"]),
+        // The only target that imports CloudKit (D23): CKSyncEngine behind `SyncTransport`, the record codec and the
+        // account observer. Everything else in sync is tested over the fake in TranscribeKitTests.
+        .target(name: "TranscribeCloudKit", dependencies: ["TranscribeKit"],
+                linkerSettings: [.linkedFramework("CloudKit")]),
         .testTarget(name: "TranscribeCoreTests", dependencies: ["TranscribeCore"]),
         .testTarget(name: "TranscribeKitTests", dependencies: ["TranscribeKit", "TranscribeFakes"], resources: [.copy("Fixtures")]),
+        .testTarget(name: "TranscribeCloudKitTests", dependencies: ["TranscribeCloudKit", "TranscribeKit", "TranscribeFakes"]),
         .testTarget(name: "TranscribeFluidTests", dependencies: ["TranscribeFluid"], resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v6]   // NO .defaultIsolation(MainActor.self): toolchain pitfall 2

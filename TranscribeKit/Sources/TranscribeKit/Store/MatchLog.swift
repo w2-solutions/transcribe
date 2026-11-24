@@ -28,6 +28,10 @@ struct MatchLog: Codable, Equatable {
         var embeddingModelKey: String
         var samples: SampleCounts
         var negatives: Int
+        /// v2: samples per capture channel ("unknown" for a sample with no channel).
+        var samplesByChannel: [String: Int]?
+        /// v2: trusted samples per capture channel; only these can be first place for a probe on that channel.
+        var trustedByChannel: [String: Int]?
     }
     struct Speaker: Codable, Equatable {
         var key: String
@@ -43,12 +47,18 @@ struct MatchLog: Codable, Equatable {
     struct RecordingRow: Codable, Equatable {
         var id: UUID
         var createdAt: Date
+        /// v2: the capture channel and input route (`CaptureDetail.input`). Never the device name.
+        var channel: String?
+        var input: String?
         var speakers: [Speaker]
         /// Speakers "Same as Speaker N" removed: the speaker they became is `movedTo`.
         var movedSpeakers: [MovedSpeakerTrace]
     }
 
-    static let currentVersion = 1
+    /// 2: channels per profile and recording, and v2 match traces (§7).
+    static let currentVersion = 2
+    /// The key for samples with no capture channel.
+    static let unknownChannel = "unknown"
     /// Newest ready recordings included.
     static let maxRecordings = 50
 
@@ -108,18 +118,24 @@ extension LibraryStore {
         let profiles = try allProfiles().map { p in
             let samples = p.samples
             let automatic = samples.filter { $0.origin.isAutomatic }.count
-            let trusted = samples.filter { SampleTrust.isTrusted(origin: $0.origin, speechSeconds: $0.speechSeconds, policy: policy) }.count
+            let trustedSamples = samples.filter { SampleTrust.isTrusted(origin: $0.origin, speechSeconds: $0.speechSeconds, policy: policy) }
+            let trusted = trustedSamples.count
+            func byChannel(_ rows: [VoiceSample]) -> [String: Int] {
+                rows.reduce(into: [:]) { $0[$1.captureChannel ?? MatchLog.unknownChannel, default: 0] += 1 }
+            }
             return MatchLog.Profile(id: p.id, isMe: p.isMe, autoLabel: p.autoLabel, needsResample: p.needsResample,
                                     embeddingModelKey: p.embeddingModelKey,
                                     samples: .init(trusted: trusted, short: samples.count - trusted - automatic, automatic: automatic),
-                                    negatives: p.negatives.count)
+                                    negatives: p.negatives.count,
+                                    samplesByChannel: byChannel(samples), trustedByChannel: byChannel(trustedSamples))
         }
         let ready = RecordingStage.ready.rawValue
         var descriptor = FetchDescriptor<Recording>(predicate: #Predicate { $0.stageRaw == ready },
                                                     sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
         descriptor.fetchLimit = MatchLog.maxRecordings
         let recordings = try context.fetch(descriptor).map { r in
-            MatchLog.RecordingRow(id: r.id, createdAt: r.createdAt, speakers: r.sortedSpeakers.map { s in
+            MatchLog.RecordingRow(id: r.id, createdAt: r.createdAt, channel: r.captureChannel,
+                                  input: CaptureDetail.decode(r.captureDetailJSON)?.input, speakers: r.sortedSpeakers.map { s in
                 MatchLog.Speaker(key: s.key, ordinal: s.ordinal, cleanSeconds: s.cleanSeconds, coherence: s.vectorCoherence,
                                  label: s.labelRaw, profileID: s.profile?.id, suggestedProfileID: s.suggestedProfileID,
                                  rejectedProfileIDs: s.rejectedProfileIDs,

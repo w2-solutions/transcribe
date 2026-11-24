@@ -3,6 +3,7 @@ options:
   bundleIdPrefix: ai.w2solutions
   deploymentTarget:
     iOS: "27.0"
+    macOS: "27.0"
   xcodeVersion: "27.0"
   createIntermediateGroups: true
 settings:
@@ -45,13 +46,20 @@ targets:
         product: TranscribeFluid
       - package: TranscribeKit
         product: TranscribeFakes
+      - package: TranscribeKit
+        product: TranscribeCloudKit
     info:
       path: Apps/iPhone/Info.plist
       properties:
         CFBundleDisplayName: Transcribe
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
         NSMicrophoneUsageDescription: "Transcribe records conversations on this iPhone to turn them into text. Audio never leaves the device."
-        UIBackgroundModes: [audio, processing]
+        # remote-notification: CKSyncEngine fetches when iCloud pushes a change (only while sync is on).
+        UIBackgroundModes: [audio, processing, remote-notification]
+        # "NO" when built with TRANSCRIBE_SYNC=NO (no iCloud entitlement): the transport then never opens CloudKit.
+        TranscribeICloud: $(TRANSCRIBE_SYNC)
         BGTaskSchedulerPermittedIdentifiers: ["ai.w2solutions.transcribe.process.*"]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIFileSharingEnabled: false
@@ -59,6 +67,9 @@ targets:
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe
+        # TestFlight needs a build number higher than the last upload for this version.
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         TARGETED_DEVICE_FAMILY: "1"
         GENERATE_INFOPLIST_FILE: NO
@@ -68,12 +79,102 @@ targets:
         ENABLE_USER_SCRIPT_SANDBOXING: NO
         # Simulator builds leave the ~700 MB of models out (they use the fake engine, or TRANSCRIBE_MODELS_DIR).
         "EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]": BundledModels
+        # iCloud (CloudKit container iCloud.ai.w2solutions.transcribe) and push, for optional sync. Debug uses the
+        # Development CloudKit environment; Release uses Production. To test against the Developer ID Mac, build with
+        # TRANSCRIBE_ICLOUD_ENV=Production on the xcodebuild line (a development profile allows it).
+        # aps-environment stays "development" in every configuration: builds and archives are signed with a
+        # development profile, which only grants that value, and the App Store / Ad Hoc export sets "production" from
+        # the distribution profile. It only picks the push gateway, not the CloudKit environment.
+        # Signing with iCloud needs an explicit App ID with iCloud and Push, which Xcode registers when an Apple
+        # account is signed in to it. Without one, TRANSCRIBE_SYNC=NO on the xcodebuild line signs with
+        # Transcribe.local.entitlements (no iCloud, no push; sync then cannot start), which the wildcard team
+        # profile covers.
+        TRANSCRIBE_SYNC: "YES"
+        TRANSCRIBE_ENTITLEMENTS_SUFFIX_NO: .local
+        CODE_SIGN_ENTITLEMENTS: Apps/iPhone/Transcribe$(TRANSCRIBE_ENTITLEMENTS_SUFFIX_$(TRANSCRIBE_SYNC)).entitlements
+        TRANSCRIBE_ICLOUD_ENV: Development
+        TRANSCRIBE_APS_ENV: development
+      configs:
+        Release:
+          TRANSCRIBE_ICLOUD_ENV: Production
+  TranscribeMac:
+    type: application
+    platform: macOS
+    sources:
+      - Apps/Mac/Sources
+      - Apps/Mac/Resources
+      - Apps/Shared
+      # The same speech models as the iPhone, copied verbatim into Transcribe.app/Contents/Resources/BundledModels
+      # in every configuration (the sandboxed app cannot read TRANSCRIBE_MODELS_DIR).
+      - path: BundledModels
+        type: folder
+        buildPhase: resources
+    preBuildScripts:
+      - name: Check bundled models
+        script: '"$SRCROOT/scripts/check-models.sh"'
+        basedOnDependencyAnalysis: false
+        showEnvVars: false
+    dependencies:
+      - package: TranscribeKit
+        product: TranscribeCore
+      - package: TranscribeKit
+        product: TranscribeKit
+      - package: TranscribeKit
+        product: TranscribeDesign
+      - package: TranscribeKit
+        product: TranscribeFluid
+      - package: TranscribeKit
+        product: TranscribeFakes
+      - package: TranscribeKit
+        product: TranscribeCloudKit
+    info:
+      path: Apps/Mac/Info.plist
+      properties:
+        CFBundleDisplayName: Transcribe
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
+        LSApplicationCategoryType: public.app-category.productivity
+        NSMicrophoneUsageDescription: "Transcribe records conversations on this Mac to turn them into text. Speech is processed on this Mac."
+        NSHumanReadableCopyright: "© 2026 W2 Solutions"
+        ITSAppUsesNonExemptEncryption: false
+    settings:
+      base:
+        PRODUCT_NAME: Transcribe
+        PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.mac
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
+        GENERATE_INFOPLIST_FILE: NO
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # check-models.sh reads BundledModels, which the script sandbox would block (as for the iPhone target).
+        ENABLE_USER_SCRIPT_SANDBOXING: NO
+        ENABLE_HARDENED_RUNTIME: YES
+        # With a team (DEVELOPMENT_TEAM=53FBF5CS9U on the command line) the app is provisioned and gets iCloud and
+        # push. Without one (make build-mac, make test-ui-mac) it is signed to run locally, where macOS refuses to
+        # launch an app claiming iCloud, so it uses TranscribeMac.local.entitlements (sandbox and microphone only;
+        # sync then reads as "not signed in"). TRANSCRIBE_ENTITLEMENTS_SUFFIX_ is the value for an empty team.
+        TRANSCRIBE_ENTITLEMENTS_SUFFIX_: .local
+        CODE_SIGN_ENTITLEMENTS: Apps/Mac/TranscribeMac$(TRANSCRIBE_ENTITLEMENTS_SUFFIX_$(DEVELOPMENT_TEAM)).entitlements
+        OTHER_CODE_SIGN_FLAGS: --timestamp
+        TRANSCRIBE_ICLOUD_ENV: Development
+        TRANSCRIBE_APS_ENV: development
+      configs:
+        # Debug signs to run locally when no team is passed (make build-mac); with DEVELOPMENT_TEAM=53FBF5CS9U on
+        # the command line Xcode signs with Apple Development instead. Release always needs the team.
+        Debug:
+          OTHER_CODE_SIGN_FLAGS: ""
+        # aps-environment stays "development" (as for the iPhone): the archive is signed with a development profile,
+        # and the Developer ID export sets "production" from its profile (release-mac.sh checks the result).
+        Release:
+          TRANSCRIBE_ICLOUD_ENV: Production
   TranscribeUITests:
     type: bundle.ui-testing
     platform: iOS
     sources:
-      - UITests
-      - Apps/Shared
+      - UITests/Shared
+      - UITests/iPhone
+      - Apps/Shared/AccessibilityID.swift
     dependencies:
       - target: Transcribe
     settings:
@@ -81,6 +182,20 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.uitests
         GENERATE_INFOPLIST_FILE: YES
         TEST_TARGET_NAME: Transcribe
+  TranscribeMacUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources:
+      - UITests/Shared
+      - UITests/Mac
+      - Apps/Shared/AccessibilityID.swift
+    dependencies:
+      - target: TranscribeMac
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.mac.uitests
+        GENERATE_INFOPLIST_FILE: YES
+        TEST_TARGET_NAME: TranscribeMac
 schemes:
   Transcribe:
     build:
@@ -100,3 +215,20 @@ schemes:
       gatherCoverageData: false
       targets:
         - TranscribeUITests
+  TranscribeMac:
+    build:
+      targets:
+        TranscribeMac: all
+        TranscribeMacUITests: [test]
+    run:
+      config: Debug
+      commandLineArguments:
+        "-useFakeEngine": false
+        "-uiTesting": false
+    test:
+      config: Debug
+      gatherCoverageData: false
+      targets:
+        - TranscribeMacUITests
+    archive:
+      config: Release

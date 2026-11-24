@@ -21,11 +21,12 @@ struct RootView: View {
                     }
                 }
         }
-        .fullScreenCover(isPresented: $router.isRecordingPresented) { RecordingView() }
+        .presentRecording(isPresented: $router.isRecordingPresented) { RecordingView() }
         .sheet(item: $router.sheet) { sheet in
             switch sheet { case .nameSpeaker(let ctx): NameSpeakerSheet(context: ctx) }
         }
         .modifier(AutoCopyObserver())
+        .syncPrompts()
         // A system end while the recording screen is minimised: the recorder has already stopped and saved.
         // With the screen showing, RecordingView presents this alert instead.
         .alert(env.recorder.systemStop.map { RecordingStatus.systemStopTitle($0.reason) } ?? "Recording stopped",
@@ -43,6 +44,11 @@ struct RootView: View {
         .preferredColorScheme(env.settings.appearance == .light ? .light : env.settings.appearance == .dark ? .dark : nil)
         .tint(DS.Colour.accent)
         .environment(router)
-        .task { await env.onLaunch(); LaunchRouting.apply(env.config.route, router: router, env: env) }
+        .task {
+            await env.onLaunch()
+            if let route = env.config.route {
+                LaunchRouting.apply(await LaunchRouting.resolve(route, env: env), router: router, env: env)
+            }
+        }
     }
 }

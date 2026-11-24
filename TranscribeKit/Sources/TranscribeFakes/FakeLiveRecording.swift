@@ -94,7 +94,8 @@ public actor FakeLiveRecording: LiveRecording {
     public func stop() async throws -> CapturedAudio {
         finish()
         let peaks = try SyntheticAudio.write(to: url, duration: script.duration, segments: script.audioSegments)
-        return CapturedAudio(url: url, duration: script.duration, marks: marks, peaks: peaks)
+        return CapturedAudio(url: url, duration: script.duration, marks: marks, peaks: peaks,
+                             detail: CaptureDetail(hardwareModel: CaptureChannel.hardwareModel, input: CaptureDetail.Input.fake))
     }
 
     public func discard() {

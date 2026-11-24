@@ -184,7 +184,8 @@ public actor FluidLiveRecording: LiveRecording {
             throw EngineError.failed("Could not finish the audio file: \(FluidErrorMapping.describe(error))")
         }
         if let writeError { log.error("Audio write error during capture: \(writeError, privacy: .public)") }
-        return CapturedAudio(url: url, duration: duration, marks: marks, peaks: peaks.result())
+        return CapturedAudio(url: url, duration: duration, marks: marks, peaks: peaks.result(),
+                             detail: await source.captureDetail())
     }
 
     public func discard() async {

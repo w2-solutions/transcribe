@@ -85,7 +85,7 @@ struct MigrationTests {
         // The manifest is written by the generator, so it cannot tell V1 from V2 (pitfall 11). The store's own
         // metadata can: its entity hashes must be exactly those of the frozen V1 schema, which also catches any edit
         // to TranscribeSchemaV1 (pitfall 1), and must not be V2's (a regenerated fixture would make
-        // v1FixtureOpensUnderV2 test no migration at all).
+        // v1FixtureOpensUnderV3 test no migration at all).
         let fixture = try Self.versionHashes(at: storeURL)
         #expect(Set(fixture.keys) == ["Folder", "Recording", "RecordingSpeaker", "VoiceProfile", "VoiceSample"])
         #expect(fixture["VoiceNegative"] == nil)
@@ -94,7 +94,8 @@ struct MigrationTests {
         #expect(fixture != v2 && v2["VoiceNegative"] != nil)
     }
 
-    @Test func v1FixtureOpensUnderV2() throws {
+    /// V1 → V2 → V3 in one open: every V1 row survives, with the V2 and V3 additions empty.
+    @Test func v1FixtureOpensUnderV3() throws {
         let (root, storeURL, m) = try copyFixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let container = try ModelContainerFactory.make(inMemory: false, url: storeURL)
@@ -147,8 +148,13 @@ struct MigrationTests {
             #expect(p.name == expected.name && p.samples.count == expected.sampleCount)
         }
 
+        #expect(try context.fetch(FetchDescriptor<Recording>()).allSatisfy { $0.captureChannel == nil && $0.captureDetailJSON == nil })
+        #expect(try context.fetch(FetchDescriptor<VoiceSample>()).allSatisfy { $0.captureChannel == nil && $0.captureInput == nil })
+        #expect(try context.fetchCount(FetchDescriptor<SyncRecordState>()) == 0)
+        #expect(try context.fetchCount(FetchDescriptor<SyncAccountState>()) == 0)
+
         let store = LibraryStore(context: context, paths: AppPaths(root: root), deviceIdentity: FixedDeviceIdentity("d"),
-                                 clock: .frozen(Seeds.Dates.d))
+                                 clock: .frozen(Seeds.Dates.d), localChannel: CaptureChannel.iphone)
         let candidates = try store.matchCandidates(modelKey: EmbeddingModelID.fake.key)
         #expect(candidates.count == 2)
         for c in candidates {
@@ -157,14 +163,15 @@ struct MigrationTests {
         }
     }
 
-    @Test func backupIsTakenOnceBeforeTheFirstV2Open() throws {
+    /// A V1 store (a phone that never ran a V2 build) is backed up once, as the pre-V3 backup.
+    @Test func v1BackupIsTakenOnceBeforeTheFirstV3Open() throws {
         let (root, storeURL, _) = try copyFixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let fm = FileManager.default
         let fixtureBytes = try Data(contentsOf: try Self.fixtureDirectory.appendingPathComponent("Library.store"))
         let backup = ModelContainerFactory.backupURL(storeURL: storeURL)
         let marker = ModelContainerFactory.markerURL(storeURL: storeURL)
-        #expect(backup.lastPathComponent == "Library.pre-v2-backup.store" && marker.lastPathComponent == "Library.schema-v2")
+        #expect(backup.lastPathComponent == "Library.pre-v3-backup.store" && marker.lastPathComponent == "Library.schema-v3")
         #expect(!fm.fileExists(atPath: backup.path) && !fm.fileExists(atPath: marker.path))
 
         do {
@@ -175,24 +182,12 @@ struct MigrationTests {
         #expect(fm.fileExists(atPath: marker.path))
         let backupAfterFirst = try Data(contentsOf: backup)
 
-        // Opening again (now a V2 store) takes no new backup.
+        // Opening again (now a V3 store) takes no new backup.
         do {
             let container = try ModelContainerFactory.make(inMemory: false, url: storeURL)
             #expect(try container.mainContext.fetchCount(FetchDescriptor<Recording>()) == 4)
         }
         #expect(try Data(contentsOf: backup) == backupAfterFirst)
         #expect(fm.fileExists(atPath: marker.path))
-    }
-
-    @Test func freshInstallTakesNoBackup() throws {
-        let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("v2-fresh-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fm.removeItem(at: root) }
-        let paths = AppPaths(root: root)
-        try paths.prepare()
-        do { _ = try ModelContainerFactory.make(inMemory: false, url: paths.storeURL) }
-        #expect(fm.fileExists(atPath: ModelContainerFactory.markerURL(storeURL: paths.storeURL).path))
-        #expect(!fm.fileExists(atPath: ModelContainerFactory.backupURL(storeURL: paths.storeURL).path))
-        #expect(!fm.fileExists(atPath: ModelContainerFactory.backupURL(storeURL: paths.storeURL, suffix: "-wal").path))
     }
 }

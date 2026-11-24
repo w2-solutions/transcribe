@@ -10,7 +10,7 @@ public struct SavedVoiceRow: Sendable, Equatable, Identifiable {
     public var slot: Int
     public var recordingCount: Int
     public var needsResample: Bool
-    /// "In 3 recordings", "In 2 recordings · named 18 Nov", or "Needs a new sample on this iPhone".
+    /// "In 3 recordings", "In 2 recordings · named 18 Nov", or "Needs a new sample on this iPhone" (or Mac).
     public var subtitle: String
     /// 9 bar heights, 0…1 (from the newest sample's clip, else a fixed pattern).
     public var bars: [Float]
@@ -45,9 +45,11 @@ public struct VoicesListModel {
     public var isEmpty: Bool { saved.isEmpty && waiting.isEmpty }
 
     public init(profiles: [VoiceProfile], recordings: [Recording],
-                locale: Locale = .current, timeZone: TimeZone = .current) {
+                locale: Locale = .current, timeZone: TimeZone = .current, platform: DevicePlatform = .current) {
         let byID = Dictionary(recordings.map { ($0.id, $0) }, uniquingKeysWith: { a, _ in a })
-        saved = Self.sortedProfiles(profiles).map { Self.savedRow($0, recordingsByID: byID, locale: locale, timeZone: timeZone) }
+        saved = Self.sortedProfiles(profiles).map {
+            Self.savedRow($0, recordingsByID: byID, locale: locale, timeZone: timeZone, platform: platform)
+        }
         waiting = Self.waitingRows(recordings, locale: locale, timeZone: timeZone)
     }
 
@@ -62,19 +64,20 @@ public struct VoicesListModel {
     }
 
     static func savedRow(_ p: VoiceProfile, recordingsByID: [UUID: Recording],
-                         locale: Locale, timeZone: TimeZone) -> SavedVoiceRow {
+                         locale: Locale, timeZone: TimeZone, platform: DevicePlatform) -> SavedVoiceRow {
         let count = p.recordingCount
         return SavedVoiceRow(
             id: p.id, name: p.name, initial: p.initial, isMe: p.isMe, slot: p.colourSlot,
             recordingCount: count, needsResample: p.needsResample,
             subtitle: subtitle(recordingCount: count, isMe: p.isMe, namedAt: p.namedAt, needsResample: p.needsResample,
-                               locale: locale, timeZone: timeZone),
+                               locale: locale, timeZone: timeZone, platform: platform),
             bars: bars(for: p, recordingsByID: recordingsByID))
     }
 
     public static func subtitle(recordingCount: Int, isMe: Bool, namedAt: Date, needsResample: Bool,
-                                locale: Locale = .current, timeZone: TimeZone = .current) -> String {
-        if needsResample { return "Needs a new sample on this iPhone" }
+                                locale: Locale = .current, timeZone: TimeZone = .current,
+                                platform: DevicePlatform = .current) -> String {
+        if needsResample { return DeviceCopy(platform: platform).needsSample }
         var text = "In \(recordingCount) \(recordingCount == 1 ? "recording" : "recordings")"
         if !isMe { text += " · named " + DisplayFormat.dayMonth(namedAt, locale: locale, timeZone: timeZone) }
         return text

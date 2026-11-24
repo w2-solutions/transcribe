@@ -4,11 +4,12 @@ import Synchronization
 
 /// Random UUID kept in the Keychain with kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly.
 ///
-/// "ThisDeviceOnly" items are never restored onto another device, so a store restored from a backup
-/// sees a different id and `LibraryStore.reconcileDevice()` wipes the voice samples (voices are per device).
+/// "ThisDeviceOnly" items are never restored onto another device, so a store restored from a backup sees a
+/// different id. The id is recorded next to the store (`StoreDevice.plist`) for information only: nothing is ever
+/// deleted because it changed.
 ///
-/// Returns an empty string when the Keychain cannot be read (for example before first unlock), which
-/// `reconcileDevice` treats as "unknown": it never wipes on an unknown id.
+/// Returns an empty string when the Keychain cannot be read (for example before first unlock), which the store
+/// treats as "unknown".
 public struct KeychainDeviceIdentity: DeviceIdentity {
     static let service = "ai.w2solutions.transcribe.device"
     static let account = "install-id"

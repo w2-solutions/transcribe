@@ -16,9 +16,9 @@ public struct ProcessingViewState: Equatable, Sendable {
     }
 
     public static let defaultHeading = "Working out who said what"
-    public static let defaultMessage = "This happens on your iPhone. You can leave and come back."
+    public static func defaultMessage(_ p: DevicePlatform) -> String { DeviceCopy(platform: p).processingDefault }
     public static let modelsHeading = "Waiting for speech models"
-    public static let modelsMessage = "Processing starts once the speech models are ready on this iPhone."
+    public static func modelsMessage(_ p: DevicePlatform) -> String { DeviceCopy(platform: p).processingModels }
     public static let recordingHeading = "Paused while you record"
     public static let recordingMessage = "Processing picks up again when you stop recording."
     public static let backgroundMessage = "Paused in the background. It picks up again when you come back."
@@ -34,7 +34,8 @@ public struct ProcessingViewState: Equatable, Sendable {
     public var overall: Double
 
     public init(stage: RecordingStage, queueReason: QueueReason?, snapshot: ProcessingSnapshot?,
-                savedVoiceNames: [String] = [], identifySpeakers: Bool = true, recogniseVoices: Bool = true) {
+                savedVoiceNames: [String] = [], identifySpeakers: Bool = true, recogniseVoices: Bool = true,
+                platform: DevicePlatform = .current) {
         let reason = Self.queueReason(snapshot: snapshot, stored: queueReason)
         if let snapshot, Self.isLive(snapshot.phase) {
             steps = snapshot.steps.count == ProcessingStep.allCases.count
@@ -65,7 +66,7 @@ public struct ProcessingViewState: Equatable, Sendable {
         }
         switch mode {
         case .waiting(.modelsNotReady):
-            heading = Self.modelsHeading; message = Self.modelsMessage
+            heading = Self.modelsHeading; message = Self.modelsMessage(platform)
         case .waiting(.pausedForRecording):
             heading = Self.recordingHeading; message = Self.recordingMessage
         case .waiting(.pausedByBackgroundExpiry):
@@ -73,7 +74,7 @@ public struct ProcessingViewState: Equatable, Sendable {
         case .failed(let text):
             heading = "Couldn't finish processing"; message = text
         default:
-            heading = Self.defaultHeading; message = Self.defaultMessage
+            heading = Self.defaultHeading; message = Self.defaultMessage(platform)
         }
     }
 

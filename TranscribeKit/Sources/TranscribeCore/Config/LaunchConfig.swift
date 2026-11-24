@@ -3,10 +3,15 @@ import Foundation
 public enum SeedName: String, Sendable, CaseIterable {
     case firstRun, empty, library, twoSpeakersUnnamed, askKaran, processingHeld, failedProcessing
     case shortKaran        // library + G: an unnamed 6.2 s voice that is Karan in another setting
+    case karanFromIPhone   // library, with Karan's samples and his source recordings heard on an iPhone (§7)
 }
 public enum FakeScriptName: String, Sendable, CaseIterable {
     case newVoices, knownVoices, askKaran, noSpeech, failSeparation, holdAtSeparating
     case longTalk          // 90 s of unbroken speech: fills the live transcript on the recording screen
+}
+/// A fake sync scenario for UI tests (`TRANSCRIBE_SYNC=fake:<scenario>`, §8.6). UI tests never touch CloudKit.
+public enum FakeSyncScenario: String, Sendable, CaseIterable {
+    case fresh, remoteLibrary, signedOut, accountSwitched, zoneRemoved, duplicateKaran, massDelete
 }
 public enum FakeSpeed: String, Sendable, CaseIterable { case instant, demo, frozen }
 public enum FakeModelState: String, Sendable, CaseIterable { case installed, missing }
@@ -45,6 +50,8 @@ public struct LaunchConfig: Sendable, Equatable {
     public static let envNow = "TRANSCRIBE_NOW"        // ISO-8601, e.g. 2026-11-18T14:31:00+11:00
     public static let envRoute = "TRANSCRIBE_ROUTE"
     public static let envMic = "TRANSCRIBE_MIC"        // granted | denied | undetermined
+    public static let envChannel = "TRANSCRIBE_CHANNEL" // iphone | ipad | mac (fake engine and UI tests only)
+    public static let envSync = "TRANSCRIBE_SYNC"       // off | fake:<FakeSyncScenario> (fake engine and UI tests only)
 
     public var useFakeEngine: Bool
     public var uiTesting: Bool
@@ -55,6 +62,12 @@ public struct LaunchConfig: Sendable, Equatable {
     public var now: Date?                   // frozen clock when set
     public var route: LaunchRoute?
     public var mic: MicPermission           // default .granted (fake engine only)
+    /// Overrides `CaptureChannel.current` throughout the store. Read only with the fake engine or `-uiTesting`, so a
+    /// stray environment variable can never relabel the real library's voices.
+    public var channel: String?
+    /// The fake sync scenario (`TRANSCRIBE_SYNC=fake:<scenario>`); nil = off. Read only with the fake engine or
+    /// `-uiTesting`, like `channel`.
+    public var sync: FakeSyncScenario?
 
     public init(arguments: [String], environment: [String: String]) {
         useFakeEngine = arguments.contains(Self.argUseFakeEngine) || environment["TRANSCRIBE_ENGINE"] == "fake"
@@ -66,9 +79,17 @@ public struct LaunchConfig: Sendable, Equatable {
         now = environment[Self.envNow].flatMap { ISO8601DateFormatter().date(from: $0) }
         route = environment[Self.envRoute].flatMap(LaunchRoute.init)
         mic = environment[Self.envMic].flatMap(MicPermission.init(rawValue:)) ?? .granted
+        let rawChannel = environment[Self.envChannel]?.trimmingCharacters(in: .whitespaces).lowercased()
+        channel = (useFakeEngine || uiTesting) && rawChannel?.isEmpty == false ? rawChannel : nil
+        sync = (useFakeEngine || uiTesting) ? Self.parseSync(environment[Self.envSync]) : nil
     }
     public static var current: LaunchConfig {
         LaunchConfig(arguments: ProcessInfo.processInfo.arguments, environment: ProcessInfo.processInfo.environment)
+    }
+    /// "fake:<scenario>" → the scenario; "off", empty or unknown → nil.
+    public static func parseSync(_ raw: String?) -> FakeSyncScenario? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespaces), raw.hasPrefix("fake:") else { return nil }
+        return FakeSyncScenario(rawValue: String(raw.dropFirst("fake:".count)))
     }
     public var clock: AppClock { now.map(AppClock.frozen) ?? .system }
 }

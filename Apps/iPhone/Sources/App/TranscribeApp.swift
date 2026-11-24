@@ -15,6 +15,9 @@ import TranscribeKit
             RootView()
                 .environment(env)
                 .modelContainer(env.container)
+                .onChange(of: env.settings.syncEnabled, initial: true) { _, on in
+                    if on, env.sync != nil, !env.config.uiTesting { PlatformServices.registerForRemoteNotifications() }
+                }
         }
         .onChange(of: scenePhase) { _, p in Task { await env.onPhase(Self.appPhase(p)) } }
     }

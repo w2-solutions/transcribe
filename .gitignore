@@ -10,3 +10,5 @@ TranscribeKit/Tests/TranscribeFluidTests/Fixtures/*.wav
 TranscribeKit/Tests/TranscribeFluidTests/Fixtures/*.turns.json
 BundledModels/*
 !BundledModels/README.md
+Apps/Mac/Info.plist
+dist/

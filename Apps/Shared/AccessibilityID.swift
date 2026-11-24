@@ -86,6 +86,8 @@ enum AX {
         static let askPlay = "transcript.askBanner.play"
         static let askYes = "transcript.askBanner.yes"
         static let askNo = "transcript.askBanner.no"
+        static let askDetail = "transcript.askBanner.detail"   // "Speaker 2 sounds like Karan." or the other-device copy
+        static let audioElsewhere = "transcript.audioElsewhere" // "Audio is on your iPhone. …" (no player bar then)
         static let noSpeechCard = "transcript.noSpeechCard"
         static let failedCard = "transcript.failedCard"
         static let retryButton = "transcript.failedCard.retry"
@@ -122,6 +124,7 @@ enum AX {
     enum NameSpeaker {
         static let sheet = "nameSpeaker.sheet"
         static let subtitle = "nameSpeaker.subtitle"       // "Speaker 2 · spoke for 0:13"
+        static let askPrompt = "nameSpeaker.askPrompt"     // "Karan was named on your iPhone. … Is this Karan?"
         static let title = "nameSpeaker.title"             // "Who is this?" / "Who said this?"
         static let closeButton = "nameSpeaker.closeButton"
         static func clip(_ i: Int) -> String { "nameSpeaker.clip.\(i)" }
@@ -145,6 +148,13 @@ enum AX {
         static let privacyCard = "voices.privacyCard"
         static let speakerSettingsLink = "voices.speakerSettingsLink"
         static let emptyState = "voices.emptyState"
+        static let intro = "voices.intro"
+        static func waitingAsk(_ i: Int) -> String { "voices.waiting.\(i).ask" }   // other-device ask copy
+        static let duplicateBanner = "voices.duplicateBanner"
+        static let duplicateBannerMerge = "voices.duplicateBanner.merge"
+        static let updateBanner = "voices.updateBanner"
+        /// Voice samples grouped by capture channel ("On this Mac · 2", "On your iPhone · 3").
+        static func sampleGroup(_ channel: String) -> String { "voices.sampleGroup.\(channel)" }
     }
 
     enum VoiceDetail {
@@ -188,6 +198,34 @@ enum AX {
         static let footer = "settings.footer"
         static let copyMatchLogRow = "settings.copyMatchLogRow"
         static let copiedToast = "settings.copiedToast"
+        static let privacyDetail = "settings.privacyDetail"
+    }
+
+    /// "Sync with iCloud" (§8.6): the Settings section, the leave dialog, and the account and mass-delete sheets.
+    enum Sync {
+        static let section = "settings.sync.section"
+        static let master = "settings.sync.master"
+        static let explanation = "settings.sync.explanation"
+        static let status = "settings.sync.status"
+        static let now = "settings.sync.now"
+        static let removeCloud = "settings.sync.removeCloud"
+        static let removeCloudConfirm = "settings.sync.removeCloudConfirm"
+        static let review = "settings.sync.review"          // reopens the account-change or mass-delete question
+        enum Leave {
+            static let keep = "sync.leave.keep"
+            static let remove = "sync.leave.remove"
+            static let cancel = "sync.leave.cancel"
+        }
+        enum Account {
+            static let sheet = "sync.account.sheet"
+            static let merge = "sync.account.merge"
+            static let keepPaused = "sync.account.keepPaused"
+        }
+        enum MassDelete {
+            static let sheet = "sync.massDelete.sheet"
+            static let confirm = "sync.massDelete.confirm"
+            static let restore = "sync.massDelete.restore"
+        }
     }
 
     enum ModelSettings {
@@ -205,6 +243,35 @@ enum AX {
     enum Language {
         static let screen = "language.screen"
         static func option(_ code: String) -> String { "language.option.\(code)" }  // "auto" for automatic
+    }
+
+    /// The Mac app's own screens. Recording rows on the Mac reuse `Library.card(i)`.
+    enum Mac {
+        static let main = "screen.mac.main"
+        static let sidebarAll = "mac.sidebar.all"
+        static let sidebarFavourites = "mac.sidebar.favourites"
+        static let sidebarUnnamed = "mac.sidebar.unnamed"
+        static let sidebarVoices = "mac.sidebar.voices"
+        static let sidebarVoicesBadge = "mac.sidebar.voicesBadge"
+        static let sidebarNewRecording = "mac.sidebar.newRecording"
+        static let sidebarFooter = "mac.sidebar.footer"
+        static let recordingList = "mac.list.recordings"
+        static let voiceList = "mac.list.voices"
+        static let detailEmpty = "mac.detail.empty"
+        static let toolbarRecord = "mac.toolbar.record"
+        static let toolbarImport = "mac.toolbar.import"
+        static let toolbarRecordingPill = "mac.toolbar.recordingPill"
+        static let recordingWindow = "mac.recordingWindow"
+        static func sidebarFolder(_ i: Int) -> String { "mac.sidebar.folder.\(i)" }
+        static func sidebarFolderRename(_ i: Int) -> String { "mac.sidebar.folder.\(i).rename" }
+        static func sidebarFolderDelete(_ i: Int) -> String { "mac.sidebar.folder.\(i).delete" }
+        static let sidebarFolders = "mac.sidebar.folders"
+        static let sidebarNewFolder = "mac.sidebar.newFolder"
+        static let folderDeleteConfirm = "mac.sidebar.folderDelete.confirm"
+        static let folderDeleteCancel = "mac.sidebar.folderDelete.cancel"
+        static let recordingSearch = "mac.list.recordings.search"
+        static let recordingSearchClear = "mac.list.recordings.searchClear"
+        static let voiceSearch = "mac.list.voices.search"
     }
 
     enum Attributions {

@@ -14,16 +14,20 @@ public final class ModelManager {
 
     /// User-facing copy shared by the Library card and the Speech models screen.
     public enum Copy {
-        public static let preparing = "Preparing for this iPhone… (after installing or updating, about a minute)"
+        public static func preparing(_ p: DevicePlatform) -> String { DeviceCopy(platform: p).preparingModels }
+        /// The wording for the platform this build runs on.
+        public static var preparing: String { preparing(.current) }
         public static let loadFailed = "The speech models couldn't load. Try again."
     }
 
     @ObservationIgnored private let engine: any SpeechEngine
+    @ObservationIgnored private let platform: DevicePlatform
     @ObservationIgnored private let onReady: @MainActor () -> Void
     @ObservationIgnored private var isBusy = false
 
-    public init(engine: any SpeechEngine, onReady: @escaping @MainActor () -> Void) {
+    public init(engine: any SpeechEngine, platform: DevicePlatform = .current, onReady: @escaping @MainActor () -> Void) {
         self.engine = engine
+        self.platform = platform
         self.onReady = onReady
     }
 
@@ -40,7 +44,7 @@ public final class ModelManager {
     /// Line shown while the models are being prepared; nil otherwise.
     public var phaseText: String? {
         switch status {
-        case .installed, .preparing: Copy.preparing
+        case .installed, .preparing: Copy.preparing(platform)
         case .ready, .failed: nil
         }
     }
