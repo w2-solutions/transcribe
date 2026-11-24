@@ -34,6 +34,10 @@ public final class SyncCoordinator {
     /// retry, a failed send), one per attempt in a row; the last repeats. `CKSyncEngine` does not reliably send these
     /// again by itself.
     @ObservationIgnored public var followUpDelays: [Duration] = [.seconds(3), .seconds(15), .seconds(60), .seconds(300)]
+    /// The iCloud environment this build talks to ("Development" for Debug builds, "Production" for TestFlight and
+    /// the Developer ID Mac app), from the Info.plist. Nil in tests and fake-engine runs.
+    @ObservationIgnored public var cloudEnvironment: String? =
+        Bundle.main.object(forInfoDictionaryKey: "TranscribeICloudEnvironment") as? String
     /// Coming to the front again within this long after the last refresh does not fetch again.
     @ObservationIgnored public var minRefreshGap: Duration = .seconds(10)
 
@@ -117,6 +121,7 @@ public final class SyncCoordinator {
         ensureEventLoop()
         let account = self.account
         if account.pausedReason == .zoneRemoved { status = .paused(.zoneRemoved); return }
+        resetIfCloudEnvironmentChanged()
         guard let hash = await transport.accountHash() else { pause(.noAccount); return }
         if let stored = account.accountHash, stored != hash { pause(.accountChanged); return }
         await run(hash: hash, joining: account.accountHash == nil)
@@ -129,10 +134,27 @@ public final class SyncCoordinator {
         starting = true
         defer { starting = false }
         ensureEventLoop()
+        if !running { resetIfCloudEnvironmentChanged() }
         guard let hash = await transport.accountHash() else { pause(.noAccount); return }
         if let stored = account.accountHash, stored != hash { pause(.accountChanged); return }
         if running { await sync(fullScan: true); return }
         await run(hash: hash, joining: true)
+    }
+
+    /// Development and Production are separate iCloud databases. Sync state made in one (change tags, the engine's
+    /// tokens) is wrong in the other, and sending with it would look like "the server deleted this", which deletes the
+    /// local copy. So a build for the other environment (a Debug build replaced by TestFlight, or back) forgets the
+    /// sync state and joins again: local data is untouched and merges with whatever that environment holds.
+    private func resetIfCloudEnvironmentChanged() {
+        guard let current = cloudEnvironment else { return }
+        let stored = settings.syncCloudEnvironment
+        guard stored != current else { return }
+        let account = self.account
+        if account.accountHash != nil || account.engineState != nil {
+            log.notice("iCloud environment changed (\(stored ?? "unknown", privacy: .public) to \(current, privacy: .public)); forgetting sync state and joining again")
+            clearSyncState()
+        }
+        settings.syncCloudEnvironment = current
     }
 
     /// On → Off. "Keep the iCloud copy" keeps every state row and the engine state, so turning sync on again on the

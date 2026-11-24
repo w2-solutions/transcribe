@@ -60,6 +60,8 @@ targets:
         UIBackgroundModes: [audio, processing, remote-notification]
         # "NO" when built with TRANSCRIBE_SYNC=NO (no iCloud entitlement): the transport then never opens CloudKit.
         TranscribeICloud: $(TRANSCRIBE_SYNC)
+        # Which CloudKit environment this build talks to; a change makes sync forget its state and join again.
+        TranscribeICloudEnvironment: $(TRANSCRIBE_ICLOUD_ENV)
         BGTaskSchedulerPermittedIdentifiers: ["ai.w2solutions.transcribe.process.*"]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIFileSharingEnabled: false
@@ -133,6 +135,7 @@ targets:
         CFBundleDisplayName: Transcribe
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        TranscribeICloudEnvironment: $(TRANSCRIBE_ICLOUD_ENV)
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         LSApplicationCategoryType: public.app-category.productivity
         NSMicrophoneUsageDescription: "Transcribe records conversations on this Mac to turn them into text. Speech is processed on this Mac."

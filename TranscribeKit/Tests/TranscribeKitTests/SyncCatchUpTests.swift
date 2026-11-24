@@ -126,6 +126,29 @@ extension SyncSuites {
             #expect(t.a.recording(t.r1)?.title == "Renamed on the iPhone")
         }
 
+        /// A build for the other iCloud environment forgets the sync state and joins again; nothing local is deleted,
+        /// and the library uploads to the (empty) other environment.
+        @Test func changingTheCloudEnvironmentRejoinsWithoutDeletingAnything() async throws {
+            let t = try await TwoDevices.make()
+            defer { t.cleanup() }
+            let before = try t.a.context.fetch(FetchDescriptor<Recording>()).count
+            #expect(before > 0)
+            // The Production database: another, empty server.
+            let production = FakeCloud()
+            t.a.context.rollback()
+            let transport = FakeTransport(cloud: production, account: "account-1")
+            let sync = SyncCoordinator(store: t.a.store, transport: transport, settings: t.a.settings, clock: t.a.clock.appClock,
+                                       modelKey: EmbeddingModelID.fake.key)
+            sync.debounce = .seconds(3600)
+            sync.followUpDelays = [.seconds(3600)]
+            sync.cloudEnvironment = "Production"
+            await sync.start()
+            await sync.syncNow()
+            #expect(try t.a.context.fetch(FetchDescriptor<Recording>()).count == before)
+            #expect(await production.records(account: "account-1").keys.filter { $0.hasPrefix("rec.") }.count == before)
+            #expect(t.a.settings.syncCloudEnvironment == "Production")
+        }
+
         /// Coming to the front twice within the minimum gap fetches once.
         @Test func comingToTheFrontAgainSoonDoesNotFetchAgain() async throws {
             let t = try await TwoDevices.make()

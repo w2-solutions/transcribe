@@ -148,7 +148,9 @@ Rules:
 - The sandboxed Mac data is in `~/Library/Containers/ai.w2solutions.transcribe.mac/Data/Library/Application Support/Transcribe` (`Transcribe-Fake` for the fake engine).
 - CloudKit environments (`TRANSCRIBE_ICLOUD_ENV`, both apps): Debug builds use Development; Release builds and the Developer ID export use Production. To test the phone against the Developer ID Mac, build the iPhone with `TRANSCRIBE_ICLOUD_ENV=Production` on the xcodebuild line.
 - Push (`TRANSCRIBE_APS_ENV`) stays `development` in every configuration of both apps, because builds and archives are signed with a development profile, which allows nothing else. The Developer ID export sets `production` from its profile (`release-mac.sh` checks it). It picks the push gateway, not the CloudKit environment.
-- New record types or fields must be deployed to Production in the CloudKit Console before a release can sync. This cannot be undone.
+- New record types or fields must be deployed to Production in the CloudKit Console before a release can sync. This cannot be undone. The schema was first deployed on 2026-11-24 (six record types).
+- Before any deploy, make the Development schema complete: Development only defines a type or field when a record with it is first saved, so fields that were always empty on our devices are missing (on 2026-11-24: `VoiceNegative`, a recording's `title`, `language` and `marks`, a speaker's `rejectedProfileIDs`). Run the Debug Mac app once with `open /Applications/Transcribe.app --args -seedCloudSchema` (`CloudSchemaSeeder` saves one record of every type with every field of `CKRecordCodec.kinds`, in a zone of its own, then deletes it), check the log for "Schema seed finished", then deploy and compare the field counts in the console's diff.
+- Development and Production are separate databases. A build for the other environment forgets its sync state and joins again (`SyncCoordinator.resetIfCloudEnvironmentChanged`, from the Info.plist key `TranscribeICloudEnvironment`); without that, sync state from one would read as "deleted on the server" in the other and delete local data. Never remove this guard.
 
 ## "Ship it"
 
@@ -170,12 +172,10 @@ Run `swift test` before merging. A merge that changes the store schema or CloudK
 
 ## Not yet verified (as of 2026-11-24)
 
-- No build signed with the iCloud entitlement has been made. Xcode had no Apple account signed in, and the App IDs `ai.w2solutions.transcribe` and `ai.w2solutions.transcribe.mac` with iCloud, and the container `iCloud.ai.w2solutions.transcribe`, were not registered in the developer portal.
-- Real CloudKit traffic has never run; sync has only run against `FakeCloud`.
-- The CloudKit schema has not been deployed to Production.
-- The V3 build has not been installed on the phone. Its first launch upgrades the library, after which V2 builds cannot open it.
-- The notarised DMG made on 2026-11-24 is of the build before sync; no Developer ID build with iCloud exists.
-- The manual two-device checklist (both libraries combine, a voice named on the iPhone is asked once on the Mac then auto-labelled, deletes reach the other device, turning sync off with Keep leaves the other device alone, signing out pauses without data loss) has not been run.
+- Sync has run between the real iPhone and Mac in the Development environment only. Production (TestFlight plus the Developer ID Mac app) had not been tested when this was written.
+- Pushes to the Mac were unreliable in Development (none, or one after 99 s), although the iPhone got them at once. Whether Production is better is the open question.
+- The manual two-device checklist has only been partly run: recordings and a speaker's name reach the other device. Not yet checked: deletes reaching the other device, turning sync off with Keep, signing out.
+- Mac UI tests and iPhone UI tests have not been rerun since the push, polling and environment changes of 2026-11-24.
 
 ## Subagents
 
