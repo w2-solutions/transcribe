@@ -235,6 +235,15 @@ public final class SyncCoordinator {
         }
     }
 
+    /// An iCloud push arrived: fetch and send now, whatever the poll timing. `CKSyncEngine` should fetch on a push by
+    /// itself, but its own fetch has not reached the server reliably (2026-11-24), so the app also does it.
+    public func remoteChangeNotified() async {
+        guard settings.syncEnabled, running, !crashed, !starting, !status.isPaused else { return }
+        log.notice("Refresh (push)")
+        lastRefresh = ContinuousClock.now
+        await sync(fullScan: false)
+    }
+
     /// One catch-up sync, skipped within `minRefreshGap` of the last one, while another runs, or while sync starts.
     /// `fullScan` (coming to the front) also scans and retries a pause the next sync can end (full quota, no account);
     /// the timer's refresh only fetches and sends, and does nothing while paused.

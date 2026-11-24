@@ -10,6 +10,7 @@ import TranscribeKit
     @State private var selection = MacSelection()
     @State private var captureActivity = CaptureActivity()
     @Environment(\.scenePhase) private var scenePhase
+    @NSApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
 
     init() {
         if LaunchConfig.current.uiTesting {
@@ -27,6 +28,7 @@ import TranscribeKit
                 .modifier(SceneEnvironment(env: env, router: router, selection: selection))
                 .onAppear { [env, captureActivity] in captureActivity.follow { env.recorder.isActive } }
                 .onChange(of: env.settings.syncEnabled, initial: true) { _, on in
+                    PushDelegate.onPush = { [env] in await env.sync?.remoteChangeNotified() }
                     if on, env.sync != nil, !env.config.uiTesting { PlatformServices.registerForRemoteNotifications() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in

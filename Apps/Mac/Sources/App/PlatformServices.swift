@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import OSLog
 import TranscribeCore
 import TranscribeKit
 
@@ -21,6 +22,7 @@ import TranscribeKit
     /// While sync is on, iCloud pushes tell `CKSyncEngine` to fetch (§8.4 item 9). The engine handles the pushes itself;
     /// the app only registers.
     static func registerForRemoteNotifications() {
+        pushLog.notice("Registering for remote notifications")
         NSApplication.shared.registerForRemoteNotifications()
     }
 
@@ -33,5 +35,28 @@ import TranscribeKit
         env.sync?.foregroundPollInterval = .seconds(30)
         env.sync?.backgroundPollInterval = .seconds(120)
         env.syncForeground(active)
+    }
+}
+
+let pushLog = Logger(subsystem: "ai.w2solutions.transcribe", category: "push")
+
+/// Logs whether push registration worked and every push that arrives, and syncs on a push. Without it a failed
+/// registration is silent. Never logs the token or a push's contents.
+@MainActor final class PushDelegate: NSObject, NSApplicationDelegate {
+    /// Set by the app once its environment exists.
+    static var onPush: (@MainActor () async -> Void)?
+
+    func application(_ application: NSApplication, didRegisterForRemoteNotificationsWithDeviceToken deviceToken: Data) {
+        pushLog.notice("Registered for remote notifications (token of \(deviceToken.count, privacy: .public) bytes)")
+    }
+
+    func application(_ application: NSApplication, didFailToRegisterForRemoteNotificationsWithError error: any Error) {
+        let e = error as NSError
+        pushLog.error("Registering for remote notifications failed: \(e.domain, privacy: .public) \(e.code, privacy: .public)")
+    }
+
+    func application(_ application: NSApplication, didReceiveRemoteNotification userInfo: [String: Any]) {
+        pushLog.notice("Remote notification received (iCloud: \(userInfo["ck"] != nil, privacy: .public))")
+        Task { await Self.onPush?() }
     }
 }
