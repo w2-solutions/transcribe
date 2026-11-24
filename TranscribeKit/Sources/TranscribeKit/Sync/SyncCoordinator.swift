@@ -212,6 +212,15 @@ public final class SyncCoordinator {
         await sync(fullScan: true)
     }
 
+    /// The user asked for the latest (pull to refresh, the Mac's Sync Now command): fetch and send now, without the
+    /// full scan `syncNow` does.
+    public func refreshNow() async {
+        guard settings.syncEnabled, !crashed, !starting else { return }
+        log.notice("Refresh (asked)")
+        lastRefresh = ContinuousClock.now
+        await sync(fullScan: false)
+    }
+
     // MARK: In front
 
     /// The app came to the front (true) or went to the background (false). In front, sync fetches now and then every

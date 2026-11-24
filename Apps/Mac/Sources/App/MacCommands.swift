@@ -46,6 +46,11 @@ struct MacCommands: Commands {
             Button("Find") { selection.searchFocusRequest += 1 }
                 .keyboardShortcut("f")
         }
+        CommandGroup(after: .toolbar) {
+            Button("Sync Now") { Task { await env.sync?.refreshNow() } }
+                .keyboardShortcut("r")
+                .disabled(env.sync == nil || !env.settings.syncEnabled)
+        }
         CommandMenu("Playback") {
             Button(env.player.isPlaying ? "Pause" : "Play") {
                 if let id = focusedTranscript { env.togglePlayback(of: id) }

@@ -66,6 +66,19 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         if self.state == nil { saveCatchUpToken(nil) }
         newestSeen = [:]
         log.notice("Started (\(self.state == nil ? "fresh" : "saved state", privacy: .public))")
+        // Pushes come from a database subscription the engine makes. Log whether one exists (2026-11-24: no pushes).
+        if let database = container?.privateCloudDatabase {
+            let log = log
+            Task.detached {
+                do {
+                    let all = try await database.allSubscriptions()
+                    let kinds = all.map { "\($0.subscriptionType.rawValue):\($0.notificationInfo?.shouldSendContentAvailable == true ? "silent" : "not-silent")" }
+                    log.notice("iCloud subscriptions: \(all.count, privacy: .public) [\(kinds.joined(separator: ", "), privacy: .public)]")
+                } catch {
+                    log.error("Could not list iCloud subscriptions: \(Self.describe(error), privacy: .public)")
+                }
+            }
+        }
         if let old = engine {
             engine = nil
             Task.detached { await old.cancelOperations() }
