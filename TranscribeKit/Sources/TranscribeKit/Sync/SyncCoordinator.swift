@@ -35,9 +35,13 @@ public final class SyncCoordinator {
     /// again by itself.
     @ObservationIgnored public var followUpDelays: [Duration] = [.seconds(3), .seconds(15), .seconds(60), .seconds(300)]
     /// The iCloud environment this build talks to ("Development" for Debug builds, "Production" for TestFlight and
-    /// the Developer ID Mac app), from the Info.plist. Nil in tests and fake-engine runs.
-    @ObservationIgnored public var cloudEnvironment: String? =
-        Bundle.main.object(forInfoDictionaryKey: "TranscribeICloudEnvironment") as? String
+    /// the Developer ID Mac app). `AppEnvironment` sets it from the Info.plist when the transport is real CloudKit;
+    /// nil with a fake iCloud (tests, UI tests, the fake engine), where there is no environment to change.
+    @ObservationIgnored public var cloudEnvironment: String?
+    /// While the app is in front: how often it checks iCloud, as a safety net for a push that is late or lost
+    /// (Liam, 2026-11-24: every 60 s in front, never in the background). Pushes remain the fast path.
+    @ObservationIgnored public var foregroundPollInterval: Duration = .seconds(60)
+    @ObservationIgnored private var pollTask: Task<Void, Never>?
     /// Coming to the front again within this long after the last refresh does not fetch again.
     @ObservationIgnored public var minRefreshGap: Duration = .seconds(10)
 
@@ -240,11 +244,22 @@ public final class SyncCoordinator {
     // MARK: In front
 
     /// The app came to the front (true) or left it (false). Coming to the front syncs once, to catch up on anything
-    /// that changed while the app could not be told. There is no timer: between activations, iCloud pushes
-    /// (`remoteChangeNotified`) bring changes in, and the user can ask (`refreshNow`).
+    /// that changed meanwhile, and then checks every `foregroundPollInterval` while the app stays in front. Leaving the
+    /// front stops the checks: nothing syncs on a timer in the background. Each check runs in its own task, so
+    /// leaving the front never cancels a sync half-way.
     public func setForeground(_ active: Bool) {
+        pollTask?.cancel()
+        pollTask = nil
         guard active else { return }
         Task { await self.refresh(fullScan: true) }
+        pollTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let interval = self?.foregroundPollInterval else { return }
+                try? await Task.sleep(for: interval)
+                guard !Task.isCancelled, let self else { return }
+                Task { await self.refresh(fullScan: false) }
+            }
+        }
     }
 
     /// An iCloud push arrived: fetch and send now, whatever the poll timing. `CKSyncEngine` should fetch on a push by
@@ -257,7 +272,8 @@ public final class SyncCoordinator {
     }
 
     /// One catch-up sync, skipped within `minRefreshGap` of the last one, while another runs, or while sync starts.
-    /// `fullScan` (coming to the front) also scans and retries a pause the next sync can end (full quota, no account).
+    /// `fullScan` (coming to the front) also scans and retries a pause the next sync can end (full quota, no account);
+    /// the timer's check only fetches and sends, and does nothing while paused.
     func refresh(fullScan: Bool) async {
         guard settings.syncEnabled, !crashed, !starting, !refreshing else { return }
         if status.isPaused {
@@ -270,7 +286,7 @@ public final class SyncCoordinator {
         lastRefresh = now
         refreshing = true
         defer { refreshing = false }
-        log.notice("Refresh (in front)")
+        log.notice("Refresh (\(fullScan ? "in front" : "timer", privacy: .public))")
         await sync(fullScan: fullScan)
     }
 

@@ -205,6 +205,11 @@ struct MacRootView: View {
             }
         }
         ToolbarItemGroup(placement: .primaryAction) {
+            if let sync = env.sync, env.settings.syncEnabled {
+                Button("Sync Now", systemImage: "arrow.triangle.2.circlepath") { Task { await sync.refreshNow() } }
+                    .help("Sync with iCloud now (⌘R)")
+                    .accessibilityIdentifier("mac.toolbar.sync")
+            }
             Button("Import Audio…", systemImage: "square.and.arrow.down") { isImporterPresented = true }
                 .help("Import an audio file")
                 .accessibilityIdentifier(AX.Mac.toolbarImport)
