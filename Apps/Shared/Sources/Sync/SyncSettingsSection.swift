@@ -17,6 +17,7 @@ struct SyncSettingsSection: View {
     @Environment(AppEnvironment.self) private var env
     @State private var isLeaving = false
     @State private var isConfirmingRemove = false
+    @State private var didCopyLog = false
     @State private var question: SyncQuestion?
     @State private var errorText: String?
 
@@ -54,6 +55,15 @@ struct SyncSettingsSection: View {
                         .buttonStyle(.plain)
                         .accessibilityIdentifier(AX.Sync.now)
                     }
+                    Button {
+                        Pasteboard.copy(SyncLogExport.text())
+                        didCopyLog = true
+                    } label: {
+                        ValueRow(systemImage: "doc.on.clipboard", tint: .neutral, title: "Copy sync log",
+                                 value: didCopyLog ? "Copied" : nil, accessory: .none)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityIdentifier("sync.copyLog")
                     if canRemove {
                         Button { isConfirmingRemove = true } label: {
                             ValueRow(systemImage: "trash", tint: .neutral, title: "Remove iCloud Copy…", value: nil,
