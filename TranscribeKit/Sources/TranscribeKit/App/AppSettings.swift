@@ -27,6 +27,7 @@ public final class AppSettings {
         static let appearance = "settings.appearance"
         static let autoCopy = "settings.autoCopy"
         static let syncEnabled = "settings.syncEnabled"
+        static let syncCloudEnvironment = "sync.cloudEnvironment"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -39,6 +40,13 @@ public final class AppSettings {
     public var autoCopy: CopyFormat { didSet { defaults.set(autoCopy.rawValue, forKey: Key.autoCopy) } }              // default .textOnly
     /// "Sync with iCloud" on this device (§8.4, D3). Off by default.
     public var syncEnabled: Bool { didSet { defaults.set(syncEnabled, forKey: Key.syncEnabled) } }                  // default false
+
+    /// The iCloud environment ("Development" or "Production") this device's sync state was made in; see
+    /// `SyncCoordinator.cloudEnvironment`. Not a user setting.
+    public var syncCloudEnvironment: String? {
+        get { defaults.string(forKey: Key.syncCloudEnvironment) }
+        set { defaults.set(newValue, forKey: Key.syncCloudEnvironment) }
+    }
 
     public init(defaults: UserDefaults) {
         self.defaults = defaults

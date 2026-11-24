@@ -34,8 +34,10 @@ public final class SyncCoordinator {
     /// retry, a failed send), one per attempt in a row; the last repeats. `CKSyncEngine` does not reliably send these
     /// again by itself.
     @ObservationIgnored public var followUpDelays: [Duration] = [.seconds(3), .seconds(15), .seconds(60), .seconds(300)]
-    /// While the app is in front: how often it fetches, in case an iCloud push was missed.
-    @ObservationIgnored public var foregroundPollInterval: Duration = .seconds(120)
+    /// The iCloud environment this build talks to ("Development" for Debug builds, "Production" for TestFlight and
+    /// the Developer ID Mac app), from the Info.plist. Nil in tests and fake-engine runs.
+    @ObservationIgnored public var cloudEnvironment: String? =
+        Bundle.main.object(forInfoDictionaryKey: "TranscribeICloudEnvironment") as? String
     /// Coming to the front again within this long after the last refresh does not fetch again.
     @ObservationIgnored public var minRefreshGap: Duration = .seconds(10)
 
@@ -45,7 +47,6 @@ public final class SyncCoordinator {
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private(set) var followUpTask: Task<Void, Never>?
     @ObservationIgnored private var followUpAttempt = 0
-    @ObservationIgnored private(set) var pollTask: Task<Void, Never>?
     @ObservationIgnored private var lastRefresh: ContinuousClock.Instant?
     @ObservationIgnored private var refreshing = false
     /// `start` or `enable` is between its first await and running: a refresh then would start sync a second time.
@@ -120,6 +121,7 @@ public final class SyncCoordinator {
         ensureEventLoop()
         let account = self.account
         if account.pausedReason == .zoneRemoved { status = .paused(.zoneRemoved); return }
+        resetIfCloudEnvironmentChanged()
         guard let hash = await transport.accountHash() else { pause(.noAccount); return }
         if let stored = account.accountHash, stored != hash { pause(.accountChanged); return }
         await run(hash: hash, joining: account.accountHash == nil)
@@ -132,10 +134,27 @@ public final class SyncCoordinator {
         starting = true
         defer { starting = false }
         ensureEventLoop()
+        if !running { resetIfCloudEnvironmentChanged() }
         guard let hash = await transport.accountHash() else { pause(.noAccount); return }
         if let stored = account.accountHash, stored != hash { pause(.accountChanged); return }
         if running { await sync(fullScan: true); return }
         await run(hash: hash, joining: true)
+    }
+
+    /// Development and Production are separate iCloud databases. Sync state made in one (change tags, the engine's
+    /// tokens) is wrong in the other, and sending with it would look like "the server deleted this", which deletes the
+    /// local copy. So a build for the other environment (a Debug build replaced by TestFlight, or back) forgets the
+    /// sync state and joins again: local data is untouched and merges with whatever that environment holds.
+    private func resetIfCloudEnvironmentChanged() {
+        guard let current = cloudEnvironment else { return }
+        let stored = settings.syncCloudEnvironment
+        guard stored != current else { return }
+        let account = self.account
+        if account.accountHash != nil || account.engineState != nil {
+            log.notice("iCloud environment changed (\(stored ?? "unknown", privacy: .public) to \(current, privacy: .public)); forgetting sync state and joining again")
+            clearSyncState()
+        }
+        settings.syncCloudEnvironment = current
     }
 
     /// On → Off. "Keep the iCloud copy" keeps every state row and the engine state, so turning sync on again on the
@@ -209,32 +228,36 @@ public final class SyncCoordinator {
         await sync(fullScan: true)
     }
 
+    /// The user asked for the latest (pull to refresh, the Mac's Sync Now command): fetch and send now, without the
+    /// full scan `syncNow` does.
+    public func refreshNow() async {
+        guard settings.syncEnabled, !crashed, !starting else { return }
+        log.notice("Refresh (asked)")
+        lastRefresh = ContinuousClock.now
+        await sync(fullScan: false)
+    }
+
     // MARK: In front
 
-    /// The app came to the front (true) or went to the background (false). In front, sync fetches now and then every
-    /// `foregroundPollInterval`, so a change made on another device arrives even when its iCloud push is missed.
-    /// Each refresh runs in its own task, so leaving the front (which ends the timer) never cancels a sync half-way.
+    /// The app came to the front (true) or left it (false). Coming to the front syncs once, to catch up on anything
+    /// that changed while the app could not be told. There is no timer: between activations, iCloud pushes
+    /// (`remoteChangeNotified`) bring changes in, and the user can ask (`refreshNow`).
     public func setForeground(_ active: Bool) {
-        guard active else {
-            pollTask?.cancel()
-            pollTask = nil
-            return
-        }
+        guard active else { return }
         Task { await self.refresh(fullScan: true) }
-        guard pollTask == nil else { return }
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let interval = self?.foregroundPollInterval else { return }
-                try? await Task.sleep(for: interval)
-                guard !Task.isCancelled, let self else { return }
-                Task { await self.refresh(fullScan: false) }
-            }
-        }
+    }
+
+    /// An iCloud push arrived: fetch and send now, whatever the poll timing. `CKSyncEngine` should fetch on a push by
+    /// itself, but its own fetch has not reached the server reliably (2026-11-24), so the app also does it.
+    public func remoteChangeNotified() async {
+        guard settings.syncEnabled, running, !crashed, !starting, !status.isPaused else { return }
+        log.notice("Refresh (push)")
+        lastRefresh = ContinuousClock.now
+        await sync(fullScan: false)
     }
 
     /// One catch-up sync, skipped within `minRefreshGap` of the last one, while another runs, or while sync starts.
-    /// `fullScan` (coming to the front) also scans and retries a pause the next sync can end (full quota, no account);
-    /// the timer's refresh only fetches and sends, and does nothing while paused.
+    /// `fullScan` (coming to the front) also scans and retries a pause the next sync can end (full quota, no account).
     func refresh(fullScan: Bool) async {
         guard settings.syncEnabled, !crashed, !starting, !refreshing else { return }
         if status.isPaused {
@@ -247,7 +270,7 @@ public final class SyncCoordinator {
         lastRefresh = now
         refreshing = true
         defer { refreshing = false }
-        log.notice("Refresh (\(fullScan ? "in front" : "timer", privacy: .public))")
+        log.notice("Refresh (in front)")
         await sync(fullScan: fullScan)
     }
 
@@ -370,6 +393,10 @@ public final class SyncCoordinator {
             if case .joining = status {} else { status = .syncing(pending: pending) }
             do {
                 try await transport.sendChanges()
+            } catch is CancellationError {
+                // The engine started its own send of the same changes first; it reports that one itself.
+                log.notice("Send overtaken by the engine's own send")
+                break
             } catch {
                 log.error("Send failed with \(pending, privacy: .public) pending: \(String(describing: error), privacy: .public)")
                 noteProblem("Couldn't upload to iCloud: \(error.localizedDescription)")
@@ -453,7 +480,18 @@ public final class SyncCoordinator {
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
             await self?.flushAndEnqueue()
+            await self?.sendLocalChanges()
         }
+    }
+
+    /// Sends what a local change just queued, now. `CKSyncEngine` schedules its own send, but on the iPhone that can
+    /// wait minutes (2026-11-24: a new recording reached iCloud only after Sync Now), so the app does not wait for it.
+    private func sendLocalChanges() async {
+        guard running, !crashed, !status.isPaused, pendingCount() > 0 else { return }
+        log.notice("Sending local changes")
+        let mark = problemCount
+        await sendAll()
+        roundWentThrough(since: mark)
     }
 
     /// The fast path now: what `didSave` collected becomes pending state and goes to the transport.

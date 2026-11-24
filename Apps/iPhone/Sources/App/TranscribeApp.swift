@@ -6,6 +6,7 @@ import TranscribeKit
 @main struct TranscribeApp: App {
     @State private var env = Composition.makeEnvironment()
     @Environment(\.scenePhase) private var scenePhase
+    @UIApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
     init() {
         // UI tests run without UIKit animations (glass still renders).
         if LaunchConfig.current.uiTesting { UIView.setAnimationsEnabled(false) }
@@ -16,6 +17,7 @@ import TranscribeKit
                 .environment(env)
                 .modelContainer(env.container)
                 .onChange(of: env.settings.syncEnabled, initial: true) { _, on in
+                    PushDelegate.onPush = { [env] in await env.sync?.remoteChangeNotified() }
                     if on, env.sync != nil, !env.config.uiTesting { PlatformServices.registerForRemoteNotifications() }
                 }
         }

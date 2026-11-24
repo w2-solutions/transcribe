@@ -66,6 +66,10 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         if self.state == nil { saveCatchUpToken(nil) }
         newestSeen = [:]
         log.notice("Started (\(self.state == nil ? "fresh" : "saved state", privacy: .public))")
+        if let database = container?.privateCloudDatabase {
+            let zoneID = codec.zoneID
+            Task.detached { [log] in await Self.ensureOwnSubscription(database, zoneID: zoneID, log: log) }
+        }
         if let old = engine {
             engine = nil
             Task.detached { await old.cancelOperations() }
@@ -134,6 +138,38 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         } catch {
             log.error("Engine send failed: \(Self.describe(error), privacy: .public)")
             throw error
+        }
+    }
+
+    // MARK: Push subscription
+
+    /// iCloud pushes a change only to the app (bundle id) that owns the subscription, and the iPhone and Mac apps
+    /// share this container under different bundle ids. The server also keeps only ONE database subscription per
+    /// database: a second one saved under another id succeeds but is folded into the first (2026-11-24: the console
+    /// listed only `CKSyncEngineDatabaseSubscription-Private`, and each app found "1" at every launch). So the two
+    /// apps cannot both subscribe the same way. The iPhone keeps the database subscription (re-saved at each launch,
+    /// in case the Mac's engine claimed it); the Mac subscribes to the zone instead, a different kind of subscription.
+    static func ensureOwnSubscription(_ database: CKDatabase, zoneID: CKRecordZone.ID, log: Logger) async {
+        let bundle = Bundle.main.bundleIdentifier ?? "app"
+        let info = CKSubscription.NotificationInfo()
+        info.shouldSendContentAvailable = true   // silent: no alert, the app just fetches
+        let subscription: CKSubscription
+        #if os(macOS)
+        // Silent, like the iPhone's. An empty sound name (to make Apple send it at high priority) was tried on
+        // 2026-11-24 and was worse: no push at all in four minutes, against 99 s for the silent one.
+        subscription = CKRecordZoneSubscription(zoneID: zoneID, subscriptionID: "zone-changes-3." + bundle)
+        for old in ["zone-changes.", "zone-changes-2."] { _ = try? await database.deleteSubscription(withID: old + bundle) }
+        #else
+        subscription = CKDatabaseSubscription(subscriptionID: "changes." + bundle)
+        #endif
+        subscription.notificationInfo = info
+        do {
+            _ = try await database.save(subscription)
+            let all = try await database.allSubscriptions()
+            let ids = all.map { "\($0.subscriptionID) (kind \($0.subscriptionType.rawValue))" }.sorted()
+            log.notice("Saved this app's iCloud subscription \(subscription.subscriptionID, privacy: .public). Listed: \(ids.joined(separator: ", "), privacy: .public)")
+        } catch {
+            log.error("Could not set up this app's iCloud subscription: \(Self.describe(error), privacy: .public)")
         }
     }
 

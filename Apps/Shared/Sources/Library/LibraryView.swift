@@ -52,6 +52,7 @@ struct LibraryView: View {
             }
         }
         .listStyle(.plain)
+        .modifier(PullToSync())
         .scrollContentBackground(.hidden)
         .environment(\.defaultMinListRowHeight, 0)
         .contentMargins(.bottom, 12, for: .scrollContent)
@@ -440,5 +441,18 @@ private extension View {
             .listRowInsets(EdgeInsets(top: top, leading: horizontal, bottom: bottom, trailing: horizontal))
             .listRowBackground(Color.clear)
             .listRowSeparator(.hidden)
+    }
+}
+
+/// Pull down to fetch from iCloud now, only while sync is on (otherwise the list has nothing to refresh).
+private struct PullToSync: ViewModifier {
+    @Environment(AppEnvironment.self) private var env
+
+    func body(content: Content) -> some View {
+        if let sync = env.sync, env.settings.syncEnabled, !env.config.uiTesting {
+            content.refreshable { await sync.refreshNow() }
+        } else {
+            content
+        }
     }
 }

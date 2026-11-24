@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import TranscribeCloudKit
 import TranscribeCore
 import TranscribeDesign
 import TranscribeKit
@@ -10,6 +11,7 @@ import TranscribeKit
     @State private var selection = MacSelection()
     @State private var captureActivity = CaptureActivity()
     @Environment(\.scenePhase) private var scenePhase
+    @NSApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
 
     init() {
         if LaunchConfig.current.uiTesting {
@@ -26,7 +28,14 @@ import TranscribeKit
                 .frame(minWidth: 960, minHeight: 600)
                 .modifier(SceneEnvironment(env: env, router: router, selection: selection))
                 .onAppear { [env, captureActivity] in captureActivity.follow { env.recorder.isActive } }
+                #if DEBUG
+                // `-seedCloudSchema`: complete the Development iCloud schema before a deploy (CloudSchemaSeeder).
+                .task {
+                    if ProcessInfo.processInfo.arguments.contains("-seedCloudSchema") { await CloudSchemaSeeder.seed() }
+                }
+                #endif
                 .onChange(of: env.settings.syncEnabled, initial: true) { _, on in
+                    PushDelegate.onPush = { [env] in await env.sync?.remoteChangeNotified() }
                     if on, env.sync != nil, !env.config.uiTesting { PlatformServices.registerForRemoteNotifications() }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
@@ -45,6 +54,12 @@ import TranscribeKit
             MacRecordingWindow()
                 .modifier(SceneEnvironment(env: env, router: router, selection: selection))
                 .onAppear { [env, captureActivity] in captureActivity.follow { env.recorder.isActive } }
+                #if DEBUG
+                // `-seedCloudSchema`: complete the Development iCloud schema before a deploy (CloudSchemaSeeder).
+                .task {
+                    if ProcessInfo.processInfo.arguments.contains("-seedCloudSchema") { await CloudSchemaSeeder.seed() }
+                }
+                #endif
         }
         .defaultSize(width: 560, height: 720)
         .windowResizability(.contentSize)

@@ -99,32 +99,60 @@ extension SyncSuites {
             expectConverged(t.devices)
         }
 
-        /// In front, the app fetches at once and then every interval, so a missed push only delays a change; in the
-        /// background it stops.
-        @Test func inFrontTheAppFetchesWithoutAPushAndStopsWhenItLeaves() async throws {
+        /// Coming to the front fetches at once, without a push; nothing fetches on a timer afterwards.
+        @Test func comingToTheFrontFetchesOnceAndNothingPolls() async throws {
             let t = try await TwoDevices.make()
             defer { t.cleanup() }
-            t.a.sync.foregroundPollInterval = .milliseconds(40)
             t.a.sync.minRefreshGap = .zero
             try t.b.store.rename(id: t.r1, title: "Renamed on the Mac")
             await t.b.sync.syncNow()
             t.a.sync.setForeground(true)
             try await eventually { t.a.recording(t.r1)?.title == "Renamed on the Mac" }
-            try t.b.store.rename(id: t.r1, title: "Renamed again")
-            await t.b.sync.syncNow()
-            try await eventually { t.a.recording(t.r1)?.title == "Renamed again" }
-            t.a.sync.setForeground(false)
-            try await Task.sleep(for: .milliseconds(30))
+            try await Task.sleep(for: .milliseconds(50))
             let fetches = await t.a.transport.fetchCount
-            try await Task.sleep(for: .milliseconds(200))
+            try await Task.sleep(for: .milliseconds(250))
             #expect(await t.a.transport.fetchCount == fetches)
+        }
+
+        /// A push fetches at once, even right after another refresh.
+        @Test func aPushFetchesAtOnce() async throws {
+            let t = try await TwoDevices.make()
+            defer { t.cleanup() }
+            t.a.sync.minRefreshGap = .seconds(3600)
+            await t.a.sync.refresh(fullScan: true)
+            try t.b.store.rename(id: t.r1, title: "Renamed on the iPhone")
+            await t.b.sync.syncNow()
+            await t.a.sync.remoteChangeNotified()
+            #expect(t.a.recording(t.r1)?.title == "Renamed on the iPhone")
+        }
+
+        /// A build for the other iCloud environment forgets the sync state and joins again; nothing local is deleted,
+        /// and the library uploads to the (empty) other environment.
+        @Test func changingTheCloudEnvironmentRejoinsWithoutDeletingAnything() async throws {
+            let t = try await TwoDevices.make()
+            defer { t.cleanup() }
+            let before = try t.a.context.fetch(FetchDescriptor<Recording>()).count
+            #expect(before > 0)
+            // The Production database: another, empty server.
+            let production = FakeCloud()
+            t.a.context.rollback()
+            let transport = FakeTransport(cloud: production, account: "account-1")
+            let sync = SyncCoordinator(store: t.a.store, transport: transport, settings: t.a.settings, clock: t.a.clock.appClock,
+                                       modelKey: EmbeddingModelID.fake.key)
+            sync.debounce = .seconds(3600)
+            sync.followUpDelays = [.seconds(3600)]
+            sync.cloudEnvironment = "Production"
+            await sync.start()
+            await sync.syncNow()
+            #expect(try t.a.context.fetch(FetchDescriptor<Recording>()).count == before)
+            #expect(await production.records(account: "account-1").keys.filter { $0.hasPrefix("rec.") }.count == before)
+            #expect(t.a.settings.syncCloudEnvironment == "Production")
         }
 
         /// Coming to the front twice within the minimum gap fetches once.
         @Test func comingToTheFrontAgainSoonDoesNotFetchAgain() async throws {
             let t = try await TwoDevices.make()
             defer { t.cleanup() }
-            t.a.sync.foregroundPollInterval = .seconds(3600)
             t.a.sync.minRefreshGap = .seconds(3600)
             let before = await t.a.transport.fetchCount
             await t.a.sync.refresh(fullScan: true)
