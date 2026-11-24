@@ -1,14 +1,18 @@
-# Builds the iPhone app and uploads it to App Store Connect for TestFlight.
+# Ships the iPhone app: builds it and uploads it to App Store Connect for TestFlight.
 #
-# Runs when a tag "ios-v*" is pushed (for example ios-v0.1.0-3), or by hand from the Actions tab.
-# The version comes from MARKETING_VERSION in project.yml; the build number is the run number plus
-# 100, so it is always higher than the builds uploaded by hand before CI existed.
+# Runs on every merge to main that touches the app (docs-only merges don't ship), or by hand from
+# the Actions tab. The version comes from MARKETING_VERSION in project.yml; the build number is the
+# run number plus 100, so it is always higher than the builds uploaded by hand before CI existed.
 #
 # Secrets on this repo:
-#   ASC_KEY_P8      the contents of AuthKey_<id>.p8 for the App Store Connect API key "Transcribe CI"
+#   ASC_KEY_P8          the contents of AuthKey_<id>.p8 for the App Store Connect API key "Transcribe CI"
 # Variables on this repo (not secret):
-#   ASC_KEY_ID      the key id          (93Y2L9PKNY)
-#   ASC_ISSUER_ID   the team issuer id
+#   ASC_KEY_ID          the key id          (93Y2L9PKNY)
+#   ASC_ISSUER_ID       the team issuer id
+#   TESTFLIGHT_RUNNER   optional runner label. The app needs Xcode 27, which GitHub's hosted Mac images
+#                       did not have on 2026-11-24 (macos-latest stops at Xcode 26; there is no macos-27
+#                       image). Set this to a self-hosted Mac's label, or to the hosted image once one
+#                       has Xcode 27. Unset, the job runs on macos-latest and fails fast at "Select Xcode 27".
 #
 # The Mac app is not released from CI: it is signed with Developer ID and notarised from a Mac that
 # holds the certificate (make release-mac).
@@ -17,7 +21,13 @@ name: TestFlight
 
 on:
   push:
-    tags: ["ios-v*"]
+    branches: [main]
+    paths:
+      - Apps/**
+      - TranscribeKit/**
+      - project.yml
+      - scripts/**
+      - .github/workflows/testflight.yml
   workflow_dispatch:
 
 concurrency:
@@ -29,7 +39,7 @@ permissions:
 
 jobs:
   upload:
-    runs-on: macos-27
+    runs-on: ${{ vars.TESTFLIGHT_RUNNER || 'macos-latest' }}
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v5
@@ -37,16 +47,17 @@ jobs:
       # The app needs the iOS 27 SDK. Fail with a clear message if the runner image has no Xcode 27.
       - name: Select Xcode 27
         run: |
+          if xcodebuild -version 2>/dev/null | grep -q '^Xcode 27'; then xcodebuild -version; exit 0; fi   # a self-hosted Mac
           XCODE=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
           if [ -z "$XCODE" ]; then
-            echo "::error::This runner image has no Xcode 27. Installed: $(ls /Applications | grep -i xcode | tr '\n' ' ')"
+            echo "::error::This runner has no Xcode 27. Installed: $(ls /Applications | grep -i xcode | tr '\n' ' ')"
             exit 1
           fi
           sudo xcode-select -s "$XCODE"
           xcodebuild -version
 
       - name: Install xcodegen
-        run: brew install xcodegen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
 
       # ~700 MB from Hugging Face, pinned and checked by scripts/models.lock.
       - name: Cache the speech models

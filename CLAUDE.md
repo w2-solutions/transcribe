@@ -149,12 +149,22 @@ Rules:
 - Push (`TRANSCRIBE_APS_ENV`) stays `development` in every configuration of both apps, because builds and archives are signed with a development profile, which allows nothing else. The Developer ID export sets `production` from its profile (`release-mac.sh` checks it). It picks the push gateway, not the CloudKit environment.
 - New record types or fields must be deployed to Production in the CloudKit Console before a release can sync. This cannot be undone.
 
+## "Ship it"
+
+When Liam says "ship it", merge the work to `main`: commit, push the branch, open a pull request, and merge it once the checks pass. `main` is what gets released:
+
+- iPhone: the merge uploads a TestFlight build through CI (see below). While CI cannot build, run `make testflight` from the merged `main` and say so.
+- Mac: not automatic. Only when the Mac app changed and Liam wants a new public download: `make release-mac`, upload the DMG to the R2 bucket `w2-downloads` under a new key, and update `TRANSCRIBE` in the `w2-website` repo's `src/index.js`.
+
+Run `swift test` before merging. A merge that changes the store schema or CloudKit record types needs the checks in "Building and installing on the iPhone" and the Production schema deploy first.
+
 ## Releasing the iPhone app to TestFlight
 
 - The App Store Connect app is "W2 Transcribe" (Apple ID 6838568557, bundle id `ai.w2solutions.transcribe`, SKU `w2-transcribe-ios`). The internal tester group "W2 Team" gets every build automatically.
 - `make testflight` (`scripts/testflight.sh`) archives Release and uploads. It signs in with the App Store Connect API key "Transcribe CI" (key id `93Y2L9PKNY`, file `~/.appstoreconnect/private_keys/AuthKey_93Y2L9PKNY.p8`), never the Apple account in Xcode, whose sign-in expires mid-upload. Never read, print or commit the key file.
 - `BUILD_NUMBER` must be higher than the last upload of the same version (default: UTC date and time). An interrupted upload keeps its build number reserved; use the next one. Builds 1 (stuck) and 2 were used on 2026-11-24.
-- CI: `.github/workflows/testflight.yml` runs on a tag `ios-v*` or by hand. It needs the repo secret `ASC_KEY_P8` and the variables `ASC_KEY_ID` and `ASC_ISSUER_ID`, and a runner image with Xcode 27. It had not run yet on 2026-11-24.
+- CI: `.github/workflows/testflight.yml` runs on every merge to `main` that touches `Apps/`, `TranscribeKit/`, `project.yml`, `scripts/` or the workflow (and by hand). It needs the repo secret `ASC_KEY_P8` and the variables `ASC_KEY_ID` and `ASC_ISSUER_ID` (all set on 2026-11-24).
+- **CI cannot build yet (2026-11-24):** GitHub's hosted Mac images stop at Xcode 26 and there is no `macos-27` image, so the job fails at "Select Xcode 27". Until the variable `TESTFLIGHT_RUNNER` names a runner with Xcode 27 (a self-hosted Mac, or a hosted image once one exists), ship the iPhone build with `make testflight` after the merge.
 - TestFlight builds use the Production CloudKit environment, like the Developer ID Mac build.
 
 ## Not yet verified (as of 2026-11-24)
