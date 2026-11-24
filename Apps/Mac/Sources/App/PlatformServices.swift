@@ -26,8 +26,8 @@ import TranscribeKit
         NSApplication.shared.registerForRemoteNotifications()
     }
 
-    /// The Mac syncs each time the app becomes active (§8.4 item 9; `SyncCoordinator.setForeground`), so a missed push
-    /// only delays a change until then. A launch's own sync start
+    /// The Mac syncs each time the app becomes active and every 60 s while it stays active, never behind other apps
+    /// (§8.4 item 9; `SyncCoordinator.setForeground`), so a missed push only delays a change. A launch's own sync start
     /// is never doubled: the coordinator skips a refresh while it starts.
     static func syncOnActivation(_ env: AppEnvironment, active: Bool) {
         env.syncForeground(active)

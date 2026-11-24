@@ -27,6 +27,16 @@ TEAM=53FBF5CS9U
 IDENTITY="Developer ID Application: Liam Wynne ($TEAM)"
 BUNDLE_ID=ai.w2solutions.transcribe.mac
 NOTARY_PROFILE="${NOTARY_PROFILE:-transcribe-notary}"
+# Notarisation signs in with the App Store Connect API key when its file is there (the same key as
+# scripts/testflight.sh; the keychain profile went missing once, on 2026-11-24), otherwise with the keychain profile.
+ASC_KEY_ID="${ASC_KEY_ID:-93Y2L9PKNY}"
+ASC_ISSUER_ID="${ASC_ISSUER_ID:-b275da4d-ed99-4de7-a5ae-8a8d8254e803}"
+ASC_KEY_PATH="${ASC_KEY_PATH:-$HOME/.appstoreconnect/private_keys/AuthKey_$ASC_KEY_ID.p8}"
+if [ -f "$ASC_KEY_PATH" ]; then
+  NOTARY_AUTH=(--key "$ASC_KEY_PATH" --key-id "$ASC_KEY_ID" --issuer "$ASC_ISSUER_ID")
+else
+  NOTARY_AUTH=(--keychain-profile "$NOTARY_PROFILE")
+fi
 DD="${DERIVED:-${TMPDIR:-/tmp}/transcribe-release}"
 DD="${DD%/}"
 ARCHIVE="$DD/TranscribeMac.xcarchive"
@@ -67,17 +77,16 @@ fail() {
   exit 1
 }
 
-# The Mac app's MARKETING_VERSION in project.yml (there must be exactly one).
-VERSION="$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' project.yml)"
-[ -n "$VERSION" ] || fail "no MARKETING_VERSION in project.yml"
-[ "$(printf '%s\n' "$VERSION" | wc -l | tr -d ' ')" = 1 ] || fail "more than one MARKETING_VERSION in project.yml: $VERSION"
+# The Mac app's MARKETING_VERSION in project.yml: the one inside the TranscribeMac target (the iPhone has its own).
+VERSION="$(awk '/^  TranscribeMac:/{mac=1} mac && /^[[:space:]]*MARKETING_VERSION:/{gsub(/["[:space:]]/,"",$2); print $2; exit}' project.yml)"
+[ -n "$VERSION" ] || fail "no MARKETING_VERSION for TranscribeMac in project.yml"
 DMG="$ROOT/dist/Transcribe-$VERSION.dmg"
 
 # notary_state: prints "present", "missing" or "unknown: <message>". notarytool's history call needs the network
 # when the profile exists; "missing" is the one answer that needs no network.
 notary_state() {
   local out
-  if out="$(xcrun notarytool history --keychain-profile "$NOTARY_PROFILE" --output-format json 2>&1)"; then
+  if out="$(xcrun notarytool history "${NOTARY_AUTH[@]}" --output-format json 2>&1)"; then
     echo present
   elif grep -q 'No Keychain password item found' <<<"$out"; then
     echo missing
@@ -260,7 +269,7 @@ if [ "$NOTARY_NOW" = missing ]; then
 fi
 SUBMIT="$DD/notary-submit.json"
 set +e
-xcrun notarytool submit "$DMG" --keychain-profile "$NOTARY_PROFILE" --wait --output-format json >"$SUBMIT"
+xcrun notarytool submit "$DMG" "${NOTARY_AUTH[@]}" --wait --output-format json >"$SUBMIT"
 SUBMIT_RC=$?
 set -e
 cat "$SUBMIT"
@@ -268,7 +277,7 @@ echo
 ID="$(jq -r '.id // empty' "$SUBMIT" 2>/dev/null || true)"
 STATUS="$(jq -r '.status // empty' "$SUBMIT" 2>/dev/null || true)"
 if [ -n "$ID" ]; then
-  xcrun notarytool log "$ID" --keychain-profile "$NOTARY_PROFILE" "$DD/notary-log.json" || true
+  xcrun notarytool log "$ID" "${NOTARY_AUTH[@]}" "$DD/notary-log.json" || true
   [ ! -f "$DD/notary-log.json" ] || cat "$DD/notary-log.json"
   echo
 fi

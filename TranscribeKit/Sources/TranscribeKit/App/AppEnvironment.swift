@@ -71,6 +71,10 @@ public final class AppEnvironment {
         self.sync = syncTransport.map {
             SyncCoordinator(store: store, transport: $0, settings: settings, clock: config.clock, modelKey: modelKey)
         }
+        // Real iCloud only: UI tests and fake-engine runs use a fake iCloud, which has no environment to change.
+        if !config.uiTesting && !config.useFakeEngine {
+            sync?.cloudEnvironment = Bundle.main.object(forInfoDictionaryKey: "TranscribeICloudEnvironment") as? String
+        }
     }
 
     /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.stampCaptureChannels →

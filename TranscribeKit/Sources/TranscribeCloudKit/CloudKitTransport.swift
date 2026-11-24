@@ -164,7 +164,14 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         #endif
         subscription.notificationInfo = info
         do {
-            _ = try await database.save(subscription)
+            do {
+                _ = try await database.save(subscription)
+            } catch let error as CKError where error.code == .zoneNotFound {
+                // A first sync on this account: the zone is still being made. Try once more shortly.
+                log.notice("This app's iCloud subscription waits for the zone")
+                try await Task.sleep(for: .seconds(20))
+                _ = try await database.save(subscription)
+            }
             let all = try await database.allSubscriptions()
             let ids = all.map { "\($0.subscriptionID) (kind \($0.subscriptionType.rawValue))" }.sorted()
             log.notice("Saved this app's iCloud subscription \(subscription.subscriptionID, privacy: .public). Listed: \(ids.joined(separator: ", "), privacy: .public)")

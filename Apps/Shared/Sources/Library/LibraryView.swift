@@ -106,6 +106,13 @@ struct LibraryView: View {
     // MARK: Toolbar
 
     @ToolbarContentBuilder private var toolbar: some ToolbarContent {
+        if let sync = env.sync, env.settings.syncEnabled {
+            ToolbarItem(placement: .trailingBar) {
+                Button("Sync now", systemImage: "arrow.triangle.2.circlepath") { Task { await sync.refreshNow() } }
+                    .tint(DS.Colour.ink)
+                    .accessibilityIdentifier("library.syncButton")
+            }
+        }
         ToolbarItem(placement: .trailingBar) {
             Button("Search recordings", systemImage: "magnifyingglass") { isSearchPresented.toggle() }
                 .tint(DS.Colour.ink)

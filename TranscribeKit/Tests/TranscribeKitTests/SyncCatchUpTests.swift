@@ -99,16 +99,19 @@ extension SyncSuites {
             expectConverged(t.devices)
         }
 
-        /// Coming to the front fetches at once, without a push; nothing fetches on a timer afterwards.
-        @Test func comingToTheFrontFetchesOnceAndNothingPolls() async throws {
+        /// In front, the app fetches at once and then every interval, so a late or lost push only delays a change; when
+        /// it leaves the front the checks stop.
+        @Test func inFrontTheAppChecksOnATimerAndStopsWhenItLeaves() async throws {
             let t = try await TwoDevices.make()
             defer { t.cleanup() }
+            t.a.sync.foregroundPollInterval = .milliseconds(40)
             t.a.sync.minRefreshGap = .zero
+            t.a.sync.setForeground(true)
             try t.b.store.rename(id: t.r1, title: "Renamed on the Mac")
             await t.b.sync.syncNow()
-            t.a.sync.setForeground(true)
             try await eventually { t.a.recording(t.r1)?.title == "Renamed on the Mac" }
-            try await Task.sleep(for: .milliseconds(50))
+            t.a.sync.setForeground(false)
+            try await Task.sleep(for: .milliseconds(60))
             let fetches = await t.a.transport.fetchCount
             try await Task.sleep(for: .milliseconds(250))
             #expect(await t.a.transport.fetchCount == fetches)
