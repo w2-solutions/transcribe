@@ -111,3 +111,24 @@ import Testing
         #expect(SyncCopy.footer(.paused(.zoneRemoved), copy: on) == "iCloud sync paused")
     }
 }
+
+extension DeviceCopyTests {
+    /// Sync turned off with "Keep the iCloud Copy": transcripts and voices are still in iCloud and on the other devices,
+    /// so the privacy wording must not say they are stored only here or never synced.
+    @Test func offWithAKeptICloudCopyDoesNotClaimEverythingStaysHere() {
+        for platform in [DevicePlatform.iPhone, .mac] {
+            let c = DeviceCopy(platform: platform, syncOn: false, cloudCopyKept: true)
+            for text in [c.privacyDetail, c.voicesFooter, c.voicesIntro, c.sidebarFooter] {
+                #expect(!text.contains("only"), "\(platform): \(text)")
+                #expect(!text.contains("never"), "\(platform): \(text)")
+                #expect(!text.contains("Nothing is uploaded"), "\(platform): \(text)")
+                #expect(text.contains("iCloud"), "\(platform): \(text)")
+            }
+            #expect(c.privacyDetail.contains("Audio stays on this \(platform.noun)"))
+        }
+        // Never synced (or the copy removed): the plain wording stays.
+        #expect(DeviceCopy(platform: .mac, syncOn: false, cloudCopyKept: false).sidebarFooter == "On-device. Nothing is uploaded.")
+        // Sync on: the kept flag changes nothing.
+        #expect(DeviceCopy(platform: .mac, syncOn: true, cloudCopyKept: true) == DeviceCopy(platform: .mac, syncOn: true))
+    }
+}

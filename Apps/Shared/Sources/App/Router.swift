@@ -34,6 +34,11 @@ final class Router {
     var path: [Route] = []
     var sheet: SheetRoute?
     var isRecordingPresented = false
+    /// Mac: bumped to bring the Recording window to the front. It can be open but covered or minimised, which leaves
+    /// `isRecordingPresented` true, so setting that flag again would change nothing.
+    var recordingFocusRequest = 0
+    /// Shows the recording screen (and on the Mac brings its window to the front).
+    func presentRecording() { isRecordingPresented = true; recordingFocusRequest += 1 }
     func showTranscript(_ id: UUID, replacingPath: Bool = false) { if replacingPath { path = [.transcript(id)] } else { path.append(.transcript(id)) } }
     func popToLibrary() { path.removeAll() }
     func nameSpeaker(_ ctx: NameSpeakerContext) { sheet = .nameSpeaker(ctx) }

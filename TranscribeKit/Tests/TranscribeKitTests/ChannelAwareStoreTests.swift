@@ -323,3 +323,27 @@ struct ChannelAwareStoreTests {
         }
     }
 }
+
+extension ChannelAwareStoreTests {
+    /// The cohort window (100 recordings, 300 voices) applies per capture channel, so many recordings synced from another
+    /// device never push this channel's never-named voices out of it.
+    @Test func anotherChannelsRecordingsDoNotPushThisChannelsVoicesOutOfTheCohort() throws {
+        let h = try WP3Harness(channel: Self.phone)
+        defer { h.cleanup() }
+        let key = EmbeddingModelID.fake.key
+        let brother = SyntheticVoices.vector(near: .stranger, cosine: 0.9, variant: 52)
+        let old = try h.readyRecording(turns: SeedContent.conversationA, drafts: [WP3Docs.draft("S1", 1, clean: 12, vector: brother)],
+                                       createdAt: Seeds.Dates.d)
+        try h.recording(old).captureChannel = Self.phone
+        for i in 0..<100 {
+            let v = SyntheticVoices.vector(near: .liam, cosine: 0.2 + Float(i) * 0.005, variant: 10 + i % 40)
+            let id = try h.readyRecording(turns: SeedContent.conversationA, drafts: [WP3Docs.draft("S1", 1, clean: 12, vector: v)],
+                                          createdAt: Seeds.Dates.d.addingTimeInterval(Double(i + 1) * 60))
+            try h.recording(id).captureChannel = Self.mac
+        }
+        try h.context.save()
+        let cohort = try h.store.matchCohort(modelKey: key, excludingRecording: UUID())
+        #expect(cohort.contains(brother))
+        #expect(cohort.count == 101)   // every Mac voice still counts too
+    }
+}

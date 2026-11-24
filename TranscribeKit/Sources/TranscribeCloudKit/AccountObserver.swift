@@ -36,7 +36,9 @@ final class AccountObserver: Sendable {
 
     /// Whether this process is signed with the iCloud container entitlement. A Mac build signed to run locally (no
     /// team) has none, and CloudKit raises an exception when such a process opens a container, so sync then reads as
-    /// "no account" instead. iOS builds are always provisioned on device; the simulator honours the entitlements file.
+    /// "no account" instead. On iOS a device build signed without iCloud (`TRANSCRIBE_SYNC=NO`, for a machine whose
+    /// Xcode cannot provision the iCloud App ID) says so in its Info.plist (`TranscribeICloud` = NO); every other iOS
+    /// build is provisioned with the container, and the simulator honours the entitlements file.
     static func hasContainerEntitlement(_ identifier: String) -> Bool {
         #if os(macOS)
         guard let task = SecTaskCreateFromSelf(nil),
@@ -44,7 +46,7 @@ final class AccountObserver: Sendable {
         else { return false }
         return (value as? [String])?.contains(identifier) ?? false
         #else
-        return true
+        return (Bundle.main.object(forInfoDictionaryKey: "TranscribeICloud") as? String) != "NO"
         #endif
     }
 }

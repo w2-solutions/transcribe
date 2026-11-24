@@ -24,4 +24,23 @@ final class MacSettingsTests: FlowTestCase {
         Wait.switchState(identify, on: true)
         Wait.switchState(recognise, on: true)
     }
+
+    /// Voices opened from the Settings window names a waiting voice there (the Settings window has its own sheet), and
+    /// "Speaker settings" goes back to Settings instead of stacking a second one.
+    @MainActor func testNamingAWaitingVoiceFromTheSettingsWindow() {
+        let app = UITestApp.launch(seed: "askKaran")
+        app.waitFor(AX.Mac.main, timeout: 20)
+        app.shortcut(",")
+        app.waitFor(AX.Settings.screen)
+        app.scrollTo(AX.Settings.voicesRow).click()
+        app.waitFor(AX.Voices.screen)
+        app.waitFor(AX.Voices.waitingName(0)).click()
+        app.waitFor(AX.NameSpeaker.sheet)
+        Wait.label(app.waitFor(AX.NameSpeaker.subtitle), contains: "Speaker 2")
+        app.element(AX.NameSpeaker.closeButton).click()
+        app.waitForGone(AX.NameSpeaker.sheet)
+        app.scrollTo(AX.Voices.speakerSettingsLink).click()
+        app.waitForGone(AX.Voices.screen)
+        app.waitFor(AX.Settings.voicesRow)
+    }
 }

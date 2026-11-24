@@ -100,3 +100,31 @@ extension SyncSuites {
         }
     }
 }
+
+extension SyncSuites.SyncReadyOnlyTests {
+    /// A remote edit skipped while the recording was processed here, then the recording is deleted elsewhere. If this
+    /// device sends before it fetches, the save must not recreate the deleted record: it carries the old change tag,
+    /// meets `unknownItem`, and the delete wins.
+    @Test func aSkippedEditThenARemoteDeleteIsNotResurrectedBySendingFirst() async throws {
+        let t = try await TwoDevices.make()
+        defer { t.cleanup() }
+        let rid = SyncRecordID(type: .recording, entityID: t.r1)
+        try t.b.store.setStage(.matching, queueReason: nil, for: t.r1)
+        try t.a.store.rename(id: t.r1, title: "Renamed on A")
+        await t.settleBoth()
+        #expect(t.b.stateRow(rid)?.mustMergeWithServer == true && t.b.stateRow(rid)?.pending == .save)
+        try t.a.store.delete(id: t.r1)
+        await t.a.sync.syncNow()
+        #expect(await t.cloud.record(account: "account-1", recordName: rid.recordName) == nil)
+
+        try t.b.matchLikeThePipeline(t.r1)   // ready again
+        try t.b.store.setFavourite(id: t.r1, true)
+        await t.b.sync.flushAndEnqueue()
+        try await t.b.transport.sendChanges()   // before any fetch
+        #expect(await t.cloud.record(account: "account-1", recordName: rid.recordName) == nil)
+        await t.settleBoth()
+        #expect(await t.cloud.record(account: "account-1", recordName: rid.recordName) == nil)
+        for d in t.devices { #expect(d.recording(t.r1) == nil, "\(d.name)") }
+        expectConverged(t.devices)
+    }
+}

@@ -263,6 +263,15 @@ enum AX {
         static let toolbarRecordingPill = "mac.toolbar.recordingPill"
         static let recordingWindow = "mac.recordingWindow"
         static func sidebarFolder(_ i: Int) -> String { "mac.sidebar.folder.\(i)" }
+        static func sidebarFolderRename(_ i: Int) -> String { "mac.sidebar.folder.\(i).rename" }
+        static func sidebarFolderDelete(_ i: Int) -> String { "mac.sidebar.folder.\(i).delete" }
+        static let sidebarFolders = "mac.sidebar.folders"
+        static let sidebarNewFolder = "mac.sidebar.newFolder"
+        static let folderDeleteConfirm = "mac.sidebar.folderDelete.confirm"
+        static let folderDeleteCancel = "mac.sidebar.folderDelete.cancel"
+        static let recordingSearch = "mac.list.recordings.search"
+        static let recordingSearchClear = "mac.list.recordings.searchClear"
+        static let voiceSearch = "mac.list.voices.search"
     }
 
     enum Attributions {

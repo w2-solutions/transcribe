@@ -30,7 +30,7 @@ struct MacRecordingList: View {
     @FocusState private var searchFocused: Bool
 
     /// Mac wording, sync-aware ("Delete from all your devices?" while sync is on).
-    private var macCopy: DeviceCopy { DeviceCopy(platform: .mac, syncOn: env.copy.syncOn) }
+    private var macCopy: DeviceCopy { DeviceCopy(platform: .mac, syncOn: env.copy.syncOn, cloudCopyKept: env.copy.cloudCopyKept) }
     /// The list holds keyboard focus after a click on a card, so ⌫ and the arrow keys act on the selection.
     @FocusState private var listFocused: Bool
 
@@ -159,11 +159,13 @@ struct MacRecordingList: View {
                 .font(.system(size: 14))
                 .focused($searchFocused)
                 .accessibilityLabel("Search recordings")
+                .accessibilityIdentifier(AX.Mac.recordingSearch)
             if !searchText.isEmpty {
                 Button("Clear search", systemImage: "xmark.circle.fill") { searchText = "" }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.plain)
                     .foregroundStyle(DS.Colour.secondary)
+                    .accessibilityIdentifier(AX.Mac.recordingSearchClear)
             }
         }
         .padding(.horizontal, 16)
@@ -238,7 +240,7 @@ struct MacRecordingList: View {
 
     private func open(_ recording: Recording) {
         if recording.stage == .capturing, env.recorder.recordingID == recording.id {
-            router.isRecordingPresented = true
+            router.presentRecording()
             return
         }
         selection.recording = recording.id

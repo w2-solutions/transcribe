@@ -33,7 +33,7 @@ struct MacCommands: Commands {
             Divider()
             Button("Import Audio…") {
                 openWindow(id: "main")
-                selection.importRequest += 1
+                selection.importRequested = true
             }
             .keyboardShortcut("o")
         }
@@ -47,23 +47,23 @@ struct MacCommands: Commands {
                 .keyboardShortcut("f")
         }
         CommandMenu("Playback") {
-            Button(env.player.isPlaying ? "Pause" : "Play") { env.player.toggle() }
-                .disabled(focusedTranscript == nil || env.player.loadedURL == nil)
+            Button(env.player.isPlaying ? "Pause" : "Play") {
+                if let id = focusedTranscript { env.togglePlayback(of: id) }
+            }
+            .disabled(!env.hasLocalAudio(focusedTranscript))
         }
     }
 
+    /// Brings the Recording window to the front while recording; otherwise the main window starts one through
+    /// `MacRootView.record()`, which explains a denied microphone or a failure.
     private func newRecording() {
         openWindow(id: "main")
-        if env.recorder.isActive { router.isRecordingPresented = true; return }
-        env.player.stop()
-        Task {
-            do {
-                try await env.recorder.start()
-                router.isRecordingPresented = true
-            } catch {
-                // Mic denied or engine failure: the toolbar's Record button explains; the command stays quiet.
-            }
+        if env.recorder.isActive {
+            router.isRecordingPresented = true
+            openWindow(id: "recording")
+            return
         }
+        selection.recordRequested = true
     }
 
     private func stopRecording() {
@@ -86,5 +86,33 @@ struct MacCommands: Commands {
             recording.speaker(key)?.displayName ?? "Speaker"
         }
         Pasteboard.copy(text)
+    }
+}
+
+extension AppEnvironment {
+    /// The recording with this id, when it is in the library.
+    func libraryRecording(_ id: UUID) -> Recording? {
+        var descriptor = FetchDescriptor<Recording>(predicate: #Predicate { $0.id == id })
+        descriptor.fetchLimit = 1
+        return try? container.mainContext.fetch(descriptor).first
+    }
+
+    /// The transcript on screen has its audio on this Mac (a synced recording keeps it on the device that recorded it).
+    func hasLocalAudio(_ id: UUID?) -> Bool {
+        guard let id, let recording = libraryRecording(id) else { return false }
+        return store.hasLocalAudio(recording)
+    }
+
+    /// Space and Playback → Play/Pause: plays or pauses this recording's own audio, never a file another transcript
+    /// left loaded. False (nothing happens) when the recording has no audio on this Mac.
+    @discardableResult
+    func togglePlayback(of id: UUID) -> Bool {
+        guard let recording = libraryRecording(id), store.hasLocalAudio(recording) else { return false }
+        let url = paths.audioURL(fileName: recording.audioFileName)
+        if player.loadedURL != url {
+            guard (try? player.load(url: url)) != nil else { return false }
+        }
+        player.toggle()
+        return true
     }
 }

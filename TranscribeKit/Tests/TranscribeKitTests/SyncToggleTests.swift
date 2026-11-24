@@ -140,3 +140,24 @@ extension SyncSuites {
         }
     }
 }
+
+extension SyncSuites.SyncToggleTests {
+    /// The privacy wording follows whether an iCloud copy was kept when sync was turned off.
+    @Test func keepsCloudCopyFollowsTheLeaveChoice() async throws {
+        let t = try await TwoDevices.make()
+        defer { t.cleanup() }
+        #expect(!t.a.sync.keepsCloudCopy)   // on: not "kept", it is syncing
+        try await t.a.sync.disable(removeCloudCopy: false)
+        #expect(t.a.sync.keepsCloudCopy)
+        await t.a.relaunch()
+        #expect(t.a.sync.keepsCloudCopy)
+        await t.a.sync.enable()
+        #expect(!t.a.sync.keepsCloudCopy)
+        try await t.a.sync.disable(removeCloudCopy: true)
+        #expect(!t.a.sync.keepsCloudCopy)
+        // A device that never synced keeps nothing.
+        let fresh = try FakeDevice("C", cloud: t.cloud)
+        defer { fresh.cleanup() }
+        #expect(!fresh.sync.keepsCloudCopy)
+    }
+}

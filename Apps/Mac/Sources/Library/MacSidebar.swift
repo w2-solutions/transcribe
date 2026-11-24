@@ -47,7 +47,9 @@ struct MacSidebar: View {
                             .tag(SidebarItem.folder(folder.id))
                             .contextMenu {
                                 Button("Rename…") { folderEditor = FolderEditor(folderID: folder.id, name: folder.name) }
+                                    .accessibilityIdentifier(AX.Mac.sidebarFolderRename(i))
                                 Button("Delete", role: .destructive) { pendingFolderDelete = folder }
+                                    .accessibilityIdentifier(AX.Mac.sidebarFolderDelete(i))
                             }
                             .accessibilityIdentifier(AX.Mac.sidebarFolder(i))
                     }
@@ -55,7 +57,9 @@ struct MacSidebar: View {
                     Label("Folders", systemImage: "folder")
                         .contextMenu {
                             Button("New Folder…") { folderEditor = FolderEditor(folderID: nil, name: "") }
+                                .accessibilityIdentifier(AX.Mac.sidebarNewFolder)
                         }
+                        .accessibilityIdentifier(AX.Mac.sidebarFolders)
                 }
             }
             Section("People") {
@@ -76,7 +80,9 @@ struct MacSidebar: View {
                             isPresented: Binding(get: { pendingFolderDelete != nil }, set: { if !$0 { pendingFolderDelete = nil } }),
                             titleVisibility: .visible, presenting: pendingFolderDelete) { folder in
             Button("Delete", role: .destructive) { deleteFolder(folder) }
+                .accessibilityIdentifier(AX.Mac.folderDeleteConfirm)
             Button("Cancel", role: .cancel) {}
+                .accessibilityIdentifier(AX.Mac.folderDeleteCancel)
         } message: { _ in
             Text("Recordings in the folder are kept.")
         }
@@ -119,7 +125,7 @@ struct MacSidebar: View {
     /// The privacy line, or the iCloud status while sync is on (§8.6). Clicking it opens Settings.
     private var syncFooter: some View {
         let status = env.sync.map { env.settings.syncEnabled ? $0.status : .off } ?? .off
-        let text = SyncCopy.footer(status, copy: DeviceCopy(platform: .mac, syncOn: env.copy.syncOn))
+        let text = SyncCopy.footer(status, copy: DeviceCopy(platform: .mac, syncOn: env.copy.syncOn, cloudCopyKept: env.copy.cloudCopyKept))
         let symbol = status == .off ? "lock" : SyncSettingsSection.symbol(status)
         return Button { openSettings() } label: {
             Label(text, systemImage: symbol)

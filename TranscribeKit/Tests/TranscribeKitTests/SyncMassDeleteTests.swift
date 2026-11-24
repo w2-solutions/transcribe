@@ -92,3 +92,46 @@ extension SyncSuites {
         }
     }
 }
+
+extension SyncSuites.SyncMassDeleteTests {
+    /// "Restore them from iCloud" also restores the deleted items another device edited meanwhile: a fetched edit of
+    /// an item deleted here goes through the breaker like every other delete, and is not sent ahead of it.
+    @Test func restoreKeepsItemsEditedElsewhere() async throws {
+        let cloud = FakeCloud()
+        let clock = TestClock()
+        let a = try FakeDevice("A", cloud: cloud, clock: clock), b = try FakeDevice("B", cloud: cloud, channel: CaptureChannel.mac, clock: clock)
+        defer { a.cleanup(); b.cleanup() }
+        var ids: [UUID] = []
+        for i in 0..<40 {
+            ids.append(try a.record([SyncVoices.stranger(i % 50, 0.6)]))
+            clock.advance(10)
+            await Task.yield()
+        }
+        await a.sync.enable()
+        await b.sync.enable()
+        await settle([a, b])
+        try await a.sync.disable(removeCloudCopy: false)
+        for id in ids.prefix(35) {
+            try a.store.delete(id: id)
+            await Task.yield()
+        }
+        for (i, id) in ids.prefix(5).enumerated() {   // B names the speaker in 5 of them
+            _ = try b.store.nameSpeaker(recordingID: id, key: "S1", as: .newPerson(name: "P\(i)"), remember: true)
+            clock.advance(10)
+        }
+        await b.sync.syncNow()
+        await a.sync.enable()
+        #expect(a.sync.status == .paused(.massDelete))
+        #expect(a.sync.heldDeleteCount == 70)   // 35 recordings and their 35 speakers, the edited ones included
+        await a.sync.resolveMassDelete(confirm: false)
+        await settle([a, b])
+        #expect(a.count(Recording.self) == 40 && b.count(Recording.self) == 40)
+        for (i, id) in ids.prefix(5).enumerated() {
+            for d in [a, b] {
+                #expect(d.recording(id)?.speakers.count == 1, "\(d.name) \(i)")
+                #expect(d.recording(id)?.speaker("S1")?.displayName == "P\(i)", "\(d.name) \(i)")
+            }
+        }
+        expectConverged([a, b])
+    }
+}

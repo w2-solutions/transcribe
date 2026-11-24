@@ -71,6 +71,22 @@ public final class SyncCoordinator {
 
     var context: ModelContext { store.context }
 
+    /// Sync is off and the iCloud copy was kept ("Keep the iCloud Copy"): transcripts and voices synced earlier are
+    /// still in iCloud and on the other devices.
+    public var keepsCloudCopy: Bool {
+        !settings.syncEnabled && Self.accountRow(context, create: false)?.accountHash != nil
+    }
+
+    /// The signed-in account is the one this library synced with, so its `Library` zone is this library's copy.
+    private func ownsSignedInZone() async -> Bool {
+        switch account.pausedReason {
+        case .accountChanged?, .zoneRemoved?: return false
+        default: break
+        }
+        guard let stored = account.accountHash, let current = await transport.accountHash() else { return false }
+        return stored == current
+    }
+
     // MARK: Public flows
 
     /// At launch, when the switch is on: resume on the same account, or pause (no account, another account, or the
@@ -101,8 +117,12 @@ public final class SyncCoordinator {
     /// On → Off. "Keep the iCloud copy" keeps every state row and the engine state, so turning sync on again on the
     /// same account sends the deletes made meanwhile. "Also remove from iCloud" deletes the zone and all sync state.
     /// Local data is never touched.
+    ///
+    /// The zone is deleted only on the Apple Account this library synced with. Signed in to another account (paused
+    /// for an account change), signed out, or after the copy was removed elsewhere, "remove" only forgets this
+    /// device's sync state: the zone of whoever is signed in now belongs to that account's devices.
     public func disable(removeCloudCopy: Bool) async throws {
-        if removeCloudCopy {
+        if removeCloudCopy, await ownsSignedInZone() {
             deletedZoneItself = true
             if !running { await transport.start(state: account.engineState, provider: provider) }
             try await transport.deleteZone()
@@ -538,15 +558,28 @@ public final class SyncCoordinator {
         if quotaFull { pause(.quotaFull) }
     }
 
+    /// A pause that only the user can end (`resolveAccountChange`, `resolveMassDelete`, or turning the switch on again).
+    /// Signing out and in never clears it: otherwise a sign-in would resume and upload without consent.
+    private static func needsTheUser(_ reason: SyncPauseReason?) -> Bool {
+        reason == .zoneRemoved || reason == .accountChanged || reason == .massDelete
+    }
+
     private func handleAccountChange(_ change: AccountChange) async {
         switch change {
         case .signOut:
             guard settings.syncEnabled else { return }
             stopRunning()
-            pause(.noAccount)
+            if let reason = account.pausedReason, Self.needsTheUser(reason) {
+                status = .paused(reason)
+            } else {
+                pause(.noAccount)
+            }
             Task { await self.transport.stop() }
         case .signIn(let hash), .switchAccounts(let hash):
             guard settings.syncEnabled else { return }
+            let reason = account.pausedReason
+            // Back on the account this library syncs with: an account-change pause ends; any other such pause stays.
+            if Self.needsTheUser(reason), !(reason == .accountChanged && account.accountHash == hash) { return }
             if let stored = account.accountHash, stored != hash {
                 stopRunning()
                 pause(.accountChanged)

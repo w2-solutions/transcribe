@@ -125,7 +125,7 @@ struct TranscriptView: View {
                 // Capped below the navigation bar; the panel scrolls its content when it is taller.
                 GeometryReader { geo in
                     ProcessingPanel(recordingID: recordingID, maxHeight: geo.size.height - 8,
-                                    onContinueInBackground: { router.popToLibrary() },
+                                    onContinueInBackground: { continueInBackground() },
                                     onShowTranscriptNow: { setPanelCollapsed(true) })
                         .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { panelHeight = $0 }
                         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -146,6 +146,16 @@ struct TranscriptView: View {
         .navigationTitle(DisplayFormat.shortDate(recording.createdAt))
         .inlineNavigationTitle()
         .screenBackground()
+    }
+
+    /// iPhone: back to the Library. Mac: the transcript is the detail column's root (nothing to pop), so the panel
+    /// folds into the progress pill and processing carries on while the user works.
+    private func continueInBackground() {
+        #if os(macOS)
+        setPanelCollapsed(true)
+        #else
+        router.popToLibrary()
+        #endif
     }
 
     private func setPanelCollapsed(_ collapsed: Bool) {

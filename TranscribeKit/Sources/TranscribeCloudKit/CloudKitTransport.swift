@@ -236,7 +236,15 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
                 do {
                     if let record = try codec.decode(modification.record) { modifications.append(record) }
                 } catch {
-                    log.error("Skipped fetched record \(modification.record.recordID.recordName, privacy: .public): \(String(describing: error), privacy: .public)")
+                    // The change token moves past this batch, so a record that does not decode (an asset file not
+                    // readable) is fetched again by id now rather than lost.
+                    let name = modification.record.recordID.recordName
+                    switch await refetch(modification.record.recordID) {
+                    case .record(let record): modifications.append(record)
+                    case .gone: break
+                    case .unreadable(let why), .failed(let why):
+                        log.error("Skipped fetched record \(name, privacy: .public): \(String(describing: error), privacy: .public); refetch: \(why, privacy: .public)")
+                    }
                 }
             }
             let deletions = changes.deletions.compactMap { codec.syncID($0.recordID) }
@@ -244,7 +252,7 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
             await deliver(.fetched(modifications: modifications, deletions: deletions))
 
         case .sentRecordZoneChanges(let sent):
-            let event = mapSent(sent)
+            let event = await mapSent(sent, engine: syncEngine)
             codec.removeOutgoingAssets(recordNames: sent.savedRecords.map(\.recordID.recordName)
                 + sent.failedRecordSaves.map(\.record.recordID.recordName))
             await deliver(event)
@@ -295,7 +303,11 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
 
     // MARK: Mapping send results
 
-    func mapSent(_ sent: CKSyncEngine.Event.SentRecordZoneChanges) -> SyncEvent {
+    /// A `serverRecordChanged` whose server copy does not decode is never reported as retryable: `CKSyncEngine` drops
+    /// that pending save and expects the app to merge and re-add it. CloudKit leaves the conflict copy's asset fields
+    /// without files (`CKAsset.fileURL` is nil), so a Recording with a transcript never decodes as delivered: the
+    /// record is fetched again by id (with its assets) and that copy is merged.
+    func mapSent(_ sent: CKSyncEngine.Event.SentRecordZoneChanges, engine: CKSyncEngine) async -> SyncEvent {
         var saved: [SyncRecord] = []
         for record in sent.savedRecords {
             guard let id = codec.syncID(record.recordID) else { continue }
@@ -310,8 +322,20 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
             case .serverRecordChanged:
                 if let server = failure.error.serverRecord, let record = try? codec.decode(server) {
                     failures.append(.serverRecordChanged(record))
-                } else {
+                    continue
+                }
+                switch await refetch(failure.record.recordID) {
+                case .record(let record):
+                    failures.append(.serverRecordChanged(record))
+                case .gone:
+                    failures.append(.unknownItem(id))   // deleted meanwhile: delete wins
+                case .failed(let why):
+                    // Offline or busy: keep the save pending in the engine, which retries it (and this refetch) later.
+                    log.info("Refetching \(id.recordName, privacy: .public) after a conflict failed: \(why, privacy: .public)")
+                    engine.state.add(pendingRecordZoneChanges: [.saveRecord(failure.record.recordID)])
                     failures.append(.retryable(id))
+                case .unreadable(let why):
+                    failures.append(.permanent(id, "The server copy cannot be read: \(why)"))
                 }
             default:
                 failures.append(Self.failure(id, failure.error))
@@ -326,6 +350,40 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
             }
         }
         return .sent(saved: saved, deleted: deleted, failures: failures)
+    }
+
+    enum Refetched {
+        case record(SyncRecord)
+        /// The server no longer has it.
+        case gone
+        /// Fetched, but it still does not decode (a corrupt asset): retrying would not help.
+        case unreadable(String)
+        /// Not fetched (network, rate limit …): worth retrying later.
+        case failed(String)
+    }
+
+    /// One record fetched again by id, assets included, and decoded.
+    func refetch(_ recordID: CKRecord.ID) async -> Refetched {
+        guard let database = container?.privateCloudDatabase else { return .failed("no container") }
+        let result: Result<CKRecord, any Error>
+        do {
+            guard let r = try await database.records(for: [recordID])[recordID] else { return .gone }
+            result = r
+        } catch {
+            result = .failure(error)
+        }
+        switch result {
+        case .success(let ck):
+            do {
+                guard let record = try codec.decode(ck) else { return .unreadable("not a Library record") }
+                return .record(record)
+            } catch {
+                return .unreadable(String(describing: error))
+            }
+        case .failure(let error):
+            if (error as? CKError)?.code == .unknownItem { return .gone }
+            return .failed(error.localizedDescription)
+        }
     }
 
     static func failure(_ id: SyncRecordID, _ error: CKError) -> SendFailure {

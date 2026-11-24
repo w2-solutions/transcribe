@@ -12,7 +12,7 @@ struct RecordingPill: View {
     var body: some View {
         let recorder = env.recorder
         Button {
-            router.isRecordingPresented = true
+            router.presentRecording()
         } label: {
             HStack(spacing: 9) {
                 PulsingRecordDot(isPulsing: RecordingStatus.isLive(recorder.state))

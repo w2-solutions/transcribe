@@ -84,10 +84,10 @@ final class RemoteApplier {
 
     /// The three-way merge of a server copy into the local entity (or a new local entity).
     ///
-    /// - The entity's recording is being processed here: skipped, base unchanged. The row forgets its system fields and
-    ///   is marked for a save, so once the recording is ready it is sent even if processing changed nothing; that save
-    ///   meets `serverRecordChanged` and merges then (the fetch token has moved on, so nothing else would bring the
-    ///   skipped change back).
+    /// - The entity's recording is being processed here: skipped, base unchanged. The row keeps its (now old) system
+    ///   fields, is marked must-merge and pending a save, so once the recording is ready it is sent even if processing
+    ///   changed nothing; that save meets `serverRecordChanged` and merges then (the fetch token has moved on, so
+    ///   nothing else would bring the skipped change back), or `unknownItem` if the record was deleted meanwhile.
     /// - The entity is gone here but the row knows the server: delete wins, the delete is (re)queued.
     /// - Otherwise each group is merged (`MergePolicy`); the new base is the server's hashes, except that applied
     ///   groups take the local re-projection (so an applied value never echoes back).
@@ -98,7 +98,7 @@ final class RemoteApplier {
         if let e = projector.entity(id) {
             if e.isProcessingLocally {
                 if let row = state, row.pending == .none || row.pending == .save {
-                    row.systemFields = nil
+                    row.markMustMergeWithServer()   // keeps the old change tag: see `mustMergeWithServer`
                     row.pending = .save
                     row.updatedAt = clock.now
                 }
@@ -145,10 +145,12 @@ final class RemoteApplier {
             return
         }
         if let row = state, row.pending == .delete || row.pending == .parkedDelete || !row.isFresh {
-            // Deleted on this device after it last agreed with the server: delete wins.
+            // Deleted on this device after it last agreed with the server: delete wins. A delete already confirmed
+            // here is queued again. One not yet confirmed (made while sync was not running, so no scan has counted
+            // it) is left to the full scan that follows every fetch, so the mass-delete breaker counts it and can
+            // hold it with the others; sending it now would get past "Restore them from iCloud".
             row.systemFields = server.systemFields
-            if row.pending != .parkedDelete {
-                row.pending = .delete
+            if row.pending == .delete {
                 effects.deletes.append(id)
             }
             row.updatedAt = clock.now

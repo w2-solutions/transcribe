@@ -196,6 +196,9 @@ if grep -q 'com.apple.developer.icloud-container-identifiers' "$ENTITLEMENTS_SRC
     fail "entitlements: no iCloud.ai.w2solutions.transcribe container"
   [ "$(plist_value "$ENT" com.apple.developer.icloud-container-environment)" = Production ] ||
     fail "entitlements: icloud-container-environment is not Production"
+  # The archive carries "development" (its development profile allows nothing else); the export sets production.
+  [ "$(plist_value "$ENT" com.apple.developer.aps-environment)" = production ] ||
+    fail "entitlements: aps-environment is not production (the Developer ID export should set it from its profile)"
   [ -f "$APP/Contents/embedded.provisionprofile" ] || fail "no embedded.provisionprofile (iCloud needs one)"
   security cms -D -i "$APP/Contents/embedded.provisionprofile" >"$WORK/profile.plist" ||
     fail "could not decode embedded.provisionprofile"
@@ -203,7 +206,7 @@ if grep -q 'com.apple.developer.icloud-container-identifiers' "$ENTITLEMENTS_SRC
     fail "the embedded provisioning profile does not list iCloud.ai.w2solutions.transcribe"
   grep -q CloudKit.framework <<<"$(otool -L "$APP/Contents/MacOS/Transcribe")" ||
     fail "the binary does not link CloudKit.framework"
-  ok "iCloud container (Production), provisioning profile and CloudKit link"
+  ok "iCloud container (Production), push (production), provisioning profile and CloudKit link"
 fi
 
 # Every Mach-O file in the bundle (the models are not code, so their folder is skipped).

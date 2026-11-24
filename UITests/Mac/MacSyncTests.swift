@@ -39,7 +39,8 @@ final class MacSyncTests: FlowTestCase {
         app.button(AX.Sync.Leave.keep, title: "Keep the iCloud Copy").click()
         Wait.switchState(master, on: false)
         app.waitForGone(AX.Sync.status)
-        Wait.label(app.element(AX.Mac.sidebarFooter), contains: "Nothing is uploaded")
+        // The iCloud copy was kept, so the footer no longer says nothing is uploaded.
+        Wait.label(app.element(AX.Mac.sidebarFooter), contains: "A copy remains in your iCloud")
     }
 
     @MainActor func testRemoveTheICloudCopy() {

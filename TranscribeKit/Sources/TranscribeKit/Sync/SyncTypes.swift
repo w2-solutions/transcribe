@@ -155,10 +155,31 @@ public extension TranscribeSchemaV3.SyncRecordState {
     var type: SyncRecordType? { SyncRecordType(rawValue: typeRaw) }
     var recordID: SyncRecordID? { type.map { SyncRecordID(type: $0, entityID: entityID) } }
 
-    /// [group: hex sha256] as last agreed with the server; empty = never synced.
+    /// [group: hex sha256] as last agreed with the server; empty = never synced. Setting it (a new agreement with the
+    /// server) also ends `mustMergeWithServer`.
     var baseHashes: [String: String] {
-        get { (try? JSONDecoder().decode([String: String].self, from: baseHashesJSON)) ?? [:] }
+        get {
+            var d = storedBaseJSON
+            d.removeValue(forKey: Self.mustMergeKey)
+            return d
+        }
         set { baseHashesJSON = SyncSchema.sortedJSON(newValue) }
+    }
+
+    /// Kept inside `baseHashesJSON` (no group name starts with "~"), so the V3 store schema is unchanged.
+    private static var mustMergeKey: String { "~mustMerge" }
+    private var storedBaseJSON: [String: String] {
+        (try? JSONDecoder().decode([String: String].self, from: baseHashesJSON)) ?? [:]
+    }
+
+    /// Marks that a server change was skipped while the entity was processed here: the next save is sent even when
+    /// nothing changed locally. The row keeps its system fields (the old change tag), so that save meets
+    /// `serverRecordChanged` and merges, or `unknownItem` when the record was deleted elsewhere meanwhile (delete
+    /// wins). It never goes out as a create, which would bring a deleted record back.
+    func markMustMergeWithServer() {
+        var d = storedBaseJSON
+        d[Self.mustMergeKey] = "1"
+        baseHashesJSON = SyncSchema.sortedJSON(d)
     }
 
     /// [field: uuidString] links whose target has not arrived yet.
@@ -170,9 +191,11 @@ public extension TranscribeSchemaV3.SyncRecordState {
     /// Never acknowledged by the server and no agreed base: the row says nothing about the server.
     var isFresh: Bool { systemFields == nil && baseHashes.isEmpty }
 
-    /// A base but no system fields: a server change was skipped while the entity was processed here, so the next save
-    /// goes out as a create, meets `serverRecordChanged` and merges, even when nothing changed locally.
-    var mustMergeWithServer: Bool { systemFields == nil && !baseHashes.isEmpty }
+    /// A server change was skipped while the entity was processed here (`markMustMergeWithServer`), so the next save is
+    /// sent even when nothing changed locally. (A base with no system fields is the older form of the same mark.)
+    var mustMergeWithServer: Bool {
+        storedBaseJSON[Self.mustMergeKey] != nil || (systemFields == nil && !baseHashes.isEmpty)
+    }
 }
 
 public extension TranscribeSchemaV3.SyncAccountState {

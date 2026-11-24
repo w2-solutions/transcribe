@@ -6,7 +6,9 @@ import TranscribeKit
 extension AppEnvironment {
     /// Device wording with the sync switch applied ("Saved to your voices and synced with iCloud", "Delete from all
     /// your devices?"). Shared views read their copy here so it follows the switch.
-    var copy: DeviceCopy { DeviceCopy(syncOn: sync != nil && settings.syncEnabled) }
+    var copy: DeviceCopy {
+        DeviceCopy(syncOn: sync != nil && settings.syncEnabled, cloudCopyKept: sync?.keepsCloudCopy ?? false)
+    }
 }
 
 /// Settings → iCloud (§8.6): the "Sync with iCloud" switch (off by default), what syncs, the status line, Sync Now and
@@ -26,6 +28,9 @@ struct SyncSettingsSection: View {
 
     private func content(_ sync: SyncCoordinator) -> some View {
         let on = env.settings.syncEnabled && sync.status != .paused(.zoneRemoved)
+        // Signed in to another account, or signed out: the iCloud copy is out of reach, and the zone of whoever is
+        // signed in now is never this library's to remove.
+        let canRemove = on && sync.status != .paused(.accountChanged) && sync.status != .paused(.noAccount)
         return VStack(alignment: .leading, spacing: 0) {
             SectionHeader("iCloud").padding(.top, 14).padding(.bottom, 6)
             SettingsCard {
@@ -48,6 +53,8 @@ struct SyncSettingsSection: View {
                         }
                         .buttonStyle(.plain)
                         .accessibilityIdentifier(AX.Sync.now)
+                    }
+                    if canRemove {
                         Button { isConfirmingRemove = true } label: {
                             ValueRow(systemImage: "trash", tint: .neutral, title: "Remove iCloud Copy…", value: nil,
                                      accessory: .none, titleColor: DS.Colour.destructive)
@@ -69,8 +76,10 @@ struct SyncSettingsSection: View {
             .confirmationDialog(SyncCopy.leaveTitle, isPresented: $isLeaving, titleVisibility: .visible) {
                 Button(SyncCopy.leaveKeep) { disable(sync, removeCloudCopy: false) }
                     .accessibilityIdentifier(AX.Sync.Leave.keep)
-                Button(SyncCopy.leaveRemove, role: .destructive) { disable(sync, removeCloudCopy: true) }
-                    .accessibilityIdentifier(AX.Sync.Leave.remove)
+                if canRemove {
+                    Button(SyncCopy.leaveRemove, role: .destructive) { disable(sync, removeCloudCopy: true) }
+                        .accessibilityIdentifier(AX.Sync.Leave.remove)
+                }
                 Button("Cancel", role: .cancel) {}
                     .accessibilityIdentifier(AX.Sync.Leave.cancel)
             } message: {

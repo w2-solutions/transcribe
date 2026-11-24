@@ -56,6 +56,8 @@ targets:
         NSMicrophoneUsageDescription: "Transcribe records conversations on this iPhone to turn them into text. Audio never leaves the device."
         # remote-notification: CKSyncEngine fetches when iCloud pushes a change (only while sync is on).
         UIBackgroundModes: [audio, processing, remote-notification]
+        # "NO" when built with TRANSCRIBE_SYNC=NO (no iCloud entitlement): the transport then never opens CloudKit.
+        TranscribeICloud: $(TRANSCRIBE_SYNC)
         BGTaskSchedulerPermittedIdentifiers: ["ai.w2solutions.transcribe.process.*"]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIFileSharingEnabled: false
@@ -74,14 +76,22 @@ targets:
         "EXCLUDED_SOURCE_FILE_NAMES[sdk=iphonesimulator*]": BundledModels
         # iCloud (CloudKit container iCloud.ai.w2solutions.transcribe) and push, for optional sync. Debug uses the
         # Development CloudKit environment; Release uses Production. To test against the Developer ID Mac, build with
-        # TRANSCRIBE_ICLOUD_ENV=Production TRANSCRIBE_APS_ENV=production on the xcodebuild line.
-        CODE_SIGN_ENTITLEMENTS: Apps/iPhone/Transcribe.entitlements
+        # TRANSCRIBE_ICLOUD_ENV=Production on the xcodebuild line (a development profile allows it).
+        # aps-environment stays "development" in every configuration: builds and archives are signed with a
+        # development profile, which only grants that value, and the App Store / Ad Hoc export sets "production" from
+        # the distribution profile. It only picks the push gateway, not the CloudKit environment.
+        # Signing with iCloud needs an explicit App ID with iCloud and Push, which Xcode registers when an Apple
+        # account is signed in to it. Without one, TRANSCRIBE_SYNC=NO on the xcodebuild line signs with
+        # Transcribe.local.entitlements (no iCloud, no push; sync then cannot start), which the wildcard team
+        # profile covers.
+        TRANSCRIBE_SYNC: "YES"
+        TRANSCRIBE_ENTITLEMENTS_SUFFIX_NO: .local
+        CODE_SIGN_ENTITLEMENTS: Apps/iPhone/Transcribe$(TRANSCRIBE_ENTITLEMENTS_SUFFIX_$(TRANSCRIBE_SYNC)).entitlements
         TRANSCRIBE_ICLOUD_ENV: Development
         TRANSCRIBE_APS_ENV: development
       configs:
         Release:
           TRANSCRIBE_ICLOUD_ENV: Production
-          TRANSCRIBE_APS_ENV: production
   TranscribeMac:
     type: application
     platform: macOS
@@ -149,9 +159,10 @@ targets:
         # the command line Xcode signs with Apple Development instead. Release always needs the team.
         Debug:
           OTHER_CODE_SIGN_FLAGS: ""
+        # aps-environment stays "development" (as for the iPhone): the archive is signed with a development profile,
+        # and the Developer ID export sets "production" from its profile (release-mac.sh checks the result).
         Release:
           TRANSCRIBE_ICLOUD_ENV: Production
-          TRANSCRIBE_APS_ENV: production
   TranscribeUITests:
     type: bundle.ui-testing
     platform: iOS

@@ -101,6 +101,7 @@ Run from the repo root. `$DD` is any folder outside the repo for build output (a
 2. **Build for the device.** `project.yml` leaves the signing team empty on purpose, so pass it on the command line. Xcode then creates the signing profile itself:
    `xcodebuild -project Transcribe.xcodeproj -scheme Transcribe -configuration Debug -destination 'id=00008120-000A40D12E000032' -derivedDataPath $DD DEVELOPMENT_TEAM=53FBF5CS9U -allowProvisioningUpdates build`
    The Mac has two signing identities. Use team `53FBF5CS9U`; the app on the phone is signed with it. If the phone is new to the team, add `-allowProvisioningDeviceRegistration`.
+   The app asks for iCloud and push (sync), so signing needs an Apple account signed in to Xcode (Settings → Accounts) to register the App ID and the `iCloud.ai.w2solutions.transcribe` container. Without one, add `TRANSCRIBE_SYNC=NO`: the build signs without iCloud and sync cannot start.
 3. **Install.** This replaces the app and keeps its recordings and voices:
    `xcrun devicectl device install app --device 00008120-000A40D12E000032 $DD/Build/Products/Debug-iphoneos/Transcribe.app`
 4. **Launch** (the phone must be unlocked):

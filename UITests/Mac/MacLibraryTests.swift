@@ -35,7 +35,7 @@ final class MacLibraryTests: FlowTestCase {
 
     @MainActor func testSearchNarrowsTheList() {
         let app = launchLibrary()
-        let field = app.textFields["Search recordings"].firstMatch
+        let field = app.element(AX.Mac.recordingSearch)
         XCTAssertTrue(field.waitForExistence(timeout: 5), "The search field is in the list column")
         // Find (⌘F) focuses the field.
         app.shortcut("f")
@@ -83,5 +83,16 @@ final class MacLibraryTests: FlowTestCase {
         app.assertCount(1, of: AX.Library.card)
         app.element(AX.Mac.sidebarAll).click()
         app.assertCount(3, of: AX.Library.card)
+    }
+
+    /// "Continue in background" folds the processing panel into the progress pill: on the Mac the transcript is the
+    /// detail column itself, so there is nothing to go back from.
+    @MainActor func testContinueInBackgroundCollapsesTheProcessingPanel() {
+        let app = UITestApp.launch(seed: "processingHeld", script: "holdAtSeparating", route: "transcript:latest")
+        app.waitFor(AX.Transcript.screen, timeout: 20)
+        app.waitFor(AX.Processing.continueInBackground).click()
+        app.waitForGone(AX.Processing.panel)
+        app.waitFor(AX.Processing.collapsedPill)
+        app.waitFor(AX.Transcript.screen)
     }
 }

@@ -133,21 +133,28 @@ extension LibraryStore {
         deleteNegatives(Set(dst.negatives.filter { isNowDst($0.sourceSpeakerID) }.map(\.id)), of: dst)
     }
 
+    /// Unnamed voices of the newest recordings, newest first. The window (`cohortMaxRecordings` recordings,
+    /// `cohortMaxVectors` voices) applies per capture channel, so recordings synced from another device never push
+    /// this channel's voices out; every channel still counts (D11). One channel gives the same cohort as one window.
     public func matchCohort(modelKey: String, excludingRecording: UUID) throws -> [VoiceVector] {
         let ready = RecordingStage.ready.rawValue
         let recordings = try context.fetch(FetchDescriptor<Recording>(predicate: #Predicate { $0.stageRaw == ready }))
             .filter { $0.id != excludingRecording }
             .sorted { $0.createdAt != $1.createdAt ? $0.createdAt > $1.createdAt : $0.id.uuidString < $1.id.uuidString }
-            .prefix(Swift.max(0, policy.cohortMaxRecordings))
         var cohort: [VoiceVector] = []
-        let cap = Swift.max(0, policy.cohortMaxVectors)
+        let maxRecordings = Swift.max(0, policy.cohortMaxRecordings), cap = Swift.max(0, policy.cohortMaxVectors)
+        var recordingsTaken: [String?: Int] = [:], vectorsTaken: [String?: Int] = [:]
         for r in recordings {
+            let channel = r.captureChannel
+            guard recordingsTaken[channel, default: 0] < maxRecordings else { continue }
+            recordingsTaken[channel, default: 0] += 1
             for s in r.sortedSpeakers {
-                guard cohort.count < cap else { return cohort }
+                guard vectorsTaken[channel, default: 0] < cap else { break }
                 guard s.label == .unnamed || (s.label == .named && s.profile == nil),
                       s.vectorData != nil, s.embeddingModelKey == modelKey,
                       s.cleanSeconds >= policy.minLearnSeconds, let v = s.vector else { continue }
                 cohort.append(v)
+                vectorsTaken[channel, default: 0] += 1
             }
         }
         return cohort

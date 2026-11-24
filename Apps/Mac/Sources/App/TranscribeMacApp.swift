@@ -8,6 +8,7 @@ import TranscribeKit
     @State private var env = Composition.makeEnvironment()
     @State private var router = Router()
     @State private var selection = MacSelection()
+    @State private var captureActivity = CaptureActivity()
     @Environment(\.scenePhase) private var scenePhase
 
     init() {
@@ -24,6 +25,7 @@ import TranscribeKit
             MacRootView()
                 .frame(minWidth: 960, minHeight: 600)
                 .modifier(SceneEnvironment(env: env, router: router, selection: selection))
+                .onAppear { [env, captureActivity] in captureActivity.follow { env.recorder.isActive } }
                 .onChange(of: env.settings.syncEnabled, initial: true) { _, on in
                     if on, env.sync != nil, !env.config.uiTesting { PlatformServices.registerForRemoteNotifications() }
                 }
@@ -39,6 +41,7 @@ import TranscribeKit
         Window("Recording", id: "recording") {
             MacRecordingWindow()
                 .modifier(SceneEnvironment(env: env, router: router, selection: selection))
+                .onAppear { [env, captureActivity] in captureActivity.follow { env.recorder.isActive } }
         }
         .defaultSize(width: 560, height: 720)
         .windowResizability(.contentSize)
@@ -86,6 +89,7 @@ private struct MacSettingsRoot: View {
     @State private var router = Router()
 
     var body: some View {
+        @Bindable var router = router
         NavigationStack(path: $router.path) {
             SettingsView()
                 .navigationDestination(for: Route.self) { route in
@@ -99,6 +103,17 @@ private struct MacSettingsRoot: View {
                     case .attributions: AttributionsView()
                     }
                 }
+        }
+        // Voices and transcripts reached from here name speakers through this router's sheet.
+        .sheet(item: $router.sheet) { sheet in
+            switch sheet {
+            case .nameSpeaker(let ctx):
+                NameSpeakerSheet(context: ctx).sheetSizing(minWidth: 480, minHeight: 560)
+            }
+        }
+        // The root is Settings: "Speaker settings" in Voices goes back to it instead of stacking a second one.
+        .onChange(of: router.path) { _, path in
+            if path.last == .settings { router.path = [] }
         }
         .environment(router)
     }

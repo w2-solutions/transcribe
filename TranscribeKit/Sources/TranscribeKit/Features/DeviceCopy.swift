@@ -39,10 +39,14 @@ public enum DevicePlatform: String, Sendable, Codable, CaseIterable {
 public struct DeviceCopy: Sendable, Equatable {
     public var platform: DevicePlatform
     public var syncOn: Bool
+    /// Sync is off but an iCloud copy was kept ("Keep the iCloud Copy"): transcripts and voices synced earlier are still
+    /// in iCloud and on the other devices. Ignored while sync is on.
+    public var cloudCopyKept: Bool
 
-    public init(platform: DevicePlatform = .current, syncOn: Bool = false) {
+    public init(platform: DevicePlatform = .current, syncOn: Bool = false, cloudCopyKept: Bool = false) {
         self.platform = platform
         self.syncOn = syncOn
+        self.cloudCopyKept = cloudCopyKept && !syncOn
     }
 
     private var noun: String { platform.noun }
@@ -79,6 +83,7 @@ public struct DeviceCopy: Sendable, Equatable {
     /// The privacy note under the Voices list.
     public var voicesFooter: String {
         if syncOn { return "Voice profiles sync with iCloud. Each device learns how a voice sounds through its own microphone." }
+        if cloudCopyKept { return "Not syncing. Voice profiles synced earlier remain in your iCloud until you remove them." }
         return isMac
             ? "Voice profiles are stored on this Mac only."
             : "Voice profiles never leave this \(noun). Each device learns voices from its own microphone."
@@ -86,7 +91,8 @@ public struct DeviceCopy: Sendable, Equatable {
 
     /// The Mac sidebar's footer.
     public var sidebarFooter: String {
-        syncOn ? "Transcribed on-device · synced with iCloud" : "On-device. Nothing is uploaded."
+        syncOn ? "Transcribed on-device · synced with iCloud"
+            : cloudCopyKept ? "Not syncing. A copy remains in your iCloud." : "On-device. Nothing is uploaded."
     }
 
     /// Asking about a voice that was named on another device.
@@ -113,18 +119,24 @@ public struct DeviceCopy: Sendable, Equatable {
     public var attributionsIntro: String { "Transcribe runs these models and libraries on your \(noun)." }
 
     /// Settings → Privacy row value.
-    public var privacyValue: String { syncOn ? "Audio on this \(noun) only" : "On this \(noun) only" }
+    public var privacyValue: String { syncOn || cloudCopyKept ? "Audio on this \(noun) only" : "On this \(noun) only" }
 
     /// Settings → Privacy explanation.
     public var privacyDetail: String {
-        syncOn
-            ? "Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles sync through your private iCloud. Speech is processed on each device; nothing is shared with anyone else."
-            : "Audio, transcripts and voice profiles are stored only on this \(noun). Voice profiles are never synced or shared."
+        if syncOn {
+            return "Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles sync through your private iCloud. Speech is processed on each device; nothing is shared with anyone else."
+        }
+        if cloudCopyKept {
+            return "Sync is off. Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles synced earlier remain in your private iCloud and on your other devices until you remove them."
+        }
+        return "Audio, transcripts and voice profiles are stored only on this \(noun). Voice profiles are never synced or shared."
     }
 
     /// The line under the Voices title.
     public var voicesIntro: String {
-        syncOn ? "People Transcribe can recognise. Synced with your iCloud." : "People Transcribe can recognise. Stored only on this device."
+        syncOn ? "People Transcribe can recognise. Synced with your iCloud."
+            : cloudCopyKept ? "People Transcribe can recognise. Not syncing; a copy remains in your iCloud."
+            : "People Transcribe can recognise. Stored only on this device."
     }
 
     /// Speech models screen, intro.

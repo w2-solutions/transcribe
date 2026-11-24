@@ -158,3 +158,73 @@ func waitUntil(_ timeout: Duration = .seconds(5), _ condition: @MainActor () asy
     }
     return await condition()
 }
+
+extension SyncSuites.SyncAccountTests {
+    /// Paused because another Apple Account signed in: "Remove iCloud Copy" must never delete that account's library
+    /// (it belongs to the other account's devices). It only forgets this device's sync state.
+    @Test func removingTheCloudCopyWhilePausedForAnotherAccountLeavesThatAccountAlone() async throws {
+        let t = try await TwoDevices.make()
+        defer { t.cleanup() }
+        let name = SyncRecordID(type: .recording, entityID: t.r1).recordName
+        let theirs = try #require(await t.cloud.record(account: "account-1", recordName: name))
+        await t.cloud.inject(account: "account-2", SyncRecord(id: theirs.id, fields: theirs.fields))
+        let account1 = await t.cloud.records(account: "account-1")
+        await t.b.transport.signIn("account-2")
+        #expect(t.b.sync.status == .paused(.accountChanged))
+
+        try await t.b.sync.disable(removeCloudCopy: true)
+        #expect(await t.cloud.zoneExists(account: "account-2"))
+        #expect(await t.cloud.records(account: "account-2").count == 1)
+        #expect(await t.cloud.records(account: "account-1") == account1)
+        #expect(t.b.sync.status == .off && !t.b.settings.syncEnabled)
+        #expect(t.b.stateRows().isEmpty)
+        #expect(t.b.count(Recording.self) == 2)
+    }
+
+    /// After the iCloud copy was removed elsewhere, signing out and back in (to any account) keeps sync paused: only
+    /// turning the switch on again uploads.
+    @Test(arguments: ["account-1", "account-2"])
+    func signingOutAndInAfterTheZoneWasRemovedStaysPaused(account: String) async throws {
+        let t = try await TwoDevices.make()
+        defer { t.cleanup() }
+        try await t.a.sync.disable(removeCloudCopy: true)
+        await t.b.sync.syncNow()
+        #expect(t.b.sync.status == .paused(.zoneRemoved))
+        await t.b.transport.signOut()
+        #expect(t.b.sync.status == .paused(.zoneRemoved))
+        await t.b.transport.signIn(account)
+        await settle([t.b], account: account)
+        #expect(t.b.sync.status == .paused(.zoneRemoved))
+        #expect(await t.cloud.records(account: account).isEmpty)
+        await t.b.relaunch()
+        await t.b.sync.start()
+        #expect(t.b.sync.status == .paused(.zoneRemoved))
+        #expect(await t.cloud.records(account: account).isEmpty)
+    }
+
+    /// A switch to another account (no sign-out first) while paused for a removed zone also stays paused.
+    @Test func aSwitchWhilePausedForARemovedZoneStaysPaused() async throws {
+        let t = try await TwoDevices.make()
+        defer { t.cleanup() }
+        try await t.a.sync.disable(removeCloudCopy: true)
+        await t.b.sync.syncNow()
+        #expect(t.b.sync.status == .paused(.zoneRemoved))
+        await t.b.transport.signIn("account-2")
+        await settle([t.b], account: "account-2")
+        #expect(t.b.sync.status == .paused(.zoneRemoved))
+        #expect(await t.cloud.records(account: "account-2").isEmpty)
+    }
+
+    /// Signing out while paused for another account keeps that pause; signing back in to the original account resumes.
+    @Test func signingOutWhilePausedForAnotherAccountKeepsThatPause() async throws {
+        let t = try await TwoDevices.make()
+        defer { t.cleanup() }
+        await t.b.transport.signIn("account-2")
+        #expect(t.b.sync.status == .paused(.accountChanged))
+        await t.b.transport.signOut()
+        #expect(t.b.sync.status == .paused(.accountChanged))
+        await t.b.transport.signIn("account-1")
+        #expect(await waitUntil { !t.b.sync.status.isPaused })
+        #expect(await t.cloud.records(account: "account-2").isEmpty)
+    }
+}

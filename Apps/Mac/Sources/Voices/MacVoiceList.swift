@@ -108,6 +108,7 @@ struct MacVoiceList: View {
             TextField("Search voices", text: $searchText)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
+                .accessibilityIdentifier(AX.Mac.voiceSearch)
         }
         .padding(.horizontal, 16)
         .frame(height: 40)

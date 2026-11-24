@@ -29,6 +29,10 @@ final class MacSelection {
     var voice: UUID?
     /// Bumped by Find (⌘F); the recording list then focuses its search field.
     var searchFocusRequest = 0
-    /// Bumped by Import Audio… (⌘O) and the toolbar button; the main window shows the file importer.
-    var importRequest = 0
+    /// Set by Import Audio… (⌘O); the main window shows the file importer and clears it. A flag, not a counter, so a
+    /// main window that the command itself reopens still sees it when it appears.
+    var importRequested = false
+    /// Set by New Recording (⌘N); the main window starts recording as its toolbar button does (so a denied microphone
+    /// shows its sheet) and clears it.
+    var recordRequested = false
 }

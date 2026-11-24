@@ -20,7 +20,6 @@ struct MacRootView: View {
     @State private var importAfterMicSheet = false
     @State private var isStarting = false
     @State private var alert: MacAlert?
-    @State private var captureActivity = CaptureActivity()
 
     private struct MacAlert: Identifiable { let id = UUID(); let title: String; let message: String }
 
@@ -86,12 +85,23 @@ struct MacRootView: View {
         .onChange(of: router.isRecordingPresented) { _, presented in
             if presented { openWindow(id: "recording") } else { dismissWindow(id: "recording") }
         }
+        // The Recording window can be open but covered or minimised: bring it to the front.
+        .onChange(of: router.recordingFocusRequest) { _, _ in openWindow(id: "recording") }
         .onChange(of: router.path) { _, path in absorb(path) }
         .onChange(of: selection.sidebar) { _, _ in router.path = [] }
         .onChange(of: selection.recording) { _, _ in router.path = [] }
         .onChange(of: selection.voice) { _, _ in router.path = [] }
-        .onChange(of: selection.importRequest) { _, _ in isImporterPresented = true }
-        .onChange(of: env.recorder.isActive, initial: true) { _, active in captureActivity.set(active: active) }
+        // `initial`: ⌘O and ⌘N also reopen this window, which then sees the request as it appears.
+        .onChange(of: selection.importRequested, initial: true) { _, requested in
+            guard requested else { return }
+            selection.importRequested = false
+            isImporterPresented = true
+        }
+        .onChange(of: selection.recordRequested, initial: true) { _, requested in
+            guard requested else { return }
+            selection.recordRequested = false
+            record()
+        }
         .task {
             await env.onLaunch()
             if let route = env.config.route {
@@ -120,9 +130,7 @@ struct MacRootView: View {
                 .focusable()
                 .focusEffectDisabled()
                 .onKeyPress(.space) {
-                    guard env.player.loadedURL != nil else { return .ignored }
-                    env.player.toggle()
-                    return .handled
+                    env.togglePlayback(of: id) ? .handled : .ignored
                 }
         } else {
             emptyDetail
@@ -209,7 +217,7 @@ struct MacRootView: View {
     // MARK: Actions
 
     private func record() {
-        if env.recorder.isActive { router.isRecordingPresented = true; return }
+        if env.recorder.isActive { router.presentRecording(); return }
         guard !isStarting else { return }
         isStarting = true
         env.player.stop()
