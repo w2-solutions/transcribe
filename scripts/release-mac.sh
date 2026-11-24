@@ -67,10 +67,9 @@ fail() {
   exit 1
 }
 
-# The Mac app's MARKETING_VERSION in project.yml (there must be exactly one).
-VERSION="$(sed -n 's/^[[:space:]]*MARKETING_VERSION:[[:space:]]*"\{0,1\}\([^"[:space:]]*\)"\{0,1\}[[:space:]]*$/\1/p' project.yml)"
-[ -n "$VERSION" ] || fail "no MARKETING_VERSION in project.yml"
-[ "$(printf '%s\n' "$VERSION" | wc -l | tr -d ' ')" = 1 ] || fail "more than one MARKETING_VERSION in project.yml: $VERSION"
+# The Mac app's MARKETING_VERSION in project.yml: the one inside the TranscribeMac target (the iPhone has its own).
+VERSION="$(awk '/^  TranscribeMac:/{mac=1} mac && /^[[:space:]]*MARKETING_VERSION:/{gsub(/["[:space:]]/,"",$2); print $2; exit}' project.yml)"
+[ -n "$VERSION" ] || fail "no MARKETING_VERSION for TranscribeMac in project.yml"
 DMG="$ROOT/dist/Transcribe-$VERSION.dmg"
 
 # notary_state: prints "present", "missing" or "unknown: <message>". notarytool's history call needs the network
