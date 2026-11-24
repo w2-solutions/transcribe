@@ -465,7 +465,18 @@ public final class SyncCoordinator {
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled else { return }
             await self?.flushAndEnqueue()
+            await self?.sendLocalChanges()
         }
+    }
+
+    /// Sends what a local change just queued, now. `CKSyncEngine` schedules its own send, but on the iPhone that can
+    /// wait minutes (2026-11-24: a new recording reached iCloud only after Sync Now), so the app does not wait for it.
+    private func sendLocalChanges() async {
+        guard running, !crashed, !status.isPaused, pendingCount() > 0 else { return }
+        log.notice("Sending local changes")
+        let mark = problemCount
+        await sendAll()
+        roundWentThrough(since: mark)
     }
 
     /// The fast path now: what `didSave` collected becomes pending state and goes to the transport.
