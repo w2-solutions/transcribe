@@ -34,11 +34,6 @@ public final class SyncCoordinator {
     /// retry, a failed send), one per attempt in a row; the last repeats. `CKSyncEngine` does not reliably send these
     /// again by itself.
     @ObservationIgnored public var followUpDelays: [Duration] = [.seconds(3), .seconds(15), .seconds(60), .seconds(300)]
-    /// While the app is in front: how often it fetches, in case an iCloud push was missed.
-    @ObservationIgnored public var foregroundPollInterval: Duration = .seconds(120)
-    /// While the app is not in front: how often it still fetches, or nil to stop (the iPhone, which is suspended there
-    /// anyway). The Mac keeps running behind other apps and gets no reliable pushes, so it sets one.
-    @ObservationIgnored public var backgroundPollInterval: Duration?
     /// Coming to the front again within this long after the last refresh does not fetch again.
     @ObservationIgnored public var minRefreshGap: Duration = .seconds(10)
 
@@ -48,7 +43,6 @@ public final class SyncCoordinator {
     @ObservationIgnored private var flushTask: Task<Void, Never>?
     @ObservationIgnored private(set) var followUpTask: Task<Void, Never>?
     @ObservationIgnored private var followUpAttempt = 0
-    @ObservationIgnored private(set) var pollTask: Task<Void, Never>?
     @ObservationIgnored private var lastRefresh: ContinuousClock.Instant?
     @ObservationIgnored private var refreshing = false
     /// `start` or `enable` is between its first await and running: a refresh then would start sync a second time.
@@ -223,25 +217,12 @@ public final class SyncCoordinator {
 
     // MARK: In front
 
-    /// The app came to the front (true) or went to the background (false). In front, sync fetches now and then every
-    /// `foregroundPollInterval`, so a change made on another device arrives even when its iCloud push is missed.
-    /// Behind, it stops, or keeps fetching every `backgroundPollInterval` when one is set.
-    /// Each refresh runs in its own task, so leaving the front (which ends the timer) never cancels a sync half-way.
+    /// The app came to the front (true) or left it (false). Coming to the front syncs once, to catch up on anything
+    /// that changed while the app could not be told. There is no timer: between activations, iCloud pushes
+    /// (`remoteChangeNotified`) bring changes in, and the user can ask (`refreshNow`).
     public func setForeground(_ active: Bool) {
-        pollTask?.cancel()
-        pollTask = nil
-        if active { Task { await self.refresh(fullScan: true) } }
-        guard active || backgroundPollInterval != nil else { return }
-        pollTask = Task { [weak self] in
-            while !Task.isCancelled {
-                guard let self else { return }
-                // Read each round, so a changed interval applies from the next wait.
-                guard let interval = active ? self.foregroundPollInterval : self.backgroundPollInterval else { return }
-                try? await Task.sleep(for: interval)
-                guard !Task.isCancelled else { return }
-                Task { await self.refresh(fullScan: false) }
-            }
-        }
+        guard active else { return }
+        Task { await self.refresh(fullScan: true) }
     }
 
     /// An iCloud push arrived: fetch and send now, whatever the poll timing. `CKSyncEngine` should fetch on a push by
@@ -254,8 +235,7 @@ public final class SyncCoordinator {
     }
 
     /// One catch-up sync, skipped within `minRefreshGap` of the last one, while another runs, or while sync starts.
-    /// `fullScan` (coming to the front) also scans and retries a pause the next sync can end (full quota, no account);
-    /// the timer's refresh only fetches and sends, and does nothing while paused.
+    /// `fullScan` (coming to the front) also scans and retries a pause the next sync can end (full quota, no account).
     func refresh(fullScan: Bool) async {
         guard settings.syncEnabled, !crashed, !starting, !refreshing else { return }
         if status.isPaused {
@@ -268,7 +248,7 @@ public final class SyncCoordinator {
         lastRefresh = now
         refreshing = true
         defer { refreshing = false }
-        log.notice("Refresh (\(fullScan ? "in front" : "timer", privacy: .public))")
+        log.notice("Refresh (in front)")
         await sync(fullScan: fullScan)
     }
 

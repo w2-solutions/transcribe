@@ -66,19 +66,7 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         if self.state == nil { saveCatchUpToken(nil) }
         newestSeen = [:]
         log.notice("Started (\(self.state == nil ? "fresh" : "saved state", privacy: .public))")
-        // Pushes come from a database subscription the engine makes. Log whether one exists (2026-11-24: no pushes).
-        if let database = container?.privateCloudDatabase {
-            let log = log
-            Task.detached {
-                do {
-                    let all = try await database.allSubscriptions()
-                    let kinds = all.map { "\($0.subscriptionType.rawValue):\($0.notificationInfo?.shouldSendContentAvailable == true ? "silent" : "not-silent")" }
-                    log.notice("iCloud subscriptions: \(all.count, privacy: .public) [\(kinds.joined(separator: ", "), privacy: .public)]")
-                } catch {
-                    log.error("Could not list iCloud subscriptions: \(Self.describe(error), privacy: .public)")
-                }
-            }
-        }
+        if let database = container?.privateCloudDatabase { Task.detached { [log] in await Self.ensureOwnSubscription(database, log: log) } }
         if let old = engine {
             engine = nil
             Task.detached { await old.cancelOperations() }
@@ -147,6 +135,31 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         } catch {
             log.error("Engine send failed: \(Self.describe(error), privacy: .public)")
             throw error
+        }
+    }
+
+    // MARK: Push subscription
+
+    /// iCloud pushes a change only to the app (bundle id) that created the subscription. The iPhone and Mac apps share
+    /// this container under different bundle ids, and `CKSyncEngine` makes one subscription with a fixed id, so only
+    /// whichever app turned sync on first was ever pushed to (2026-11-24: the iPhone got pushes, the Mac none). Each
+    /// app therefore keeps a silent database subscription of its own, named after its bundle id.
+    static func ensureOwnSubscription(_ database: CKDatabase, log: Logger) async {
+        let id = "changes." + (Bundle.main.bundleIdentifier ?? "app")
+        do {
+            let all = try await database.allSubscriptions()
+            if all.contains(where: { $0.subscriptionID == id }) {
+                log.notice("iCloud subscriptions: \(all.count, privacy: .public), this app's is in place")
+                return
+            }
+            let subscription = CKDatabaseSubscription(subscriptionID: id)
+            let info = CKSubscription.NotificationInfo()
+            info.shouldSendContentAvailable = true   // silent: no alert, the app just fetches
+            subscription.notificationInfo = info
+            _ = try await database.save(subscription)
+            log.notice("iCloud subscriptions: \(all.count, privacy: .public) found; created this app's (\(id, privacy: .public))")
+        } catch {
+            log.error("Could not set up this app's iCloud subscription: \(Self.describe(error), privacy: .public)")
         }
     }
 

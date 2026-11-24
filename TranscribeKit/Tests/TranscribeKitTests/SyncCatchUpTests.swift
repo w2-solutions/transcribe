@@ -99,46 +99,37 @@ extension SyncSuites {
             expectConverged(t.devices)
         }
 
-        /// With a background interval (the Mac), the app keeps fetching behind other apps.
-        @Test func behindOtherAppsTheMacKeepsFetching() async throws {
+        /// Coming to the front fetches at once, without a push; nothing fetches on a timer afterwards.
+        @Test func comingToTheFrontFetchesOnceAndNothingPolls() async throws {
             let t = try await TwoDevices.make()
             defer { t.cleanup() }
-            t.a.sync.backgroundPollInterval = .milliseconds(40)
-            t.a.sync.minRefreshGap = .zero
-            t.a.sync.setForeground(false)
-            try t.b.store.rename(id: t.r1, title: "Renamed on the iPhone")
-            await t.b.sync.syncNow()
-            try await eventually { t.a.recording(t.r1)?.title == "Renamed on the iPhone" }
-            t.a.sync.backgroundPollInterval = nil
-            t.a.sync.setForeground(false)
-        }
-
-        /// In front, the app fetches at once and then every interval, so a missed push only delays a change; in the
-        /// background it stops.
-        @Test func inFrontTheAppFetchesWithoutAPushAndStopsWhenItLeaves() async throws {
-            let t = try await TwoDevices.make()
-            defer { t.cleanup() }
-            t.a.sync.foregroundPollInterval = .milliseconds(40)
             t.a.sync.minRefreshGap = .zero
             try t.b.store.rename(id: t.r1, title: "Renamed on the Mac")
             await t.b.sync.syncNow()
             t.a.sync.setForeground(true)
             try await eventually { t.a.recording(t.r1)?.title == "Renamed on the Mac" }
-            try t.b.store.rename(id: t.r1, title: "Renamed again")
-            await t.b.sync.syncNow()
-            try await eventually { t.a.recording(t.r1)?.title == "Renamed again" }
-            t.a.sync.setForeground(false)
-            try await Task.sleep(for: .milliseconds(30))
+            try await Task.sleep(for: .milliseconds(50))
             let fetches = await t.a.transport.fetchCount
-            try await Task.sleep(for: .milliseconds(200))
+            try await Task.sleep(for: .milliseconds(250))
             #expect(await t.a.transport.fetchCount == fetches)
+        }
+
+        /// A push fetches at once, even right after another refresh.
+        @Test func aPushFetchesAtOnce() async throws {
+            let t = try await TwoDevices.make()
+            defer { t.cleanup() }
+            t.a.sync.minRefreshGap = .seconds(3600)
+            await t.a.sync.refresh(fullScan: true)
+            try t.b.store.rename(id: t.r1, title: "Renamed on the iPhone")
+            await t.b.sync.syncNow()
+            await t.a.sync.remoteChangeNotified()
+            #expect(t.a.recording(t.r1)?.title == "Renamed on the iPhone")
         }
 
         /// Coming to the front twice within the minimum gap fetches once.
         @Test func comingToTheFrontAgainSoonDoesNotFetchAgain() async throws {
             let t = try await TwoDevices.make()
             defer { t.cleanup() }
-            t.a.sync.foregroundPollInterval = .seconds(3600)
             t.a.sync.minRefreshGap = .seconds(3600)
             let before = await t.a.transport.fetchCount
             await t.a.sync.refresh(fullScan: true)
