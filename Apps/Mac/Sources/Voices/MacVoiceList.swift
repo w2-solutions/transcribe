@@ -79,6 +79,8 @@ struct MacVoiceList: View {
         }
         .onChange(of: profiles.map(\.id)) { _, ids in
             if let id = selection.voice, !ids.contains(id) { selection.voice = nil }
+            // Forgotten by sync while its Merge sheet is open: close the sheet.
+            if let id = mergeRequest?.id, !ids.contains(id) { mergeRequest = nil }
         }
     }
 

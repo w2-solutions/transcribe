@@ -31,10 +31,10 @@ struct VoiceDetailView: View {
 
     var body: some View {
         Group {
-            if let profile = matches.first {
+            if let profile = matches.first, !GoneModels.isGone(profile) {
                 content(profile)
             } else {
-                // Forgotten or merged away while on screen; the router pops us.
+                // Forgotten or merged away while on screen (here or by sync); the router pops us (`GoneModelObserver`).
                 Color.clear
             }
         }

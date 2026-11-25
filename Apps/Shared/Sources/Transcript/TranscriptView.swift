@@ -39,9 +39,10 @@ struct TranscriptView: View {
 
     var body: some View {
         Group {
-            if let recording = matches.first {
+            if let recording = matches.first, !GoneModels.isGone(recording) {
                 content(recording)
             } else {
+                // Deleted while on screen (by sync from another device): `GoneModelObserver` pops this screen.
                 Color.clear.screenBackground()
             }
         }
