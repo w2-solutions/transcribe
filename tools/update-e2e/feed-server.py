@@ -3,6 +3,7 @@
 Serves, on 127.0.0.1 only:
     /transcribe/appcast.xml          <root>/transcribe/appcast.xml        application/xml; charset=utf-8
     /transcribe/download/<file>.dmg  <root>/transcribe/<file>.dmg         application/x-apple-diskimage
+    /transcribe/download/<a>-<b>.delta  <root>/transcribe/<a>-<b>.delta   application/octet-stream
 Anything else, or a missing file, is a 404 text/plain. GET and HEAD only (else 405). Bytes are served unchanged.
 
 Every request is appended to the log as one JSON line: time, method, path, query and every header, as received, so
@@ -19,6 +20,7 @@ import shutil
 import time
 
 DMG = re.compile(r"^/transcribe/download/(Transcribe-[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\.dmg)$")
+DELTA = re.compile(r"^/transcribe/download/(Transcribe-[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}-[0-9]{1,4}\.[0-9]{1,4}\.[0-9]{1,4}\.delta)$")
 
 
 def main():
@@ -60,10 +62,13 @@ def main():
             self.record()
             path = self.path.partition("?")[0]
             match = DMG.match(path)
+            delta = DELTA.match(path)
             if path == "/transcribe/appcast.xml":
                 file, ctype = os.path.join(root, "transcribe", "appcast.xml"), "application/xml; charset=utf-8"
             elif match:
                 file, ctype = os.path.join(root, "transcribe", match.group(1)), "application/x-apple-diskimage"
+            elif delta:
+                file, ctype = os.path.join(root, "transcribe", delta.group(1)), "application/octet-stream"
             else:
                 file, ctype = None, None
             if file is None or not os.path.isfile(file):

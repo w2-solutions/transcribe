@@ -1,0 +1,1 @@
+Updates are much smaller. An update now downloads only what changed, usually a few MB, instead of the whole app with its speech models (about 657 MB). This works when you update from the version just before; if you skip a version, the update downloads the whole app once.

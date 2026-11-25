@@ -7,7 +7,8 @@
 #
 # Sections: lint (bash -n, shellcheck, actionlint); release-mac.sh --print-version; then, on macOS only,
 # ed25519.swift (with a cross-check against Sparkle's sign_update when $DERIVED holds it), sign-mac-release.sh --test
-# and publish-mac.sh --dest dir:; finally release-gate.sh against a local server. On Linux (release-checks.yml) the
+# and publish-mac.sh --dest dir:, delta updates (make-mac-delta.sh with Sparkle's BinaryDelta when $DERIVED holds it,
+# sign and publish with --delta, fetch-published-mac.sh against a local server); finally release-gate.sh against a local server. On Linux (release-checks.yml) the
 # macOS-only sections are skipped.
 # Exit: 0 all passed; 1 a test failed.
 # shellcheck disable=SC2016  # jq programs and sh -c scripts are single-quoted on purpose
@@ -16,7 +17,9 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT" || exit 1
 FIXTURES="$ROOT/scripts/tests/fixtures"
-SCRIPTS="scripts/release-mac.sh scripts/sign-mac-release.sh scripts/publish-mac.sh scripts/release-gate.sh"
+SCRIPTS="scripts/release-mac.sh scripts/sign-mac-release.sh scripts/publish-mac.sh scripts/release-gate.sh
+  scripts/make-mac-delta.sh scripts/fetch-published-mac.sh scripts/ci-mac-delta.sh scripts/testflight-gate.sh
+  tools/update-e2e/run.sh"
 T="$(mktemp -d "${TMPDIR:-/tmp}/release-scripts-test.XXXXXX")"
 SERVER=""
 cleanup() {
@@ -201,7 +204,8 @@ if [ "$(uname -s)" = Darwin ]; then
   expect "the appcast is well-formed" xmllint --noout "$A30"
   expect_rc "the appcast is signed with the app's key" 0 ed verify-feed "$PUB" "$A30"
   expect "the appcast escapes the notes and adds the trailer" grep -q 'First line &amp; &lt;notes&gt;\.' "$A30"
-  expect "the appcast has the download size line" grep -q 'The download is about 0 MB because the speech models are inside the app\.' "$A30"
+  expect "the appcast has the download size line" grep -q 'The download is under 1 MB because the speech models are inside the app\.' "$A30"
+  expect "  and no deltas" grep -vq 'sparkle:deltas' "$A30"
   expect "the appcast's enclosure uses the test prefix" grep -q 'url="http://127.0.0.1:8788/transcribe/download/Transcribe-0.3.0.dmg"' "$A30"
   expect "the appcast's minimumSystemVersion is 27.0.0" grep -q '<sparkle:minimumSystemVersion>27.0.0<' "$A30"
   expect_rc "a seed that is not the app's key fails" 1 sign_test "$T/seed2" 0.3.0
@@ -298,6 +302,119 @@ if [ "$(uname -s)" = Darwin ]; then
   expect_rc "a -TEST DMG with s3 is refused before any network call" 4 \
     env -u R2_ACCESS_KEY_ID -u R2_SECRET_ACCESS_KEY -u R2_ACCOUNT_ID -u R2_BUCKET BASE_URL=http://127.0.0.1:9 \
     ./scripts/publish-mac.sh --release "$R30" --dmg "$T/dmg/Transcribe-0.3.0-TEST.dmg" --appcast "$A30"
+
+  # -------------------------------------------------------------------------------------------------------------
+  section "Delta updates"
+  printf 'More fixes.\n' >"$T/notes/0.3.2.txt"
+  make_dmg 0.3.2 302 "$PUB"
+  BINARY_DELTA="${DERIVED:-${TMPDIR:-/tmp}/transcribe-dd}/SourcePackages/artifacts/sparkle/Sparkle/bin/BinaryDelta"
+  mkdir -p "$T/deltas"
+  if [ -x "$BINARY_DELTA" ]; then
+    mkdelta() { env BINARY_DELTA="$BINARY_DELTA" ./scripts/make-mac-delta.sh "$@"; }
+    expect_rc "make-mac-delta.sh 0.3.0 → 0.3.1 (DMGs)" 0 mkdelta "$T/dmg/Transcribe-0.3.0-TEST.dmg" "$T/dmg/Transcribe-0.3.1-TEST.dmg" "$T/deltas"
+    cp "$T/out" "$T/mkdelta.out"
+    expect "  is named for both versions" test -s "$T/deltas/Transcribe-0.3.0-0.3.1.delta"
+    expect "  and was checked by applying it" grep -q 'entries identical' "$T/mkdelta.out"
+    expect_rc "make-mac-delta.sh 0.3.1 → 0.3.2 (apps)" 0 mkdelta "$T/dmgsrc-0.3.1/Transcribe.app" "$T/dmgsrc-0.3.2/Transcribe.app" "$T/deltas"
+    expect_rc "a delta to an older build is refused" 1 mkdelta "$T/dmg/Transcribe-0.3.1-TEST.dmg" "$T/dmg/Transcribe-0.3.0-TEST.dmg" "$T/deltas"
+    expect_rc "  and writes nothing" 0 test ! -e "$T/deltas/Transcribe-0.3.1-0.3.0.delta"
+    expect_rc "a missing BinaryDelta is refused" 1 env BINARY_DELTA="$T/nothing" ./scripts/make-mac-delta.sh "$T/dmg/Transcribe-0.3.0-TEST.dmg" "$T/dmg/Transcribe-0.3.1-TEST.dmg" "$T/deltas"
+  else
+    echo "  skip  make-mac-delta.sh (no $BINARY_DELTA; build the Mac app with DERIVED set to see it); stand-in deltas"
+    head -c 5000 /dev/urandom >"$T/deltas/Transcribe-0.3.0-0.3.1.delta"
+    head -c 6000 /dev/urandom >"$T/deltas/Transcribe-0.3.1-0.3.2.delta"
+  fi
+  D01="$T/deltas/Transcribe-0.3.0-0.3.1.delta"
+  D12="$T/deltas/Transcribe-0.3.1-0.3.2.delta"
+  sign_delta() {
+    env SPARKLE_ED_PRIVATE_KEY="$(cat "$1")" DIST="$T/dist-d" NOTES_DIR="$T/notes" ./scripts/sign-mac-release.sh --test \
+      --download-prefix http://127.0.0.1:8788/transcribe/download/ "${@:3}" "$T/dmg/Transcribe-$2-TEST.dmg"
+  }
+  expect_rc "sign --test 0.3.1 --delta 0.3.0-0.3.1" 0 sign_delta "$T/seed" 0.3.1 --delta "$D01"
+  RD1="$T/dist-d/Transcribe-0.3.1-TEST.latest.json"
+  AD1="$T/dist-d/Transcribe-0.3.1-TEST.appcast.xml"
+  expect "latest.json lists the delta with its size, sha256 and signature" jq -e --argjson bytes "$(stat -f %z "$D01")" \
+    --arg sha "$(shasum -a 256 "$D01" | cut -d ' ' -f 1)" \
+    '.deltas == [{from: "0.3.0", fromBuild: 300, file: "Transcribe-0.3.0-0.3.1.delta", key: "transcribe/Transcribe-0.3.0-0.3.1.delta", bytes: $bytes, sha256: $sha, edSignature: .deltas[0].edSignature}]' "$RD1"
+  expect_rc "  whose signature verifies" 0 ed verify "$PUB" "$(jq -r '.deltas[0].edSignature' "$RD1")" "$D01"
+  expect "the appcast is well-formed" xmllint --noout "$AD1"
+  expect_rc "  and signed" 0 ed verify-feed "$PUB" "$AD1"
+  expect "  with the delta under <sparkle:deltas>, from build 300" test "$(xmllint --xpath "string(//*[local-name()='deltas']/*[local-name()='enclosure']/@*[local-name()='deltaFrom'])" "$AD1")" = 300
+  expect "  at the test prefix" test "$(xmllint --xpath "string(//*[local-name()='deltas']/*[local-name()='enclosure']/@url)" "$AD1")" = http://127.0.0.1:8788/transcribe/download/Transcribe-0.3.0-0.3.1.delta
+  expect "  and the size line names both downloads" grep -q 'From version 0.3.0 the download is under 1 MB. From older versions it is under 1 MB because the speech models are inside the app\.' "$AD1"
+  expect_rc "a delta to another version is refused" 1 sign_delta "$T/seed" 0.3.0 --delta "$D01"
+  cp "$D01" "$T/deltas/Transcribe-0.3.1-0.3.1.delta"
+  expect_rc "a delta from the same version is refused" 1 sign_delta "$T/seed" 0.3.1 --delta "$T/deltas/Transcribe-0.3.1-0.3.1.delta"
+  rm -f "$T/deltas/Transcribe-0.3.1-0.3.1.delta"
+  expect_rc "--feed-from with --delta is a usage error" 2 env SPARKLE_ED_PRIVATE_KEY="$(cat "$T/seed")" DIST="$T/dist-d" \
+    NOTES_DIR="$T/notes" PROJECT="$P31PUB" ./scripts/sign-mac-release.sh --feed-from "$RD1" --delta "$D01"
+  expect_rc "--feed-from keeps the deltas of the published release" 0 env SPARKLE_ED_PRIVATE_KEY="$(cat "$T/seed")" \
+    DIST="$T/dist-dr" NOTES_DIR="$T/notes" PROJECT="$P31PUB" ./scripts/sign-mac-release.sh --feed-from "$RD1"
+  expect "  (the resumed feed has the delta at the production prefix)" test "$(xmllint --xpath "string(//*[local-name()='deltas']/*[local-name()='enclosure']/@url)" "$T/dist-dr/resume.appcast.xml")" = https://w2solutions.ai/transcribe/download/Transcribe-0.3.0-0.3.1.delta
+  expect_rc "sign --test 0.3.2 --delta 0.3.1-0.3.2" 0 sign_delta "$T/seed" 0.3.2 --delta "$D12"
+  RD2="$T/dist-d/Transcribe-0.3.2-TEST.latest.json"
+  AD2="$T/dist-d/Transcribe-0.3.2-TEST.appcast.xml"
+
+  BD="$T/bucket-d"
+  expect_rc "publish 0.3.0 (no delta)" 0 publish --release "$R30" --dmg "$T/dmg/Transcribe-0.3.0-TEST.dmg" --appcast "$A30" --dest "dir:$BD"
+  snapshot "$BD" >"$T/d-before"
+  expect_rc "0.3.1 without its --delta is refused" 1 publish --release "$RD1" --dmg "$T/dmg/Transcribe-0.3.1-TEST.dmg" --appcast "$AD1" --dest "dir:$BD"
+  expect_rc "0.3.1 with a delta latest.json does not list is refused" 1 publish --release "$RD1" --dmg "$T/dmg/Transcribe-0.3.1-TEST.dmg" --delta "$D01" --delta "$D12" --appcast "$AD1" --dest "dir:$BD"
+  cp "$D01" "$T/tampered.delta"
+  flip_byte "$T/tampered.delta" 100
+  mkdir -p "$T/tampered-d"
+  cp "$T/tampered.delta" "$T/tampered-d/Transcribe-0.3.0-0.3.1.delta"
+  expect_rc "0.3.1 with a tampered delta is refused" 1 publish --release "$RD1" --dmg "$T/dmg/Transcribe-0.3.1-TEST.dmg" --delta "$T/tampered-d/Transcribe-0.3.0-0.3.1.delta" --appcast "$AD1" --dest "dir:$BD"
+  expect_rc "0.3.1 with the feed of the release without the delta is refused" 1 publish --release "$RD1" --dmg "$T/dmg/Transcribe-0.3.1-TEST.dmg" --delta "$D01" --appcast "$A31" --dest "dir:$BD"
+  snapshot "$BD" >"$T/d-after"
+  expect_rc "  and the refusals changed nothing" 0 cmp "$T/d-before" "$T/d-after"
+  expect_rc "publish 0.3.1 with its delta" 0 publish --release "$RD1" --dmg "$T/dmg/Transcribe-0.3.1-TEST.dmg" --delta "$D01" --appcast "$AD1" --dest "dir:$BD"
+  expect_out "the bucket holds the DMG, the delta and the pointers" "transcribe/Transcribe-0.3.0-0.3.1.delta transcribe/Transcribe-0.3.1.dmg transcribe/appcast.xml transcribe/latest.json " listing "$BD"
+  expect "the delta's metadata carries its sha256" jq -e --arg sha "$(shasum -a 256 "$D01" | cut -d ' ' -f 1)" '.metadata.sha256 == $sha and .metadata.from == "0.3.0" and .contentType == "application/octet-stream"' "$BD/transcribe/Transcribe-0.3.0-0.3.1.delta.meta.json"
+  expect_rc "--resume-check verifies the delta too" 0 publish --resume-check "$T/rc-d/latest.json" --dest "dir:$BD"
+  B5="$T/bucket5"
+  cp -R "$BD" "$B5"
+  flip_byte "$B5/transcribe/Transcribe-0.3.0-0.3.1.delta" 100
+  expect_rc "--resume-check with a changed delta is refused" 1 publish --resume-check "$T/rc-d/latest.json" --dest "dir:$B5"
+  rm -rf "$B5"
+  cp -R "$BD" "$B5"
+  rm -f "$B5/transcribe/Transcribe-0.3.0-0.3.1.delta" "$B5/transcribe/Transcribe-0.3.0-0.3.1.delta.meta.json"
+  expect_rc "--resume with the delta gone is refused" 1 publish --resume "$RD1" --appcast "$AD1" --dest "dir:$B5"
+  rm -rf "$B5"
+  rm -f "$BD/transcribe/appcast.xml" "$BD/transcribe/appcast.xml.meta.json"
+  expect_rc "--resume after deleting the appcast (with the delta)" 0 publish --resume "$RD1" --appcast "$AD1" --dest "dir:$BD"
+  expect_rc "  put the appcast back" 0 cmp "$BD/transcribe/appcast.xml" "$AD1"
+  expect_out "  and kept the delta" "transcribe/Transcribe-0.3.0-0.3.1.delta transcribe/Transcribe-0.3.1.dmg transcribe/appcast.xml transcribe/latest.json " listing "$BD"
+  expect_rc "publish 0.3.2 with its delta" 0 publish --release "$RD2" --dmg "$T/dmg/Transcribe-0.3.2-TEST.dmg" --delta "$D12" --appcast "$AD2" --dest "dir:$BD"
+  expect_out "it deleted the old DMG and the old delta" "transcribe/Transcribe-0.3.1-0.3.2.delta transcribe/Transcribe-0.3.2.dmg transcribe/appcast.xml transcribe/latest.json " listing "$BD"
+  expect_rc "--resume with --delta is a usage error" 2 publish --resume "$RD2" --delta "$D12" --appcast "$AD2" --dest "dir:$BD"
+
+  # fetch-published-mac.sh: the published DMG through a local stand-in for the site.
+  PUBSITE="$T/pubsite"
+  mkdir -p "$PUBSITE/ok/transcribe/download" "$PUBSITE/bad/transcribe/download" "$PUBSITE/none"
+  cp "$R31" "$PUBSITE/ok/transcribe/latest.json"
+  cp "$T/dmg/Transcribe-0.3.1-TEST.dmg" "$PUBSITE/ok/transcribe/download/Transcribe-0.3.1.dmg"
+  cp "$R31" "$PUBSITE/bad/transcribe/latest.json"
+  cp "$T/tampered.dmg" "$PUBSITE/bad/transcribe/download/Transcribe-0.3.1.dmg"
+  PPORT="$(python3 -I -c 'import socket; s = socket.socket(); s.bind(("127.0.0.1", 0)); print(s.getsockname()[1])')"
+  python3 -I "$FIXTURES/serve.py" "$PUBSITE" "$PPORT" &
+  PSERVER=$!
+  for _ in $(seq 1 50); do
+    curl -s -o /dev/null "http://127.0.0.1:$PPORT/none/x" && break
+    sleep 0.1
+  done
+  fetch() { env BASE_URL="http://127.0.0.1:$PPORT/$1" PROJECT="$P31PUB" ./scripts/fetch-published-mac.sh "$2"; }
+  expect_rc "fetch-published-mac.sh fetches the published DMG" 0 fetch ok "$T/prev-ok"
+  expect_rc "  byte for byte" 0 cmp "$T/prev-ok/Transcribe-0.3.1.dmg" "$T/dmg/Transcribe-0.3.1-TEST.dmg"
+  expect_rc "  with its latest.json" 0 cmp "$T/prev-ok/latest.json" "$R31"
+  expect_rc "a DMG that does not match latest.json is refused" 1 fetch bad "$T/prev-bad"
+  expect_rc "  and leaves nothing" 0 test ! -e "$T/prev-bad/Transcribe-0.3.1.dmg"
+  expect_rc "with a key that is not project.yml's it is refused" 1 env BASE_URL="http://127.0.0.1:$PPORT/ok" \
+    PROJECT="$(project 0.2.0 0.3.1 "$PUB2")" ./scripts/fetch-published-mac.sh "$T/prev-key"
+  expect_rc "nothing published: exit 0" 0 fetch none "$T/prev-none"
+  expect_rc "  and nothing written" 0 test ! -e "$T/prev-none/latest.json"
+  kill "$PSERVER" 2>/dev/null
+  wait "$PSERVER" 2>/dev/null
 
   # -------------------------------------------------------------------------------------------------------------
   section "publish-mac.sh with s3 (a stand-in AWS CLI on a folder; no network)"
@@ -467,6 +584,34 @@ expect_out "with GITHUB_OUTPUT empty the mode is on standard output" "release" \
   env -u TRANSCRIBE_ED_PUBLIC_KEY -u TRANSCRIBE_FEED_URL -u TRANSCRIBE_TEST_VERSION BASE_URL="http://127.0.0.1:$PORT/empty" \
   PROJECT="$G300" NOTES_DIR="$T/gate-notes" GITHUB_EVENT_NAME=push GITHUB_REF="$M" RUNNER_LABEL=transcribe-mac \
   GITHUB_OUTPUT="" GITHUB_STEP_SUMMARY="" sh -c './scripts/release-gate.sh 2>/dev/null | sed -n "s/^mode=//p"'
+
+# ---------------------------------------------------------------------------------------------------------------
+section "testflight-gate.sh"
+G="$T/tf-repo"
+mkdir -p "$G"
+git -C "$G" init -q
+tf_commit() {
+  sed -e "s/@IPHONE@/$1/" -e "s/@MAC@/$2/" -e "s|@KEY@|$K|" "$FIXTURES/project.yml" >"$G/project.yml"
+  git -C "$G" add project.yml
+  git -C "$G" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m "$1 $2"
+  git -C "$G" rev-parse HEAD
+}
+C1="$(tf_commit 0.2.0 0.3.1)"
+C2="$(tf_commit 0.2.0 0.3.2)"
+C3="$(tf_commit 0.3.2 0.3.2)"
+tf_gate() {
+  (cd "$G" && env GITHUB_EVENT_NAME="$1" BEFORE="$2" GITHUB_OUTPUT="" GITHUB_STEP_SUMMARY="" "$ROOT/scripts/testflight-gate.sh" 2>/dev/null |
+    sed -n 's/^upload=//p')
+}
+git -C "$G" checkout -q "$C2"
+expect_out "push, only the Mac version changed: no upload" false tf_gate push "$C1"
+git -C "$G" checkout -q "$C3"
+expect_out "push, the iPhone version changed: upload" true tf_gate push "$C2"
+expect_out "push from nothing (all zeros): upload" true tf_gate push 0000000000000000000000000000000000000000
+expect_out "push with an unknown earlier commit: upload" true tf_gate push 1234567890123456789012345678901234567890
+expect_out "run by hand with no change: upload" true tf_gate workflow_dispatch ""
+expect_rc "an unknown event fails" 1 sh -c 'cd "$1" && GITHUB_EVENT_NAME=pull_request "$2/scripts/testflight-gate.sh"' _ "$G" "$ROOT"
+expect_out "the iPhone version in the outputs" "version=0.3.2" sh -c 'cd "$1" && GITHUB_EVENT_NAME=workflow_dispatch "$2/scripts/testflight-gate.sh" 2>/dev/null | grep "^version="' _ "$G" "$ROOT"
 
 printf '\n%d passed, %d failed\n' "$PASSED" "$FAILED"
 [ "$FAILED" = 0 ]

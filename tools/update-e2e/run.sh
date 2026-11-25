@@ -1,9 +1,11 @@
 #!/bin/bash
 # End-to-end test of the Mac app's in-app updates (Sparkle). A Release build of version 0.2.9 (209) updates itself
-# to 0.3.0 (300) from a feed on 127.0.0.1, through the same signing and publishing scripts as a real release: the
-# scheduled check after Check Automatically shows only the quiet reminder (no update window); Update Available… brings
-# up the update, stays after Remind Me Later, and installs it. Then three negatives through Check for Updates…,
-# each from a fresh 0.2.9: a tampered DMG, a tampered feed and an unsigned feed. 15 to 30 minutes. Not run in CI.
+# to 0.3.0 (300) from a feed on 127.0.0.1, through the same signing and publishing scripts as a real release, with a
+# delta update from 0.2.9 (make-mac-delta.sh): the scheduled check after Check Automatically shows only the quiet
+# reminder (no update window); Update Available… brings up the update, stays after Remind Me Later, and installs it,
+# downloading only the delta. Then, each from a fresh 0.2.9 through Check for Updates…: a tampered delta (Sparkle
+# falls back to the DMG and installs it), and three negatives: a tampered DMG (and delta), a tampered feed and an
+# unsigned feed. 15 to 30 minutes. Not run in CI.
 #
 #   tools/update-e2e/run.sh                  the local test (unlocked screen; it clicks through Sparkle's windows)
 #   tools/update-e2e/run.sh --developer-id   prepares the owner's Developer ID update test for a second macOS user
@@ -48,7 +50,7 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 CONTAINER="$HOME/Library/Containers/$BID"
 
 usage() {
-  sed -n '2,30s/^# \{0,1\}//p' "$SELF" >&2
+  sed -n '2,32s/^# \{0,1\}//p' "$SELF" >&2
   exit 2
 }
 step() { printf '\n==> %s\n' "$*"; }
@@ -406,8 +408,9 @@ check_build() {
     (.["com.apple.security.temporary-exception.mach-lookup.global-name"] | sort)]' <<<"$ents")" = "[true,[\"$BID-spki\",\"$BID-spks\"]]"
 }
 
+DELTA_FILE="Transcribe-$OLD_V-$NEW_V.delta"
 if [ "${KEEP_BUILDS:-}" = 1 ] && [ -f "$E2E/seed" ] && [ -d "$E2E/build-$OLD_V/Transcribe.app" ] &&
-  [ -d "$E2E/build-$NEW_V/Transcribe.app" ] && [ -f "$FEED/transcribe/appcast.xml" ]; then
+  [ -d "$E2E/build-$NEW_V/Transcribe.app" ] && [ -f "$FEED/transcribe/appcast.xml" ] && [ -f "$FEED/transcribe/$DELTA_FILE" ]; then
   step "Reusing the kept seed, builds and feed (KEEP_BUILDS=1)"
   PUB="$(xcrun swift "$ROOT/scripts/ed25519.swift" public-key <"$E2E/seed")"
   check_build "$OLD_V" "$OLD_B" "$E2E/build-$OLD_V/Transcribe.app"
@@ -422,24 +425,32 @@ else
   build "$NEW_V" "$NEW_B"
   [ "$FAILS" = 0 ] || fatal "the builds are not as expected"
 
-  # 4. The update DMG (as release-mac.sh makes it: UDZO, the app and an Applications link), signed the CI way.
-  step "DMG of $NEW_V, signed with sign-mac-release.sh --test"
+  # 4. The update DMG (as release-mac.sh makes it: UDZO, the app and an Applications link), and the delta from the
+  # old build (as CI makes it), both signed the CI way.
+  step "DMG of $NEW_V and the delta from $OLD_V, signed with sign-mac-release.sh --test"
   ln -s /Applications "$E2E/build-$NEW_V/Applications"
   hdiutil create -quiet -volname Transcribe -srcfolder "$E2E/build-$NEW_V" -format UDZO -ov \
     "$E2E/Transcribe-$NEW_V-TEST.dmg" || fatal "hdiutil create"
   rm "$E2E/build-$NEW_V/Applications"
+  mkdir -p "$E2E/dist"
+  BINARY_DELTA="$E2E/dd/SourcePackages/artifacts/sparkle/Sparkle/bin/BinaryDelta" "$ROOT/scripts/make-mac-delta.sh" \
+    "$E2E/build-$OLD_V/Transcribe.app" "$E2E/Transcribe-$NEW_V-TEST.dmg" "$E2E/dist" || fatal "make-mac-delta.sh"
   DIST="$E2E/dist" SPARKLE_ED_PRIVATE_KEY="$(cat "$E2E/seed")" "$ROOT/scripts/sign-mac-release.sh" --test \
-    --download-prefix "$DOWNLOAD_PREFIX" "$E2E/Transcribe-$NEW_V-TEST.dmg" || fatal "sign-mac-release.sh"
+    --download-prefix "$DOWNLOAD_PREFIX" --delta "$E2E/dist/$DELTA_FILE" "$E2E/Transcribe-$NEW_V-TEST.dmg" ||
+    fatal "sign-mac-release.sh"
 
   # 5. The feed folder, written by publish-mac.sh.
   step "Publish to $FEED"
   rm -rf "$FEED"
   "$ROOT/scripts/publish-mac.sh" --release "$E2E/dist/Transcribe-$NEW_V-TEST.latest.json" \
-    --dmg "$E2E/Transcribe-$NEW_V-TEST.dmg" --appcast "$E2E/dist/Transcribe-$NEW_V-TEST.appcast.xml" \
-    --dest "dir:$FEED" --public-key "$PUB" || fatal "publish-mac.sh"
+    --dmg "$E2E/Transcribe-$NEW_V-TEST.dmg" --delta "$E2E/dist/$DELTA_FILE" \
+    --appcast "$E2E/dist/Transcribe-$NEW_V-TEST.appcast.xml" --dest "dir:$FEED" --public-key "$PUB" || fatal "publish-mac.sh"
   rm -f "$E2E/Transcribe-$NEW_V-TEST.dmg"
 fi
 DMG="$FEED/transcribe/Transcribe-$NEW_V.dmg"
+DELTA="$FEED/transcribe/$DELTA_FILE"
+DELTA_SHA="$(shasum -a 256 "$DELTA" | cut -d ' ' -f 1)"
+note "delta $DELTA_FILE: $(stat -f %z "$DELTA") bytes (the DMG: $(stat -f %z "$DMG") bytes)"
 APPCAST="$FEED/transcribe/appcast.xml"
 DMG_SHA="$(jq -r .sha256 "$FEED/transcribe/latest.json")"
 cp "$APPCAST" "$E2E/appcast.good.xml"
@@ -516,7 +527,7 @@ check "chosen after Remind Me Later, the reminder checked the feed again" test "
 shot update-alert
 check "the alert offers $NEW_V to $OLD_V" has_text "Transcribe $NEW_V is now available—you have $OLD_V."
 click_button "Install Update" >/dev/null
-note "downloading and extracting (the DMG is about $(($(stat -f %z "$DMG") / 1000000)) MB)"
+note "downloading and applying the delta ($(stat -f %z "$DELTA") bytes)"
 wait_for 600 has_button "Install and Relaunch" || { texts >&2; fatal "not ready to install within 10 minutes"; }
 shot ready-to-install
 click_button "Install and Relaunch" >/dev/null
@@ -534,15 +545,16 @@ check "Sparkle checked the DMG's signature (in Autoupdate)" grep -q 'Autoupdate.
 grep -F 'OK: EdDSA' "$E2E/sparkle-positive.log" | cut -c1-160 | sed 's/^/    log: /' || true
 save_log positive
 
-# requests_ok LOG DMG [show]: every request in LOG is a GET or HEAD of the feed, or of DMG when DMG is not empty,
-# with no query string, only the allowed headers (no cookie or authorization), the expected User-Agent and no header
-# value holding the user's or the computer's name; the feed was fetched, and the DMG too when named. show prints
-# every request with its headers.
+# requests_ok LOG FILES [show]: every request in LOG is a GET or HEAD of the feed, or of one of FILES (space-separated
+# download names, may be empty), with no query string, only the allowed headers (no cookie or authorization), the
+# expected User-Agent and no header value holding the user's or the computer's name; the feed and every one of FILES
+# were fetched. show prints every request with its headers.
 requests_ok() {
   python3 -I - "$1" "$USER" "$(scutil --get ComputerName 2>/dev/null || true)" "Transcribe/$OLD_V Sparkle/$SPARKLE_VERSION" \
     "$2" "${3:-}" <<'EOF'
 import json, sys
-log, user, computer, agent, dmg, show = sys.argv[1:7]
+log, user, computer, agent, files, show = sys.argv[1:7]
+files = files.split()
 allowed = {"host", "user-agent", "accept", "accept-language", "accept-encoding", "connection", "if-none-match",
            "if-modified-since", "cache-control", "pragma", "priority"}
 requests = [json.loads(line) for line in open(log) if line.strip()]
@@ -563,7 +575,7 @@ for r in requests:
     seen.add((r["method"], r["path"]))
     if r["query"]:
         bad("query string on " + r["path"])
-    if r["path"] != "/transcribe/appcast.xml" and not (dmg and r["path"] == "/transcribe/download/" + dmg):
+    if r["path"] != "/transcribe/appcast.xml" and r["path"] not in ["/transcribe/download/" + f for f in files]:
         bad("unexpected path " + r["path"])
     for n in names:
         if n not in allowed:
@@ -577,7 +589,7 @@ for r in requests:
         for secret in (user, computer):
             if secret and secret.lower() in v.lower():
                 bad("header %s carries the user or computer name" % n)
-for need in [("GET", "/transcribe/appcast.xml")] + ([("GET", "/transcribe/download/" + dmg)] if dmg else []):
+for need in [("GET", "/transcribe/appcast.xml")] + [("GET", "/transcribe/download/" + f) for f in files]:
     if need not in seen:
         bad("no %s %s" % need)
 sys.exit(0 if ok else 1)
@@ -586,7 +598,7 @@ EOF
 
 # The request logs: what an update check and a download send.
 step "Requests (every header)"
-check "positive: the requests are as the privacy wording says" requests_ok "$E2E/requests-positive.log" "Transcribe-$NEW_V.dmg" show
+check "positive: the requests are as the privacy wording says (the delta, never the DMG)" requests_ok "$E2E/requests-positive.log" "$DELTA_FILE" show
 
 # 9. Negative tests, each from a fresh 0.2.9 install. The feed files are changed in place, then put back.
 
@@ -635,7 +647,35 @@ f = open(sys.argv[1], "r+b"); n = os.path.getsize(sys.argv[1]) // 2
 f.seek(n); b = f.read(1); f.seek(n); f.write(bytes([b[0] ^ 0xFF])); f.close()' "$1"
 }
 
-step "Negative 1: the DMG with one byte changed"
+# 10. A delta that fails (here: its signature) falls back to the whole DMG, which installs.
+step "Fallback: the delta with one byte changed; Sparkle downloads the DMG instead"
+flip_byte "$DELTA"
+check "the delta differs, same length" test "$(shasum -a 256 "$DELTA" | cut -d' ' -f1)" != "$DELTA_SHA"
+install_old
+launch
+menu "Check for Updates…"
+if wait_for 90 has_button "Install Update"; then
+  click_button "Install Update" >/dev/null
+  if wait_for 600 has_button "Install and Relaunch"; then
+    printf '    PASS: %s\n' "tampered delta: Sparkle fell back to the DMG and is ready to install"
+    click_button "Install and Relaunch" >/dev/null
+    check "tampered delta: the installed app is $NEW_V ($NEW_B) within 5 minutes" wait_for 300 is_build "$NEW_B"
+    check "tampered delta: codesign of the updated app" codesign --verify --deep --strict "$INSTALLED"
+  else
+    printf '    FAIL: %s\n' "tampered delta: not ready to install within 10 minutes"
+    texts | sed 's/^/      text: /'
+    FAILS=$((FAILS + 1))
+  fi
+else
+  printf '    FAIL: %s\n' "tampered delta: no update offered"
+  FAILS=$((FAILS + 1))
+fi
+quit_app
+save_log tampered-delta
+check "tampered delta: it fetched the delta, then the DMG" requests_ok "$E2E/requests-tampered-delta.log" "$DELTA_FILE Transcribe-$NEW_V.dmg"
+
+# The delta stays broken for negative 1, so that Sparkle falls back to the (tampered) DMG there too.
+step "Negative 1: the DMG with one byte changed (and the delta)"
 flip_byte "$DMG"
 check "the DMG differs, same length" test "$(shasum -a 256 "$DMG" | cut -d' ' -f1)" != "$DMG_SHA"
 install_old
@@ -662,9 +702,11 @@ check "tampered DMG: the installed app is still $OLD_B" is_build "$OLD_B"
 check "tampered DMG: codesign of the installed app still valid" codesign --verify --deep --strict "$INSTALLED"
 quit_app
 save_log tampered-dmg
-check "tampered DMG: the requests are as the privacy wording says" requests_ok "$E2E/requests-tampered-dmg.log" "Transcribe-$NEW_V.dmg"
+check "tampered DMG: the requests are as the privacy wording says" requests_ok "$E2E/requests-tampered-dmg.log" "$DELTA_FILE Transcribe-$NEW_V.dmg"
 flip_byte "$DMG"
 check "the DMG is back to its signed bytes" test "$(shasum -a 256 "$DMG" | cut -d' ' -f1)" = "$DMG_SHA"
+flip_byte "$DELTA"
+check "the delta is back to its signed bytes" test "$(shasum -a 256 "$DELTA" | cut -d' ' -f1)" = "$DELTA_SHA"
 
 step "Negative 2: the feed with one character changed"
 sed 's|<title>Transcribe for Mac</title>|<title>Transcribe for Mbc</title>|' "$E2E/appcast.good.xml" >"$APPCAST"
@@ -683,7 +725,7 @@ sparkle_log 60m | grep -i -E 'improperly|signature|validat' | tail -8 | cut -c1-
 
 step "Result"
 if [ "$FAILS" = 0 ]; then
-  echo "PASSED: the update end-to-end test (positive and three negatives)"
+  echo "PASSED: the update end-to-end test (positive with the delta, the delta fallback, and three negatives)"
 else
   echo "FAILED: $FAILS check(s)"
   exit 1
