@@ -2,7 +2,8 @@ DESTINATION := platform=iOS Simulator,name=iPhone 15,OS=27.0
 MAC_DESTINATION := platform=macOS
 DERIVED     ?= $(or $(TMPDIR),/tmp)/transcribe-dd
 
-.PHONY: project build build-mac test-kit test-ui test-ui-mac sim shots models check-models archive archive-mac release-mac testflight
+.PHONY: project build build-mac test-kit test-ui test-ui-mac sim shots models check-models archive archive-mac release-mac testflight \
+        sign-mac publish-mac test-release-scripts
 
 project:
 	./scripts/bootstrap.sh
@@ -30,6 +31,24 @@ archive-mac: models
 # make release-mac SKIP_NOTARIZE=1 stops after the signed DMG on purpose. DERIVED and FROM pass through.
 release-mac:
 	./scripts/release-mac.sh $(if $(SKIP_NOTARIZE),--skip-notarize)
+
+# The Mac app's version (MARKETING_VERSION of TranscribeMac), read only when a target below uses it.
+MAC_VERSION = $(shell ./scripts/release-mac.sh --print-version | cut -d' ' -f1)
+
+# Sparkle-signs the stapled DMG from make release-mac with the update key in the login keychain (a person approves
+# the prompt: Allow, never Always Allow). Writes dist/Transcribe-<version>.latest.json and .appcast.xml. CI signs
+# with the key from the mac-release environment instead.
+sign-mac:
+	./scripts/sign-mac-release.sh --use-keychain "dist/Transcribe-$(MAC_VERSION).dmg"
+
+# Manual fallback for CI's publish step (after make release-mac and make sign-mac): uploads to R2 and switches the
+# page and the update feed. Needs R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY, R2_ACCOUNT_ID and R2_BUCKET in the shell.
+publish-mac:
+	./scripts/publish-mac.sh --release 'dist/Transcribe-$(MAC_VERSION).latest.json' --dmg 'dist/Transcribe-$(MAC_VERSION).dmg' --appcast 'dist/Transcribe-$(MAC_VERSION).appcast.xml'
+
+# Tests of the release scripts and workflows (lint, version rule, Ed25519, signing, publishing to a folder, gate).
+test-release-scripts:
+	./scripts/tests/release-scripts-test.sh
 
 # iPhone: archive (Release) and upload to App Store Connect for TestFlight, signed in with an API key.
 testflight: models

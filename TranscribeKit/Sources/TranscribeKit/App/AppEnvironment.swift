@@ -29,6 +29,9 @@ public final class AppEnvironment {
     public private(set) var syncLaunch: Task<Void, Never>?
     /// Mac only: "Let Claude read transcripts" is on (set by the Mac app's ClaudeAccess). Always false on iPhone.
     public var claudeAccessOn = false
+    /// Mac only: the Sparkle updater runs in this build (set by the Mac app from `UpdateAvailability`). Always false on
+    /// iPhone.
+    public var updatesAvailable = false
     public private(set) var isLaunched = false
     public private(set) var launchError: String?
 

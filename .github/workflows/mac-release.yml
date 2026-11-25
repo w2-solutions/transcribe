@@ -1,0 +1,353 @@
+# Releases the Mac app: builds, checks, notarises and EdDSA-signs it, then publishes the DMG, the page pointer
+# (latest.json) and the Sparkle update feed (appcast.xml) to the R2 bucket behind https://w2solutions.ai/transcribe.
+#
+# When: every push to main that touches project.yml (or this file), and by hand from the Actions tab. The gate job
+# (scripts/release-gate.sh) compares the TranscribeMac version with what the site publishes and decides:
+#   release   the version is newer than the published one (bump MARKETING_VERSION and add release-notes/mac/<v>.txt)
+#   resume    the version is published but a step did not finish (the feed, or deleting the old DMG); repairs it
+#   none      nothing to do (most pushes)
+#   dry-run   a manual run with publish off: a TEST build signed with a throwaway key made for the run; uploads
+#             nothing; keeps only latest.json, appcast.xml and the notary log as artefacts. Needs a version above
+#             0.2.0 with its notes: dispatch it from the version-bump branch
+# A published version is never rebuilt: a fix ships as a higher version. Re-run a failed release with
+#   gh workflow run mac-release.yml --ref main -f publish=true
+# not "Re-run failed jobs", which reuses the old decision (the release job decides again and stops if it changed).
+# Later jobs read only the gate's outputs, never the inputs (on a push the inputs are empty).
+#
+# Approval: the release job uses the environment mac-release (branch main only, required reviewer: Liam), so it
+# waits for approval in the Actions tab before it starts. Dry runs use no environment and need no approval.
+#
+# Secrets, environment mac-release:  SPARKLE_ED_PRIVATE_KEY (the update key, base64 seed), R2_ACCESS_KEY_ID,
+#                                    R2_SECRET_ACCESS_KEY (an R2 token, Object Read & Write on w2-downloads only)
+# Variables, environment mac-release: R2_ACCOUNT_ID, R2_BUCKET
+# Secret on this repo:   ASC_KEY_P8 (App Store Connect API key, as for TestFlight)
+# Variables on this repo: ASC_KEY_ID, ASC_ISSUER_ID, TESTFLIGHT_RUNNER (the self-hosted Mac's label; there is no
+#                         hosted fallback: the build needs this Mac's Developer ID identity and Xcode 27)
+#
+# The update key reaches only the signing steps, on standard input of scripts/ed25519.swift; the R2 token only the
+# publishing steps. Never add a pull_request trigger: the runner is the owner's Mac.
+
+name: Mac release
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - project.yml
+      - .github/workflows/mac-release.yml
+  workflow_dispatch:
+    inputs:
+      publish:
+        type: boolean
+        default: false
+        description: "Publish (main only, needs approval). Off: a dry run with a throwaway key; uploads nothing."
+      notarize:
+        type: boolean
+        default: true
+        description: "Notarise (always on when publishing)."
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.gate.outputs.mode }}
+      version: ${{ steps.gate.outputs.version }}
+      build: ${{ steps.gate.outputs.build }}
+      notarize: ${{ steps.gate.outputs.notarize }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Decide
+        id: gate
+        env:
+          RUNNER_LABEL: ${{ vars.TESTFLIGHT_RUNNER }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          INPUT_NOTARIZE: ${{ inputs.notarize }}
+        run: ./scripts/release-gate.sh
+
+  dry-run:
+    needs: gate
+    if: needs.gate.outputs.mode == 'dry-run'
+    runs-on: [self-hosted, "${{ vars.TESTFLIGHT_RUNNER }}"]
+    concurrency:
+      group: mac-dry-run-${{ github.run_id }}
+    timeout-minutes: 150
+    env:
+      V: ${{ needs.gate.outputs.version }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # codesign must use the Developer ID key without a prompt: a hidden keychain dialog would hang the job.
+      - name: Signing preflight
+        run: |
+          cp /usr/bin/true "$RUNNER_TEMP/preflight"
+          if ! perl -e 'alarm 60; exec @ARGV' codesign --force --sign "Developer ID Application" --timestamp=none "$RUNNER_TEMP/preflight" ||
+            ! codesign -dv "$RUNNER_TEMP/preflight" 2>&1 | grep -qx 'TeamIdentifier=53FBF5CS9U'; then
+            echo "::error::The Developer ID key needs a one-time Keychain Access approval for codesign on this Mac (see CLAUDE.md)"
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/preflight"
+
+      - name: Keep the Mac awake
+        run: nohup caffeinate -i -s -t 9000 >/dev/null 2>&1 &
+
+      - name: Select Xcode 27
+        run: |
+          if xcodebuild -version 2>/dev/null | grep -q '^Xcode 27'; then xcodebuild -version; exit 0; fi   # a self-hosted Mac
+          XCODE=$(find /Applications -maxdepth 1 -name 'Xcode_27*.app' | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error::This runner has no Xcode 27. Installed: $(find /Applications -maxdepth 1 -iname '*xcode*' | tr '\n' ' ')"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Install xcodegen
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Write the API key file
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/asc/AuthKey.p8"
+
+      # A key made for this run only: the TEST build trusts it, and it is deleted at the end. Never the release key.
+      - name: Throwaway update key
+        id: seed
+        run: |
+          umask 077
+          mkdir -p "$RUNNER_TEMP/dry"
+          openssl rand -base64 32 > "$RUNNER_TEMP/dry/seed"
+          # An assignment of its own, so a failure stops the step (inside echo's arguments it would be ignored).
+          PUB="$(xcrun swift scripts/ed25519.swift public-key < "$RUNNER_TEMP/dry/seed")"
+          printf '%s\n' "$PUB" | grep -Eq '^[A-Za-z0-9+/]{43}=$' || { echo "::error::could not derive the throwaway public key"; exit 1; }
+          echo "pub=$PUB" >> "$GITHUB_OUTPUT"
+
+      - name: Build, check and notarise (TEST build)
+        env:
+          ASC_KEY_ID: ${{ vars.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ vars.ASC_ISSUER_ID }}
+          TEST_PUB: ${{ steps.seed.outputs.pub }}
+          NOTARIZE: ${{ needs.gate.outputs.notarize }}
+        run: |
+          # Without a test key release-mac.sh would build a release trusting the production key.
+          [ -n "$TEST_PUB" ] || { echo "::error::no throwaway public key: refusing to build a non-TEST app in a dry run"; exit 1; }
+          ARGS=()
+          [ "$NOTARIZE" = true ] || ARGS=(--skip-notarize)
+          MODELS="$HOME/Library/Caches/transcribe-test-models"
+          [ -d "$MODELS" ] || MODELS=""
+          RELEASE_PROVISIONING_AUTH=api ASC_KEY_PATH="$RUNNER_TEMP/asc/AuthKey.p8" DERIVED="$RUNNER_TEMP/mac-release" \
+            FROM="$MODELS" TRANSCRIBE_ED_PUBLIC_KEY="$TEST_PUB" ./scripts/release-mac.sh "${ARGS[@]}"
+
+      - name: EdDSA-sign with the throwaway key
+        run: SPARKLE_ED_PRIVATE_KEY="$(cat "$RUNNER_TEMP/dry/seed")" ./scripts/sign-mac-release.sh --test "dist/Transcribe-$V-TEST.dmg"
+
+      - name: Write the pointers to a local folder
+        env:
+          TEST_PUB: ${{ steps.seed.outputs.pub }}
+        run: |
+          ./scripts/publish-mac.sh --release "dist/Transcribe-$V-TEST.latest.json" --dmg "dist/Transcribe-$V-TEST.dmg" \
+            --appcast "dist/Transcribe-$V-TEST.appcast.xml" --dest "dir:$RUNNER_TEMP/dry-bucket" --public-key "$TEST_PUB"
+
+      # Never a DMG (a public repo's artefacts are downloadable) and never the seed.
+      - name: Keep the pointers and the notary log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mac-dry-run
+          if-no-files-found: ignore
+          path: |
+            dist/*.latest.json
+            dist/*.appcast.xml
+            ${{ runner.temp }}/mac-release/notary-*.json
+
+      - name: Delete the key, the DMGs and the build
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/dry" "$RUNNER_TEMP/dry-bucket" "$RUNNER_TEMP/mac-release"
+          rm -f dist/*.dmg dist/*.latest.json dist/*.appcast.xml
+
+  release:
+    needs: gate
+    if: needs.gate.outputs.mode == 'release' || needs.gate.outputs.mode == 'resume'
+    runs-on: [self-hosted, "${{ vars.TESTFLIGHT_RUNNER }}"]
+    environment: mac-release
+    # Separate from TestFlight's group: a queued release must never cancel a pending TestFlight upload, or the reverse.
+    concurrency:
+      group: mac-release
+      cancel-in-progress: false
+    timeout-minutes: 150
+    env:
+      V: ${{ needs.gate.outputs.version }}
+      MODE: ${{ needs.gate.outputs.mode }}
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      # "Re-run failed jobs" and a run approved late reuse the gate's old outputs: decide again before anything else.
+      - name: Still the gate's decision
+        env:
+          RUNNER_LABEL: ${{ vars.TESTFLIGHT_RUNNER }}
+          INPUT_PUBLISH: ${{ inputs.publish }}
+          INPUT_NOTARIZE: ${{ inputs.notarize }}
+        run: |
+          NOW="$(GITHUB_OUTPUT='' GITHUB_STEP_SUMMARY='' ./scripts/release-gate.sh 2>&1 || true)"
+          NOW_MODE="$(printf '%s\n' "$NOW" | sed -n 's/^mode=//p')"
+          if [ "$NOW_MODE" != "$MODE" ]; then
+            printf '%s\n' "$NOW"
+            echo "::error::The gate decided '$MODE' but now says '${NOW_MODE:-refused}'. If $V is already published, repair it with: gh workflow run mac-release.yml --ref main -f publish=true"
+            exit 1
+          fi
+          echo "still $MODE"
+
+      # Names only; no value is printed. Then a read-only look at the bucket, so a bad token fails before the build.
+      - name: Check the release secrets
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: |
+          for v in SPARKLE_ED_PRIVATE_KEY R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET; do
+            if [ -z "${!v}" ]; then
+              echo "::error::$v is not set in the mac-release environment (see CLAUDE.md, Publishing the Mac app)"
+              exit 1
+            fi
+          done
+          unset SPARKLE_ED_PRIVATE_KEY
+          mkdir -p "$RUNNER_TEMP/aws"
+          printf '[default]\nregion = auto\nrequest_checksum_calculation = when_required\nresponse_checksum_validation = when_required\n' > "$RUNNER_TEMP/aws/config"
+          # export is a builtin: the token never appears in a process's arguments (as it would through env VAR=...).
+          (
+            unset AWS_PROFILE AWS_DEFAULT_PROFILE AWS_SESSION_TOKEN AWS_ENDPOINT_URL
+            export AWS_CONFIG_FILE="$RUNNER_TEMP/aws/config" AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_EC2_METADATA_DISABLED=true
+            export AWS_ACCESS_KEY_ID="$R2_ACCESS_KEY_ID" AWS_SECRET_ACCESS_KEY="$R2_SECRET_ACCESS_KEY"
+            export AWS_ENDPOINT_URL_S3="https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com"
+            /usr/local/bin/aws --no-cli-pager s3api list-objects-v2 --bucket "$R2_BUCKET" --prefix transcribe/ --max-keys 1 > /dev/null
+          )
+          rm -rf "$RUNNER_TEMP/aws"
+          echo "secrets present; the bucket answers"
+
+      - name: Signing preflight
+        if: env.MODE == 'release'
+        run: |
+          cp /usr/bin/true "$RUNNER_TEMP/preflight"
+          if ! perl -e 'alarm 60; exec @ARGV' codesign --force --sign "Developer ID Application" --timestamp=none "$RUNNER_TEMP/preflight" ||
+            ! codesign -dv "$RUNNER_TEMP/preflight" 2>&1 | grep -qx 'TeamIdentifier=53FBF5CS9U'; then
+            echo "::error::The Developer ID key needs a one-time Keychain Access approval for codesign on this Mac (see CLAUDE.md)"
+            exit 1
+          fi
+          rm -f "$RUNNER_TEMP/preflight"
+
+      - name: Keep the Mac awake
+        run: nohup caffeinate -i -s -t 9000 >/dev/null 2>&1 &
+
+      - name: Select Xcode 27
+        run: |
+          if xcodebuild -version 2>/dev/null | grep -q '^Xcode 27'; then xcodebuild -version; exit 0; fi   # a self-hosted Mac
+          XCODE=$(find /Applications -maxdepth 1 -name 'Xcode_27*.app' | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then
+            echo "::error::This runner has no Xcode 27. Installed: $(find /Applications -maxdepth 1 -iname '*xcode*' | tr '\n' ' ')"
+            exit 1
+          fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+
+      - name: Install xcodegen
+        if: env.MODE == 'release'
+        run: command -v xcodegen >/dev/null || brew install xcodegen
+
+      - name: Write the API key file
+        if: env.MODE == 'release'
+        env:
+          ASC_KEY_P8: ${{ secrets.ASC_KEY_P8 }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/asc"
+          printf '%s\n' "$ASC_KEY_P8" > "$RUNNER_TEMP/asc/AuthKey.p8"
+          chmod 600 "$RUNNER_TEMP/asc/AuthKey.p8"
+
+      # The update key is not in this step's environment.
+      - name: Build, check and notarise
+        if: env.MODE == 'release'
+        env:
+          ASC_KEY_ID: ${{ vars.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ vars.ASC_ISSUER_ID }}
+        run: |
+          MODELS="$HOME/Library/Caches/transcribe-test-models"
+          [ -d "$MODELS" ] || MODELS=""
+          RELEASE_PROVISIONING_AUTH=api ASC_KEY_PATH="$RUNNER_TEMP/asc/AuthKey.p8" DERIVED="$RUNNER_TEMP/mac-release" \
+            FROM="$MODELS" ./scripts/release-mac.sh
+
+      - name: EdDSA-sign
+        if: env.MODE == 'release'
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: ./scripts/sign-mac-release.sh "dist/Transcribe-$V.dmg"
+
+      - name: Publish
+        if: env.MODE == 'release'
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: |
+          ./scripts/publish-mac.sh --release "dist/Transcribe-$V.latest.json" --dmg "dist/Transcribe-$V.dmg" \
+            --appcast "dist/Transcribe-$V.appcast.xml"
+
+      # Resume: the bucket's latest.json is the record. It is read from the bucket (never through the site), must be
+      # project.yml's version, and its DMG must verify against the committed key, before the update key signs a feed
+      # built from it; the signing step reads only the checked file.
+      - name: "Resume: check the published release"
+        if: env.MODE == 'resume'
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: ./scripts/publish-mac.sh --resume-check dist/resume.latest.json
+
+      - name: "Resume: sign the feed of the published release"
+        if: env.MODE == 'resume'
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: ./scripts/sign-mac-release.sh --feed-from dist/resume.latest.json
+
+      - name: "Resume: publish"
+        if: env.MODE == 'resume'
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: ./scripts/publish-mac.sh --resume dist/resume.latest.json --appcast dist/resume.appcast.xml
+
+      # Never the DMG, and never a feed signed with the update key (the published one is public; one that was not
+      # published must not leave the runner).
+      - name: Keep the page pointer and the notary log
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: mac-release
+          if-no-files-found: ignore
+          path: |
+            dist/*.latest.json
+            ${{ runner.temp }}/mac-release/notary-*.json
+
+      - name: Delete the API key and the build
+        if: always()
+        run: |
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/mac-release"
+          rm -f dist/*.dmg dist/*.latest.json dist/*.appcast.xml
