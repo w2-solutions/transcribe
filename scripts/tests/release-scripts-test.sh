@@ -610,8 +610,8 @@ expect_out "push, the iPhone version changed: upload" true tf_gate push "$C2"
 expect_out "push from nothing (all zeros): upload" true tf_gate push 0000000000000000000000000000000000000000
 expect_out "push with an unknown earlier commit: upload" true tf_gate push 1234567890123456789012345678901234567890
 expect_out "run by hand with no change: upload" true tf_gate workflow_dispatch ""
-expect_rc "an unknown event fails" 1 sh -c 'cd "$1" && GITHUB_EVENT_NAME=pull_request "$2/scripts/testflight-gate.sh"' _ "$G" "$ROOT"
-expect_out "the iPhone version in the outputs" "version=0.3.2" sh -c 'cd "$1" && GITHUB_EVENT_NAME=workflow_dispatch "$2/scripts/testflight-gate.sh" 2>/dev/null | grep "^version="' _ "$G" "$ROOT"
+expect_rc "an unknown event fails" 1 sh -c 'cd "$1" && GITHUB_OUTPUT= GITHUB_STEP_SUMMARY= GITHUB_EVENT_NAME=pull_request "$2/scripts/testflight-gate.sh"' _ "$G" "$ROOT"
+expect_out "the iPhone version in the outputs" "version=0.3.2" sh -c 'cd "$1" && GITHUB_OUTPUT= GITHUB_STEP_SUMMARY= GITHUB_EVENT_NAME=workflow_dispatch "$2/scripts/testflight-gate.sh" 2>/dev/null | grep "^version="' _ "$G" "$ROOT"
 
 printf '\n%d passed, %d failed\n' "$PASSED" "$FAILED"
 [ "$FAILED" = 0 ]
