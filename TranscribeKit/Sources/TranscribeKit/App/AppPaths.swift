@@ -8,6 +8,9 @@ public struct AppPaths: Sendable {
     /// Where builds before bundling downloaded the models (~704 MB). Deleted at launch; never used.
     public var legacyModelsDirectory: URL { root.appendingPathComponent("Models", isDirectory: true) }
     public var storeURL: URL { root.appendingPathComponent("Library.store") }
+    /// One JSON line per speech-model prepare (timings only, the last 200; `PrepareLog` in TranscribeFluid). Written
+    /// by the real engine only, never in UI tests.
+    public var prepareLogURL: URL { root.appendingPathComponent("prepare-log.jsonl") }
 
     public init(config: LaunchConfig) {
         if config.uiTesting {

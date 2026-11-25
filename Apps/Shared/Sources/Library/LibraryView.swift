@@ -26,6 +26,7 @@ struct LibraryView: View {
     @State private var renaming: Renaming?
     @State private var folderEditor: FolderEditor?
     @State private var alert: LibraryAlert?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private struct PendingDelete: Identifiable { let id: UUID }
     private struct Renaming: Identifiable { let id: UUID; var title: String }
@@ -37,7 +38,9 @@ struct LibraryView: View {
         let visible = self.visible
         List {
             if env.isLaunched, showsModelsCard {
-                ModelsCard().libraryRow()
+                ModelsCard(waitingCount: ModelsCard.waitingCount(recordings))
+                    .libraryRow()
+                    .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
             }
             if !recordings.isEmpty {
                 filterRow.libraryRow(top: 0, bottom: 7, horizontal: 0)
@@ -57,6 +60,7 @@ struct LibraryView: View {
         .environment(\.defaultMinListRowHeight, 0)
         .contentMargins(.bottom, 12, for: .scrollContent)
         .animation(.snappy, value: visible.map(\.id))
+        .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy, value: showsModelsCard)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Library.screen)
         .navigationTitle("Recordings")
@@ -317,9 +321,7 @@ struct LibraryView: View {
 
     // MARK: State
 
-    private var showsModelsCard: Bool {
-        if case .failed = env.models.status { true } else { false }
-    }
+    private var showsModelsCard: Bool { ModelsCard.isShown(env.models) }
 
     // MARK: Actions
 

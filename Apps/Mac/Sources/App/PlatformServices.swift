@@ -19,6 +19,10 @@ import TranscribeKit
 
     static let platform: DevicePlatform = .mac
 
+    /// None: a Mac app is never suspended, so `AppActivity` always reads as in front (SwiftUI reports `.background`
+    /// when the windows close, and the app keeps running).
+    static var activityPhase: (@MainActor () -> AppPhase)? { nil }
+
     /// While sync is on, iCloud pushes tell `CKSyncEngine` to fetch (§8.4 item 9). The engine handles the pushes itself;
     /// the app only registers.
     static func registerForRemoteNotifications() {

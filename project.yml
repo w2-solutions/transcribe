@@ -70,6 +70,9 @@ targets:
         TranscribeICloud: $(TRANSCRIBE_SYNC)
         # Which CloudKit environment this build talks to; a change makes sync forget its state and join again.
         TranscribeICloudEnvironment: $(TRANSCRIBE_ICLOUD_ENV)
+        # "YES" only in builds signed with the Background Inference entitlement: the speech-model prepare may then
+        # use the Neural Engine in the background (Composition.appActivity; no runtime check exists on iOS).
+        TranscribeBackgroundInference: $(TRANSCRIBE_BACKGROUND_INFERENCE)
         BGTaskSchedulerPermittedIdentifiers: ["ai.w2solutions.transcribe.process.*"]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         UIFileSharingEnabled: false
@@ -104,6 +107,11 @@ targets:
         CODE_SIGN_ENTITLEMENTS: Apps/iPhone/Transcribe$(TRANSCRIBE_ENTITLEMENTS_SUFFIX_$(TRANSCRIBE_SYNC)).entitlements
         TRANSCRIBE_ICLOUD_ENV: Development
         TRANSCRIBE_APS_ENV: development
+        # Background Inference (com.apple.developer.background-tasks.continued-processing.inference, iOS 27): Neural
+        # Engine use in the background, which lets the speech-model prepare carry on after the user leaves the app.
+        # Follows the entitlements file: Transcribe.entitlements carries the Background Inference key and
+        # Transcribe.local.entitlements (TRANSCRIBE_SYNC=NO) never does. BackgroundInferenceConfigTests pins that pairing.
+        TRANSCRIBE_BACKGROUND_INFERENCE: $(TRANSCRIBE_SYNC)
       configs:
         Release:
           TRANSCRIBE_ICLOUD_ENV: Production

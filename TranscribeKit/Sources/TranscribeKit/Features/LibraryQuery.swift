@@ -73,7 +73,7 @@ public enum LibraryCardStatus: Equatable, Sendable {
     case recognised
     /// The recording is still being captured.
     case recording
-    /// "<activeTitle>… <n>/<total>" or "Waiting for speech models" (progress pill).
+    /// "<activeTitle>… <n>/<total>", "Waiting for setup" or "Setup couldn't finish" (progress pill).
     case processing(text: String, fraction: Double)
     /// "Couldn't process" (failed pill).
     case failed
@@ -84,12 +84,15 @@ public enum LibraryCardStatus: Equatable, Sendable {
     public static let recordingText = "Recording"
     public static let failedText = "Couldn't process"
 
+    /// - Parameter setupFailed: `ModelManager.hasFailed`.
     public static func make(stage: RecordingStage, queueReason: QueueReason?, hasUnseenResult: Bool,
-                            duration: TimeInterval, snapshot: ProcessingSnapshot?) -> LibraryCardStatus {
+                            duration: TimeInterval, snapshot: ProcessingSnapshot?,
+                            setupFailed: Bool = false) -> LibraryCardStatus {
         if stage == .capturing { return .recording }
         if stage == .failed { return .failed }
         if stage.isProcessing {
-            let state = ProcessingViewState(stage: stage, queueReason: queueReason, snapshot: snapshot)
+            let state = ProcessingViewState(stage: stage, queueReason: queueReason, snapshot: snapshot,
+                                            setupFailed: setupFailed)
             return .processing(text: state.cardText, fraction: state.overall)
         }
         if hasUnseenResult { return .recognised }
@@ -118,10 +121,17 @@ public struct LibraryCardPreview: Equatable, Sendable {
         self.isPlaceholder = isPlaceholder
     }
 
+    /// The placeholder of a recording waiting for setup (its pill already says "Waiting for setup").
+    public static let waitingForSetupText = "Processed when setup finishes."
+
     public static func make(previewText: String, stage: RecordingStage, noSpeech: Bool,
+                            queueReason: QueueReason? = nil,
                             platform: DevicePlatform = .current) -> LibraryCardPreview {
         let trimmed = previewText.trimmingCharacters(in: .whitespacesAndNewlines)
         if !trimmed.isEmpty { return LibraryCardPreview(text: trimmed, isPlaceholder: false) }
+        if stage.isProcessing, stage != .capturing, queueReason == .modelsNotReady {
+            return LibraryCardPreview(text: waitingForSetupText, isPlaceholder: true)
+        }
         switch stage {
         case .capturing: return LibraryCardPreview(text: DeviceCopy(platform: platform).capturingPreview, isPlaceholder: true)
         case .failed: return LibraryCardPreview(text: "Couldn't finish processing this recording.", isPlaceholder: true)

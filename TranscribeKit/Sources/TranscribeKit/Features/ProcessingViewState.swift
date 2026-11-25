@@ -6,7 +6,8 @@ import TranscribeCore
 /// A live `ProcessingSnapshot` from the monitor wins while the job is running, finished or failed. Without one
 /// (just launched, or still queued) the rows are a placeholder built from the persisted stage:
 /// up to `.transcribed` → step 1 active (done once transcribed); `.separating`/`.separated` → step 2 active;
-/// `.matching` → step 3 active.
+/// `.matching` → step 3 active. While the recording waits for setup nothing of it has started, so no row is active
+/// (all wait, or stay done), and the setup's own progress shows instead.
 public struct ProcessingViewState: Equatable, Sendable {
     public enum Mode: Equatable, Sendable {
         case running
@@ -17,7 +18,14 @@ public struct ProcessingViewState: Equatable, Sendable {
 
     public static let defaultHeading = "Working out who said what"
     public static func defaultMessage(_ p: DevicePlatform) -> String { DeviceCopy(platform: p).processingDefault }
-    public static let modelsHeading = "Waiting for speech models"
+    public static let modelsHeading = "Waiting for setup to finish"
+    /// The collapsed pill and the Library card's status while the speech models get ready.
+    public static let modelsShort = "Waiting for setup"
+    /// Setup failed while the recording waits for it ("Try again" fixes it).
+    public static let modelsFailedHeading = "Setup couldn't finish"
+    public static func modelsFailedMessage(_ p: DevicePlatform) -> String { DeviceCopy(platform: p).processingModelsFailed }
+    /// The transcript screen's placeholder while the recording waits for setup.
+    public static let modelsPlaceholder = "Transcribing starts when setup finishes."
     public static func modelsMessage(_ p: DevicePlatform) -> String { DeviceCopy(platform: p).processingModels }
     public static let recordingHeading = "Paused while you record"
     public static let recordingMessage = "Processing picks up again when you stop recording."
@@ -32,10 +40,14 @@ public struct ProcessingViewState: Equatable, Sendable {
     public var steps: [StepStatus]
     /// 0...1; weights 0.45 / 0.45 / 0.10, skipped steps count as done.
     public var overall: Double
+    /// The speech-model setup failed (`ModelManager.hasFailed`): a recording waiting for it says so, not "waiting".
+    public var setupFailed: Bool
 
+    /// - Parameter setupFailed: `ModelManager.hasFailed`.
     public init(stage: RecordingStage, queueReason: QueueReason?, snapshot: ProcessingSnapshot?,
                 savedVoiceNames: [String] = [], identifySpeakers: Bool = true, recogniseVoices: Bool = true,
-                platform: DevicePlatform = .current) {
+                setupFailed: Bool = false, platform: DevicePlatform = .current) {
+        self.setupFailed = setupFailed
         let reason = Self.queueReason(snapshot: snapshot, stored: queueReason)
         if let snapshot, Self.isLive(snapshot.phase) {
             steps = snapshot.steps.count == ProcessingStep.allCases.count
@@ -63,8 +75,22 @@ public struct ProcessingViewState: Equatable, Sendable {
             } else {
                 mode = .running
             }
+            if mode == .waiting(.modelsNotReady) {
+                // Nothing of this recording has started: no row spins.
+                steps = steps.map { status in
+                    guard case .active = status.state else { return status }
+                    var status = status
+                    status.state = .waiting
+                    status.subtitle = ProcessingCopy.subtitle(step: status.step, state: .waiting, voicesFound: nil,
+                                                              comparedWith: snapshot?.comparedWith ?? savedVoiceNames)
+                    return status
+                }
+                overall = Self.overall(steps)
+            }
         }
         switch mode {
+        case .waiting(.modelsNotReady) where setupFailed:
+            heading = Self.modelsFailedHeading; message = Self.modelsFailedMessage(platform)
         case .waiting(.modelsNotReady):
             heading = Self.modelsHeading; message = Self.modelsMessage(platform)
         case .waiting(.pausedForRecording):
@@ -110,10 +136,13 @@ public struct ProcessingViewState: Equatable, Sendable {
 
     public var isWaitingForModels: Bool { mode == .waiting(.modelsNotReady) }
 
-    /// The collapsed pill: "Separating speakers · 60%", or "Waiting for speech models".
+    /// Waiting for a setup that failed: the panel offers Try again.
+    public var isWaitingForFailedSetup: Bool { isWaitingForModels && setupFailed }
+
+    /// The collapsed pill: "Separating speakers · 60%", "Waiting for setup" or "Setup couldn't finish".
     public var collapsedText: String {
         switch mode {
-        case .waiting(.modelsNotReady): return Self.modelsHeading
+        case .waiting(.modelsNotReady): return setupFailed ? Self.modelsFailedHeading : Self.modelsShort
         case .waiting(.pausedForRecording): return Self.recordingHeading
         case .finished: return "Done · 100%"
         case .failed: return "Couldn't finish processing"
@@ -121,19 +150,20 @@ public struct ProcessingViewState: Equatable, Sendable {
         }
     }
 
-    /// The Library card's status pill: "Separating speakers… 2/3", or "Waiting for speech models".
+    /// The Library card's status pill: "Separating speakers… 2/3", "Waiting for setup" or "Setup couldn't finish".
     public var cardText: String {
         switch mode {
-        case .waiting(.modelsNotReady): return Self.modelsHeading
+        case .waiting(.modelsNotReady): return setupFailed ? Self.modelsFailedHeading : Self.modelsShort
         case .waiting(.pausedForRecording): return Self.recordingHeading
         default: return "\((activeStep ?? .matching).activeTitle)… \(stepNumber)/\(Swift.max(1, enabledSteps.count))"
         }
     }
 
-    /// The panel's row title for a step: done → `title`, active → `activeTitle`, waiting → `title`.
+    /// The panel's row title for a step: done → `title` ("Transcribed"), otherwise `activeTitle` ("Transcribing"),
+    /// so a row that has not started (waiting for setup) never reads as done.
     public static func rowTitle(_ status: StepStatus) -> String {
-        if case .active = status.state { return status.step.activeTitle }
-        return status.step.title
+        if status.state == .done { return status.step.title }
+        return status.step.activeTitle
     }
 
     /// The `AX.Processing.step(_:)` slug.
@@ -152,7 +182,8 @@ public struct ProcessingViewState: Equatable, Sendable {
         return true
     }
 
-    static func queueReason(snapshot: ProcessingSnapshot?, stored: QueueReason?) -> QueueReason? {
+    /// Why the recording waits: the live snapshot's reason wins over the stored one (the store may catch up later).
+    public static func queueReason(snapshot: ProcessingSnapshot?, stored: QueueReason?) -> QueueReason? {
         if let snapshot, case .queued(let reason) = snapshot.phase { return reason }
         return stored
     }

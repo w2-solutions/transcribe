@@ -28,6 +28,7 @@ struct MacRecordingList: View {
     @State private var errorText: String?
     @State private var isDropTargeted = false
     @FocusState private var searchFocused: Bool
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     /// Mac wording, sync-aware ("Delete from all your devices?" while sync is on).
     private var macCopy: DeviceCopy { DeviceCopy(platform: .mac, syncOn: env.copy.syncOn, cloudCopyKept: env.copy.cloudCopyKept) }
@@ -47,7 +48,10 @@ struct MacRecordingList: View {
                 VStack(alignment: .leading, spacing: 12) {
                     header(count: visible.count)
                     searchField
-                    if env.isLaunched, case .failed = env.models.status { ModelsCard() }
+                    if env.isLaunched, ModelsCard.isShown(env.models) {
+                        ModelsCard(waitingCount: ModelsCard.waitingCount(recordings))
+                            .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))
+                    }
                     if recordings.isEmpty {
                         message("No recordings yet", DeviceCopy(platform: .mac).libraryEmptyHint, id: AX.Library.emptyState)
                     } else if visible.isEmpty {
@@ -62,6 +66,7 @@ struct MacRecordingList: View {
                 .padding(.horizontal, 14)
                 .padding(.top, 6)
                 .padding(.bottom, 16)
+                .animation(reduceMotion ? .easeInOut(duration: 0.2) : .snappy, value: ModelsCard.isShown(env.models))
             }
             .focusable()
             .focused($listFocused)

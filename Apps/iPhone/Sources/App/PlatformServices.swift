@@ -16,6 +16,12 @@ import UIKit
 
     static let platform: DevicePlatform = .iPhone
 
+    /// The app's state now, for `AppActivity` (§ background prepare): the iPhone app is suspended in the background,
+    /// so the speech-model prepare follows it. Read at launch, when `UIApplication` exists.
+    static var activityPhase: (@MainActor () -> AppPhase)? {
+        { UIApplication.shared.applicationState == .background ? .background : .active }
+    }
+
     /// While sync is on, iCloud pushes tell `CKSyncEngine` to fetch (§8.4 item 9; `remote-notification` background
     /// mode). The engine handles the pushes itself; the app only registers.
     static func registerForRemoteNotifications() {

@@ -21,7 +21,12 @@ import TranscribeKit
                     if on, env.sync != nil, !env.config.uiTesting { PlatformServices.registerForRemoteNotifications() }
                 }
         }
-        .onChange(of: scenePhase) { _, p in Task { await env.onPhase(Self.appPhase(p)) } }
+        .onChange(of: scenePhase) { _, p in
+            // The activity moves now, not a main-actor hop later, so a prepare stage judged in between sees it.
+            let phase = Self.appPhase(p)
+            env.followActivity(phase)
+            Task { await env.onPhase(phase) }
+        }
     }
     /// Split out of the `.onChange` closure: the inline nested ternary exceeds the type-checker's time limit.
     private static func appPhase(_ p: ScenePhase) -> AppPhase {

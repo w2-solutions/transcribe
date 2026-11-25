@@ -10,6 +10,19 @@ final class MacLibraryTests: FlowTestCase {
         return app
     }
 
+    /// First launch on this Mac (`firstRun`, 20 s setup at demo speed): the setup card at the top of the list, then
+    /// it goes once setup is done. The Mac never pauses setup.
+    @MainActor func testFirstRunShowsTheSetupCard() {
+        let app = UITestApp.launch(seed: "firstRun", speed: "demo")
+        app.waitFor(AX.Mac.main, timeout: 20)
+        app.waitFor(AX.Library.modelsCard, timeout: 10)
+        Wait.label(app.waitFor(AX.Setup.id(AX.Setup.library, .headline)), contains: "Getting ready on this Mac")
+        Wait.label(app.waitFor(AX.Setup.id(AX.Setup.library, .step)), contains: "Setting up")
+        app.waitFor(AX.Setup.id(AX.Setup.library, .progress))
+        XCTAssertFalse(app.element(AX.Setup.id(AX.Setup.library, .pausedNote)).exists)
+        app.waitForGone(AX.Library.modelsCard, timeout: 35)
+    }
+
     @MainActor func testFavouriteFromContextMenu() {
         let app = launchLibrary()
         app.element(AX.Mac.sidebarFavourites).click()

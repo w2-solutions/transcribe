@@ -11,7 +11,36 @@ import TranscribeCore
 /// community-1's WeSpeaker ResNet34 embedder for voice vectors.
 ///
 /// The models ship read-only inside the app (`FluidModelPaths.bundledRoot()`); nothing is downloaded, removed or
-/// written. `FluidRuntime.lockDown()` puts FluidAudio in offline mode before any loader runs.
+/// written. `FluidRuntime.lockDown()` puts FluidAudio in offline mode before any loader runs. Every prepare writes
+/// one `PrepareRecord` (per-stage timings) to `prepareLog` when there is one, and a summary line to the unified log.
+///
+/// Progress: `prepareModels(onEvent:)` sends a `PreparePlan` (expected seconds per stage, from `PrepareEstimates` and
+/// the prepare log) and a started/finished pair per stage, to the caller that started the prepare only.
+///
+/// Stages, in order (`PrepareStage`): diarizer (community-1, Neural Engine), nemotron (Nemotron 3, CPU only), asr
+/// (Parakeet, Neural Engine, the long compile) and warmup (a silent transcription through Parakeet). The short ones
+/// run first so they are done before the user can leave mid-compile. The engine is ready once, when every stage has
+/// been kept; there is no partial readiness.
+///
+/// Background (iPhone; `activity`, see `AppActivity`). A Neural Engine stage starts in the background only when the
+/// build has Background Inference and the short background task is still held; otherwise the prepare pauses before
+/// it (`startRefused`). A stage that returns wholly in front is kept. A Neural Engine stage that touched the
+/// background and returned is kept too with Background Inference (the entitlement grants the Neural Engine in the
+/// background), so the prepare can reach ready while the app is away (`readyInBackground`; `ModelManager` fires
+/// `onReady` only back in front). The exception is a stage at whose start or end Core ML did not list the Neural
+/// Engine: its model may have loaded for the CPU, so it only primes the compile (`primed`: the prepare goes on and
+/// then pauses, and the next prepare in front loads it again warm). Without Background Inference, a Neural Engine
+/// stage that touched the background is dropped and the prepare pauses at once. The CPU-only stage (nemotron) needs
+/// neither the entitlement nor the Neural Engine: it may start in the background while the short task is held, and
+/// it is kept whenever it returns. A stage that throws is a failure only when it ran wholly in front; otherwise it
+/// is a pause too. A pause throws `EngineError.cancelled`, sets no load failure (the status reads installed, so the
+/// next foreground prepares again) and never disables Nemotron. Nothing measures wall time: a stage that spans a
+/// suspension is judged by its transitions, not its seconds; each stage's record keeps `bgAtStart`/`bgAtEnd` and
+/// `aneAtStart`/`aneAtEnd`, so a slow stage kept in the background still shows. The Mac never moves `activity` to
+/// the background.
+///
+/// iOS drops the compiled Neural Engine models on every install or update, wherever the model files live (measured
+/// on an iPhone 15, 2026-11-25), so the first prepare after each install compiles Parakeet and community-1 again.
 ///
 /// Holds `AsrManager`, `AsrModels`, `OfflineDiarizerModels` and the diarizer config. It never stores an
 /// `OfflineDiarizerManager` (not Sendable, its async methods are `@concurrent`); `makeDiarizer()` builds one
@@ -24,6 +53,25 @@ public actor FluidSpeechEngine: SpeechEngine {
 
     public nonisolated let paths: FluidModelPaths
     let modelsRoot: URL
+    /// Where each prepare's `PrepareRecord` is appended (`<AppPaths.root>/prepare-log.jsonl`), or nil to only log it.
+    let prepareLog: URL?
+    /// The last prepare's record (tests).
+    private(set) var lastPrepareRecord: PrepareRecord?
+    /// Whether the app is in front, and whether this build may use the Neural Engine in the background.
+    public nonisolated let activity: AppActivity
+    /// Tests: called when each stage's work has returned or thrown, before its verdict (to move the app mid-stage).
+    private let afterStageWork: (@Sendable (String) async -> Void)?
+    /// Whether Core ML lists a Neural Engine now (`PrepareLog.neuralEngineAvailable`; tests replace it).
+    private let neuralEngineProbe: @Sendable () -> Bool
+    /// A prepare in this process paused.
+    private var hasPaused = false
+    /// Stages whose work returned in this process (kept, primed or dropped): their compile is cached, so they run
+    /// again warm.
+    private var compiledThisProcess: Set<PrepareStage> = []
+    /// The running prepare's event sink (only its starter's).
+    private var eventSink: (@Sendable (PrepareEvent) -> Void)?
+    /// The stages the running prepare's plan expects warm (recorded per stage as `expectedWarm`).
+    private var plannedWarm: Set<PrepareStage> = []
 
     private let log = Logger(subsystem: "ai.w2solutions.transcribe", category: "FluidSpeechEngine")
     private let captureFactory: @Sendable () -> any CaptureSource
@@ -39,7 +87,7 @@ public actor FluidSpeechEngine: SpeechEngine {
     /// Why Nemotron 3 cannot be used on this device: set when Nemotron fails to load in this process. Separation
     /// then goes straight to community-1.
     private var nemotronUnavailable: String?
-    /// Nemotron 3 loaded once in this process (prepare's warm-up), so its Neural Engine compile is done.
+    /// Nemotron 3 loaded once in this process (the prepare's nemotron stage), so it is known to load here.
     private var nemotronLoaded = false
 
     /// The embedding dimension of WeSpeaker ResNet34 (community-1).
@@ -48,15 +96,25 @@ public actor FluidSpeechEngine: SpeechEngine {
     /// Parakeet's minimum input (`ASRConstants.minimumAudioDurationSeconds`).
     static let minimumASRSeconds = ASRConstants.minimumAudioDurationSeconds
 
-    public init(modelsRoot: URL) {
-        self.init(modelsRoot: modelsRoot, captureFactory: { MicrophoneCapture() })
+    /// No I/O: the app builds this engine even for fake-engine runs. `prepareLog` is only written by a prepare.
+    public init(modelsRoot: URL, prepareLog: URL? = nil, activity: AppActivity = AppActivity()) {
+        self.init(modelsRoot: modelsRoot, prepareLog: prepareLog, activity: activity,
+                  captureFactory: { MicrophoneCapture() })
     }
 
-    /// Tests inject a scripted capture source.
-    init(modelsRoot: URL, captureFactory: @escaping @Sendable () -> any CaptureSource) {
+    /// Tests inject a scripted capture source, a Neural Engine probe and a hook between a stage's work and its
+    /// verdict.
+    init(modelsRoot: URL, prepareLog: URL? = nil, activity: AppActivity = AppActivity(),
+         afterStageWork: (@Sendable (String) async -> Void)? = nil,
+         neuralEngineProbe: @escaping @Sendable () -> Bool = { PrepareLog.neuralEngineAvailable() },
+         captureFactory: @escaping @Sendable () -> any CaptureSource) {
         FluidRuntime.lockDown()
+        self.activity = activity
+        self.afterStageWork = afterStageWork
+        self.neuralEngineProbe = neuralEngineProbe
         self.modelsRoot = modelsRoot
         self.paths = FluidModelPaths(root: modelsRoot)
+        self.prepareLog = prepareLog
         self.captureFactory = captureFactory
         self.asrConfig = Self.makeASRConfig()
         self.diarizerConfig = Self.makeDiarizerConfig()
@@ -64,6 +122,8 @@ public actor FluidSpeechEngine: SpeechEngine {
 
     /// ASR folder (`AsrModels.load(from:)` takes the repo folder itself).
     var asrDirectory: URL { paths.asrDirectory }
+    /// Why Nemotron 3 is disabled for this process, or nil (tests: a pause never disables it).
+    var nemotronDisabledReason: String? { nemotronUnavailable }
 
     // MARK: Configuration
 
@@ -104,56 +164,229 @@ public actor FluidSpeechEngine: SpeechEngine {
     }
 
     public func prepareModels() async throws {
+        try await prepareModels(onEvent: { _ in })
+    }
+
+    public func prepareModels(onEvent: @escaping @Sendable (PrepareEvent) -> Void) async throws {
         if isReady { return }
         if let prepareTask {
             do { try await prepareTask.value } catch { throw FluidErrorMapping.engineError(error) }
             return
         }
         guard paths.allInstalled else { throw EngineError.modelsMissing }
+        eventSink = onEvent
         let task = Task { try await self.loadAndWarmUp() }
         prepareTask = task
-        defer { prepareTask = nil }
+        defer { prepareTask = nil; eventSink = nil }
         do {
             try await task.value
             loadFailure = nil
         } catch {
+            let mapped = Self.isCancellation(error) ? EngineError.cancelled : FluidErrorMapping.engineError(error)
+            if mapped == .cancelled {
+                // A pause (the app went to the background) or a cancelled task: not a failure. No load failure is
+                // kept, so the status reads installed and the next foreground prepares again.
+                loadFailure = nil
+                log.notice("Model preparation paused: \(FluidErrorMapping.describe(error), privacy: .public)")
+                throw EngineError.cancelled
+            }
             loadFailure = FluidErrorMapping.describe(error)
             log.error("Model preparation failed: \(self.loadFailure ?? "", privacy: .public)")
-            throw FluidErrorMapping.engineError(error)
+            throw mapped
         }
     }
 
-    /// Load (compiling for the Neural Engine on first use), then a 1 s silent warm-up transcription.
+    /// Load every model (compiling for the Neural Engine on first use after an install), then a 1 s silent warm-up
+    /// transcription. One `PrepareRecord` is written whatever the outcome.
     private func loadAndWarmUp() async throws {
-        let start = Date()
-        let models = try await AsrModels.load(from: paths.asrDirectory, version: .v3)
-        let manager = AsrManager(config: asrConfig)
-        try await manager.loadModels(models)
-        if diarizerModels == nil {
-            diarizerModels = try await OfflineDiarizerModels.load(
-                from: paths.diarizerLoadDirectory, configuration: Self.makeDiarizerMLConfiguration())
+        let clock = ContinuousClock()
+        let start = clock.now
+        let startDate = Date()
+        var record = PrepareRecord.begin()
+        record.backgroundInference = activity.backgroundInference
+        record.lowPower = ProcessInfo.processInfo.isLowPowerModeEnabled
+        if hasPaused { record.resumesPause = true }
+        func finish(_ outcome: String) {
+            record.outcome = outcome
+            record.nemotronWarmUpOK = nemotronLoaded
+            record.totalSeconds = PrepareLog.seconds(clock.now - start)
+            record.noteTransitions(activity.transitions(since: startDate))
+            writeRecord(record)
         }
-        var warmState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
-        _ = try await manager.transcribe([Float](repeating: 0, count: Self.sampleRate), decoderState: &warmState)
-        await warmUpNemotron()
-        asr = manager
-        asrModels = models
+        do {
+            try await loadStages(record: &record)
+        } catch let pause as PrepareInterruption {
+            hasPaused = true
+            record.pauseReason = pause.reason.rawValue
+            finish("paused")
+            throw pause
+        } catch {
+            record.error = FluidErrorMapping.describe(error)
+            finish("failed")
+            throw error
+        }
         isReady = true
-        log.info("Speech models ready in \(Date().timeIntervalSince(start), format: .fixed(precision: 2)) s")
+        if activity.inBackground { record.readyInBackground = true }
+        finish("ready")
+        log.info("Speech models ready in \(record.totalSeconds, format: .fixed(precision: 2)) s")
     }
 
-    /// Loads Nemotron 3 once so its Neural Engine compile happens while "Preparing", then releases it (each
-    /// separation loads it again). A failure is not fatal: separation falls back to community-1.
-    private func warmUpNemotron() async {
-        guard !nemotronLoaded, nemotronUnavailable == nil, paths.nemotronInstalled else { return }
-        do {
-            let seconds = try await NemotronSeparation.warmUp(directory: paths.nemotronDirectory)
-            nemotronLoaded = true
-            log.info("Nemotron 3 (\(NemotronSeparation.presetName, privacy: .public)) loaded in \(seconds, format: .fixed(precision: 2)) s")
-        } catch {
-            nemotronUnavailable = FluidErrorMapping.describe(error)
-            log.error("Nemotron 3 failed to load; using community-1 for speaker separation: \(self.nemotronUnavailable ?? "", privacy: .public)")
+    /// The four stages, timed into `record`, short ones first (`PrepareStage`): community-1, Nemotron 3 (CPU),
+    /// Parakeet, then the warm-up (it needs the loaded Parakeet, so the two run back to back as one step for the
+    /// user). community-1 and Nemotron are kept for the process as soon as each is kept; Parakeet is stored only
+    /// when every stage was kept (see the type doc), so a pause throws `PrepareInterruption` and the next prepare
+    /// loads Parakeet again (warm).
+    private func loadStages(record: inout PrepareRecord) async throws {
+        let paths = self.paths
+        let plan = currentPlan()
+        plannedWarm = Set(plan.steps.filter(\.isWarm).map(\.stage))
+        emit(.planned(plan))
+        var everyStageKept = true
+        if diarizerModels == nil {
+            let configuration = Self.makeDiarizerMLConfiguration()
+            let run = try await runStage(.diarizer, record: &record) {
+                try await OfflineDiarizerModels.load(from: paths.diarizerLoadDirectory, configuration: configuration)
+            }
+            if run.kept {
+                diarizerModels = run.value
+            } else {
+                everyStageKept = false
+            }
         }
+        if !nemotronLoaded, nemotronUnavailable == nil, paths.nemotronInstalled {
+            // Loads Nemotron 3 once on the CPU (about 1 s) and releases it (each separation loads it again): the
+            // check that it loads on this device. A failure in front is not fatal: separation falls back to
+            // community-1 for the rest of the process.
+            do {
+                let run = try await runStage(.nemotron, record: &record) {
+                    try await NemotronSeparation.warmUp(directory: paths.nemotronDirectory)
+                }
+                if run.kept {
+                    nemotronLoaded = true
+                    log.info("Nemotron 3 (\(NemotronSeparation.presetName, privacy: .public)) loaded in \(run.value, format: .fixed(precision: 2)) s")
+                } else {
+                    everyStageKept = false
+                }
+            } catch let pause as PrepareInterruption {
+                throw pause
+            } catch {
+                nemotronUnavailable = FluidErrorMapping.describe(error)
+                log.error("Nemotron 3 failed to load; using community-1 for speaker separation: \(self.nemotronUnavailable ?? "", privacy: .public)")
+            }
+        }
+        let manager = AsrManager(config: asrConfig)
+        let asrRun = try await runStage(.asr, record: &record) { () async throws -> AsrModels in
+            let models = try await AsrModels.load(from: paths.asrDirectory, version: .v3)
+            try await manager.loadModels(models)
+            return models
+        }
+        everyStageKept = everyStageKept && asrRun.kept
+        let sampleRate = Self.sampleRate
+        let warmRun = try await runStage(.warmup, record: &record) {
+            var warmState = TdtDecoderState.make(decoderLayers: await manager.decoderLayerCount)
+            _ = try await manager.transcribe([Float](repeating: 0, count: sampleRate), decoderState: &warmState)
+        }
+        everyStageKept = everyStageKept && warmRun.kept
+        // A stage that only primed (in the background without the Neural Engine listed): pause, so the next prepare
+        // (in front) loads it again, warm.
+        guard everyStageKept else { throw PrepareInterruption(reason: .primedInBackground) }
+        asr = manager
+        asrModels = asrRun.value
+    }
+
+    /// Runs one stage under the background rules (type doc) and records it. Returns the stage's result and whether
+    /// it was kept; a result that was not kept (primed) must be released. Throws `PrepareInterruption` for a pause,
+    /// and the stage's own error for a failure in front.
+    private func runStage<T>(_ stage: PrepareStage, record: inout PrepareRecord,
+                             _ work: () async throws -> T) async throws -> (value: T, kept: Bool) {
+        let name = stage.rawValue
+        guard let window = activity.stageWindow(usesNeuralEngine: stage.usesNeuralEngine) else {
+            record.addRefusedStage(name, at: Date(), inBackground: activity.inBackground)
+            log.notice("Prepare stage \(name, privacy: .public) not started: the app is in the background")
+            throw PrepareInterruption(reason: .startRefused)
+        }
+        emit(.stageStarted(stage))
+        let started = Date()
+        let aneAtStart = neuralEngineProbe()
+        func note(_ verdict: StageVerdict, error: String? = nil, aneAtEnd: Bool? = nil) {
+            let ended = Date()
+            record.addStage(name, start: started, end: ended, error: error)
+            record.noteLastStage(bgAtStart: window.inBackground, bgAtEnd: activity.inBackground,
+                                 epochChanged: activity.epoch != window.epoch, verdict: verdict,
+                                 suspendedSeconds: PrepareLog.suspendedSeconds(start: started, end: ended,
+                                                                               transitions: activity.transitions()),
+                                 aneAtStart: aneAtStart, aneAtEnd: aneAtEnd ?? neuralEngineProbe(),
+                                 expectedWarm: plannedWarm.contains(stage))
+        }
+        let value: T
+        do {
+            value = try await work()
+            // The compile is done whatever the verdict (kept, primed or dropped): the next run of it is warm.
+            compiledThisProcess.insert(stage)
+            emit(.stageFinished(stage))
+            await afterStageWork?(name)
+        } catch {
+            await afterStageWork?(name)
+            let message = FluidErrorMapping.describe(error)
+            guard activity.isForegroundClean(window) else {
+                note(.paused, error: message)
+                log.notice("Prepare stage \(name, privacy: .public) threw after a trip to the background; pausing: \(message, privacy: .public)")
+                throw PrepareInterruption(reason: .failedInBackground)
+            }
+            note(.failed, error: message)
+            throw error
+        }
+        if activity.isForegroundClean(window) {
+            note(.kept)
+            return (value, true)
+        }
+        if !stage.usesNeuralEngine {
+            // CPU only: the background changes nothing about what it loaded, so it is kept wherever it ran.
+            note(.kept)
+            log.notice("Prepare stage \(name, privacy: .public) returned after a trip to the background; kept (CPU only)")
+            return (value, true)
+        }
+        if activity.backgroundInference {
+            // The entitlement grants the Neural Engine in the background, so a stage that returned is kept wherever
+            // it ran, unless Core ML did not list the Neural Engine at its start or end: then it may have loaded for
+            // the CPU, so it only primes the compile and is loaded again in front.
+            let aneAtEnd = neuralEngineProbe()
+            if aneAtStart && aneAtEnd {
+                note(.kept, aneAtEnd: aneAtEnd)
+                log.notice("Prepare stage \(name, privacy: .public) returned after a trip to the background; kept (Background Inference)")
+                return (value, true)
+            }
+            note(.primed, aneAtEnd: aneAtEnd)
+            log.notice("Prepare stage \(name, privacy: .public) returned in the background without the Neural Engine listed; primed only")
+            return (value, false)
+        }
+        note(.droppedBackground)
+        log.notice("Prepare stage \(name, privacy: .public) returned after a trip to the background; dropped, pausing")
+        throw PrepareInterruption(reason: .returnedInBackground)
+    }
+
+    /// The plan for the prepare starting now (`PrepareEstimates`), from the prepare log and this process's state.
+    private func currentPlan() -> PreparePlan {
+        let records = prepareLog.map(PrepareLog.read) ?? []
+        return PrepareEstimates.plan(
+            records: records, osBuild: PrepareLog.osBuild(), installStamp: PrepareLog.installStamp(),
+            nemotronUnits: PrepareEstimates.unitsName(NemotronSeparation.computeUnits),
+            hwModel: PrepareLog.hardwareModel(),
+            compiled: compiledThisProcess, diarizerDone: diarizerModels != nil, nemotronDone: nemotronLoaded,
+            includeNemotron: nemotronUnavailable == nil && paths.nemotronInstalled)
+    }
+
+    private func emit(_ event: PrepareEvent) {
+        eventSink?(event)
+    }
+
+    private func writeRecord(_ record: PrepareRecord) {
+        lastPrepareRecord = record
+        PrepareLog.append(record, to: prepareLog)
+    }
+
+    private static func isCancellation(_ error: any Error) -> Bool {
+        Task.isCancelled || FluidErrorMapping.engineError(error) == .cancelled
     }
 
     // MARK: Microphone
