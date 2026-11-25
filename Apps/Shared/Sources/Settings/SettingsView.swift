@@ -12,6 +12,7 @@ struct SettingsView: View {
     @State private var privacyExpanded = false
     @State private var toastText: String?
     @State private var toastIcon = "checkmark"
+    @State private var toastID = AX.Settings.copiedToast
 
     var body: some View {
         @Bindable var settings = env.settings
@@ -92,6 +93,12 @@ struct SettingsView: View {
                 // ICLOUD (§8.6): off by default.
                 SyncSettingsSection()
 
+                #if os(macOS)
+                // CLAUDE (Mac only): off by default. Its toasts use this screen's overlay, so they show wherever the
+                // list is scrolled.
+                ClaudeSettingsSection { showToast($0, systemImage: $1, id: AX.Claude.copiedToast) }
+                #endif
+
                 // ABOUT
                 SectionHeader("About").padding(.top, 14).padding(.bottom, 6)
                 SettingsCard {
@@ -145,7 +152,7 @@ struct SettingsView: View {
         .navigationTitle("Settings")
         .largeNavigationTitle()
         .screenBackground()
-        .toast(toastText, systemImage: toastIcon, id: AX.Settings.copiedToast)
+        .toast(toastText, systemImage: toastIcon, id: toastID)
         .task { await env.models.refresh() }
     }
 
@@ -159,9 +166,10 @@ struct SettingsView: View {
         }
     }
 
-    private func showToast(_ text: String, systemImage: String) {
+    private func showToast(_ text: String, systemImage: String, id: String = AX.Settings.copiedToast) {
         toastText = nil
         toastIcon = systemImage
+        toastID = id
         Task {
             await Task.yield()
             toastText = text

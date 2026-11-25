@@ -70,7 +70,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe
         # TestFlight needs a build number higher than the last upload for this version.
-        MARKETING_VERSION: "0.1.1"
+        MARKETING_VERSION: "0.2.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         TARGETED_DEVICE_FAMILY: "1"
@@ -129,6 +129,17 @@ targets:
         product: TranscribeFakes
       - package: TranscribeKit
         product: TranscribeCloudKit
+      - package: TranscribeKit
+        product: TranscribeMCP
+      - package: TranscribeKit
+        product: TranscribeMCPHost
+      # The Claude helper (transcribe-mcp), signed on copy into Transcribe.app/Contents/Helpers.
+      - target: TranscribeMCPHelper
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Helpers
     info:
       path: Apps/Mac/Info.plist
       properties:
@@ -145,7 +156,7 @@ targets:
       base:
         PRODUCT_NAME: Transcribe
         PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.mac
-        MARKETING_VERSION: "0.1.1"
+        MARKETING_VERSION: "0.2.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         GENERATE_INFOPLIST_FILE: NO
@@ -171,6 +182,33 @@ targets:
         # and the Developer ID export sets "production" from its profile (release-mac.sh checks the result).
         Release:
           TRANSCRIBE_ICLOUD_ENV: Production
+  # transcribe-mcp, the stdio MCP server Claude Code and Claude Desktop run. Unsandboxed on purpose: it has no
+  # entitlements file, so it carries none (release-mac.sh checks), and it reaches the app over loopback only.
+  TranscribeMCPHelper:
+    type: tool
+    platform: macOS
+    sources: [Apps/MacHelper/Sources]
+    dependencies:
+      - package: TranscribeKit
+        product: TranscribeMCP
+    settings:
+      base:
+        PRODUCT_NAME: transcribe-mcp
+        PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.mac.mcp
+        ENABLE_HARDENED_RUNTIME: YES
+        GENERATE_INFOPLIST_FILE: YES
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+        SKIP_INSTALL: YES
+        # Signed with no entitlements at all, in every configuration. Without these, Xcode adds
+        # com.apple.application-identifier, and get-task-allow in Debug.
+        ENTITLEMENTS_REQUIRED: NO
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        OTHER_CODE_SIGN_FLAGS: --timestamp
+      configs:
+        # Signing to run locally (no team) leaves out the hardened runtime that ENABLE_HARDENED_RUNTIME asks for, so
+        # Debug asks codesign for it directly; code-sign-on-copy into the app keeps the flag.
+        Debug:
+          OTHER_CODE_SIGN_FLAGS: --options=runtime
   TranscribeUITests:
     type: bundle.ui-testing
     platform: iOS

@@ -231,6 +231,22 @@ done < <(find "$APP/Contents" -path "$APP/Contents/Resources/BundledModels" -pru
 [ "$COUNT" -gt 0 ] || fail "found no Mach-O files in $APP"
 ok "$COUNT Mach-O file(s): Developer ID, team $TEAM, timestamped; executables have the hardened runtime"
 
+# The Claude helper: present, executable, and signed with no entitlements (unsandboxed, no get-task-allow).
+HELPER="$APP/Contents/Helpers/transcribe-mcp"
+[ -x "$HELPER" ] || fail "no Claude helper at Contents/Helpers/transcribe-mcp"
+if codesign -d --entitlements - --xml "$HELPER" 2>/dev/null | grep -q '<key>'; then
+  fail "the Claude helper must have no entitlements"
+fi
+ok "Claude helper: present, hardened runtime (checked above), no entitlements"
+
+# Entitlement allowlist: any new key must be added here on purpose.
+ALLOWED=" com.apple.security.app-sandbox com.apple.security.device.audio-input com.apple.security.device.microphone com.apple.security.files.user-selected.read-write com.apple.security.network.server com.apple.developer.icloud-container-identifiers com.apple.developer.icloud-services com.apple.developer.icloud-container-environment com.apple.developer.aps-environment com.apple.application-identifier com.apple.developer.team-identifier "
+while IFS= read -r key; do
+  [ -z "$key" ] && continue
+  case "$ALLOWED" in *" $key "*) ;; *) fail "entitlements: unexpected key $key" ;; esac
+done < <(plutil -convert xml1 -o - "$ENT" | sed -n '/^\t<key>/s/.*<key>\(.*\)<\/key>.*/\1/p')
+ok "entitlements match the allowlist"
+
 # 6. The DMG: the app plus an Applications link, signed with Developer ID.
 step "6/9 DMG"
 rm -rf "$DD/dmg"
