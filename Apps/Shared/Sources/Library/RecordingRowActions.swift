@@ -16,7 +16,8 @@ struct RecordingRowActions: ViewModifier {
 
     func body(content: Content) -> some View {
         content.contextMenu {
-            if recording.stage != .capturing {
+            // A recording deleted (by sync) while its menu is open offers nothing: every action would fail.
+            if !GoneModels.isGone(recording), recording.stage != .capturing {
                 Button("Rename", systemImage: "pencil") { onRename() }
                 Button(recording.isFavourite ? "Unfavourite" : "Favourite",
                        systemImage: recording.isFavourite ? "star.slash" : "star") {

@@ -2,13 +2,17 @@
 # Signs a finished Mac release for Sparkle: the EdDSA signature of the DMG, the page pointer latest.json, and the
 # signed update feed (appcast). Writes dist/Transcribe-<version>[-TEST].latest.json and .appcast.xml.
 #
-#   sign-mac-release.sh [--use-keychain] <dmg>                  a release (stapled DMG from make release-mac)
-#   sign-mac-release.sh --test [--download-prefix URL] <dmg>    a TEST build's DMG (throwaway key; never published)
+#   sign-mac-release.sh [--use-keychain] [--delta F]... <dmg>   a release (stapled DMG from make release-mac)
+#   sign-mac-release.sh --test [--download-prefix URL] [--delta F]... <dmg>
+#                                                               a TEST build's DMG (throwaway key; never published)
 #   sign-mac-release.sh --feed-from <latest.json>               resume: rebuild and sign the appcast of a published
 #                                                               release (writes dist/resume.appcast.xml); only a
 #                                                               file from publish-mac.sh --resume-check, which read
 #                                                               it from the bucket and verified its DMG, and only
 #                                                               for project.yml's version
+#
+# --delta F: a delta update to this version from make-mac-delta.sh (Transcribe-<from>-<version>.delta), signed and
+# listed in latest.json ("deltas") and in the appcast (<sparkle:deltas>), so a copy on <from> downloads only F.
 #
 # Key: SPARKLE_ED_PRIVATE_KEY (base64 32-byte seed) in the environment, or --use-keychain (a person approves the
 # keychain prompt; refused with --test and in CI). There is no silent keychain fallback. The key reaches
@@ -37,7 +41,7 @@ PRODUCTION_FEED=https://w2solutions.ai/transcribe/appcast.xml
 PRODUCTION_PREFIX=https://w2solutions.ai/transcribe/download/
 
 usage() {
-  sed -n '2,24s/^# \{0,1\}//p' "$SELF" >&2
+  sed -n '2,28s/^# \{0,1\}//p' "$SELF" >&2
   exit "${1:-2}"
 }
 fail() {
@@ -51,6 +55,7 @@ USE_KEYCHAIN=0
 PREFIX=""
 FEED_FROM=""
 DMG=""
+DELTAS=()
 while [ $# -gt 0 ]; do
   case "$1" in
     --test) TEST=1 ;;
@@ -65,6 +70,11 @@ while [ $# -gt 0 ]; do
       FEED_FROM="$2"
       shift
       ;;
+    --delta)
+      [ $# -ge 2 ] || usage
+      DELTAS+=("$2")
+      shift
+      ;;
     -h | --help) usage 0 ;;
     -*) usage ;;
     *)
@@ -76,7 +86,7 @@ while [ $# -gt 0 ]; do
 done
 
 if [ -n "$FEED_FROM" ]; then
-  [ -z "$DMG" ] && [ "$TEST" = 0 ] && [ -z "$PREFIX" ] || usage
+  [ -z "$DMG" ] && [ "$TEST" = 0 ] && [ -z "$PREFIX" ] && [ ${#DELTAS[@]} -eq 0 ] || usage
 else
   [ -n "$DMG" ] || usage
 fi
@@ -142,8 +152,21 @@ valid_release() {
     and (.edSignature | type == "string" and test("^[A-Za-z0-9+/]{86}==$"))
     and (.minimumSystemVersion | type == "string" and test("^[0-9]+(\\.[0-9]+){1,2}$"))
     and (.published | type == "string" and test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+    and ((has("deltas") | not) or (.version as $v | .build as $b | .deltas | type == "array" and length > 0
+      and (([.[].fromBuild] | unique | length) == length)
+      and all(.[];
+        (.from | type == "string" and test("^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$"))
+        and (.fromBuild | type == "number" and . > 0 and . == floor and . < $b)
+        and ((.from | split(".") | map(tonumber)) as [$x, $y, $z] | $y < 100 and $z < 100 and .fromBuild == $x * 10000 + $y * 100 + $z)
+        and (.file == "Transcribe-" + .from + "-" + $v + ".delta") and (.key == "transcribe/" + .file)
+        and (.bytes | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+        and (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+        and (.edSignature | type == "string" and test("^[A-Za-z0-9+/]{86}==$")))))
   ' "$1" >/dev/null 2>&1
 }
+
+# about_mb BYTES: "about N MB", or "under 1 MB".
+about_mb() { awk -v b="$1" 'BEGIN { if (b < 1e6) print "under 1 MB"; else printf "about %d MB\n", b / 1e6 + 0.5 }'; }
 
 # xml_escape: &, <, > and " for text and attribute values.
 xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\&quot;/g'; }
@@ -152,7 +175,7 @@ xml_escape() { sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' -e 's/"/\
 # prefix), checked with xmllint, signed, and verified against PUBKEY.
 write_appcast() {
   local json="$1" prefix="$2" pubkey="$3" out="$4"
-  local version build file bytes sig minsys published pubdate notes mb url
+  local version build file bytes sig minsys published pubdate notes size url deltas="" from fbuild dbytes dsig dfile
   version="$(jq -r .version "$json")"
   build="$(jq -r .build "$json")"
   file="$(jq -r .file "$json")"
@@ -166,7 +189,19 @@ write_appcast() {
   # The same rule as release-gate.sh: at least one character that is not white space.
   grep -q '[^[:space:]]' "$NOTES_DIR/$version.txt" || fail "the release notes are empty: $NOTES_DIR/$version.txt"
   notes="$(xml_escape <"$NOTES_DIR/$version.txt")"
-  mb="$(awk -v b="$bytes" 'BEGIN { printf "%d", b / 1e6 + 0.5 }')"
+  size="The download is $(about_mb "$bytes") because the speech models are inside the app."
+  # One enclosure per delta: a copy whose build is fromBuild downloads that file instead of the DMG (Sparkle falls
+  # back to the DMG by itself if the delta fails to download, verify or apply).
+  while read -r from fbuild dbytes dsig dfile; do
+    [ -n "$from" ] || continue
+    deltas="$deltas
+        <enclosure url=\"$(printf '%s' "$prefix$dfile" | xml_escape)\" sparkle:deltaFrom=\"$fbuild\" length=\"$dbytes\" type=\"application/octet-stream\" sparkle:edSignature=\"$dsig\"/>"
+    size="From version $from the download is $(about_mb "$dbytes"). $size"
+  done < <(jq -r '.deltas // [] | .[] | "\(.from) \(.fromBuild) \(.bytes) \(.edSignature) \(.file)"' "$json")
+  [ -z "$deltas" ] || size="${size/The download is/From older versions it is}"
+  [ -z "$deltas" ] || deltas="
+      <sparkle:deltas>$deltas
+      </sparkle:deltas>"
   url="$(printf '%s' "$prefix$file" | xml_escape)"
   cat >"$WORK/appcast.xml" <<EOF
 <?xml version="1.0" encoding="utf-8"?>
@@ -186,8 +221,8 @@ write_appcast() {
       <link>https://w2solutions.ai/transcribe</link>
       <description sparkle:format="plain-text">$notes
 
-The download is about $mb MB because the speech models are inside the app. After it installs, Transcribe prepares its speech models again, which takes about a minute. If the download keeps failing, get the latest version at w2solutions.ai/transcribe.</description>
-      <enclosure url="$url" length="$bytes" type="application/octet-stream" sparkle:edSignature="$sig"/>
+$size After it installs, Transcribe prepares its speech models again, which takes about a minute. If the download keeps failing, get the latest version at w2solutions.ai/transcribe.</description>
+      <enclosure url="$url" length="$bytes" type="application/octet-stream" sparkle:edSignature="$sig"/>$deltas
     </item>
   </channel>
 </rss>
@@ -258,7 +293,27 @@ SIG="$(ed_with_key sign "$DMG")" || fail "could not sign $DMG"
 ed verify "$APP_PUBKEY" "$SIG" "$DMG" || fail "the DMG signature does not verify against the app's key"
 echo "    $SIG"
 
-# 6. latest.json.
+# 6. The deltas (make-mac-delta.sh): named for this version, signed, and checked against the app's key.
+echo '[]' >"$WORK/deltas.json"
+for d in ${DELTAS[@]+"${DELTAS[@]}"}; do
+  [ -f "$d" ] || fail "no such delta: $d"
+  dname="$(basename "$d")"
+  dfrom="${dname#Transcribe-}"
+  dfrom="${dfrom%-"$VERSION".delta}"
+  [ "$dname" = "Transcribe-$dfrom-$VERSION.delta" ] || fail "$dname is not a delta to $VERSION (Transcribe-<from>-$VERSION.delta)"
+  printf '%s\n' "$dfrom" | grep -Eq '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]?)\.(0|[1-9][0-9]?)$' || fail "$dname: '$dfrom' is not a version"
+  [ "$(build_for "$dfrom")" -lt "$BUILD" ] || fail "$dname: $dfrom is not older than $VERSION"
+  step "EdDSA signature of $dname"
+  DSIG="$(ed_with_key sign "$d")" || fail "could not sign $d"
+  ed verify "$APP_PUBKEY" "$DSIG" "$d" || fail "the signature of $dname does not verify against the app's key"
+  jq --arg from "$dfrom" --argjson fromBuild "$(build_for "$dfrom")" --arg file "$dname" --arg key "transcribe/$dname" \
+    --argjson bytes "$(stat -f %z "$d")" --arg sha256 "$(shasum -a 256 "$d" | cut -d ' ' -f 1)" --arg edSignature "$DSIG" \
+    '. + [{from: $from, fromBuild: $fromBuild, file: $file, key: $key, bytes: $bytes, sha256: $sha256, edSignature: $edSignature}]' \
+    "$WORK/deltas.json" >"$WORK/deltas.next" && mv "$WORK/deltas.next" "$WORK/deltas.json"
+  echo "    $dfrom → $VERSION: $(stat -f %z "$d") bytes, $DSIG"
+done
+
+# 7. latest.json ("deltas" only when there are any).
 SUFFIX=""
 [ "$TEST" = 0 ] || SUFFIX="-TEST"
 RELEASE="$DIST/Transcribe-$VERSION$SUFFIX.latest.json"
@@ -266,12 +321,14 @@ FILE="Transcribe-$VERSION.dmg"
 jq -n --arg version "$VERSION" --argjson build "$BUILD" --arg file "$FILE" --arg key "transcribe/$FILE" \
   --argjson bytes "$(stat -f %z "$DMG")" --arg sha256 "$(shasum -a 256 "$DMG" | cut -d ' ' -f 1)" \
   --arg edSignature "$SIG" --arg minimumSystemVersion "$MINSYS" --arg published "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+  --slurpfile deltas "$WORK/deltas.json" \
   '{schema: 1, version: $version, build: $build, file: $file, key: $key, bytes: $bytes, sha256: $sha256,
-    edSignature: $edSignature, minimumSystemVersion: $minimumSystemVersion, published: $published}' >"$RELEASE"
+    edSignature: $edSignature, minimumSystemVersion: $minimumSystemVersion, published: $published}
+    + (if ($deltas[0] | length) > 0 then {deltas: $deltas[0]} else {} end)' >"$RELEASE"
 valid_release "$RELEASE" || fail "wrote an invalid $RELEASE"
 step "Wrote $RELEASE"
 
-# 7. The signed appcast.
+# 8. The signed appcast.
 APPCAST="$DIST/Transcribe-$VERSION$SUFFIX.appcast.xml"
 write_appcast "$RELEASE" "$PREFIX" "$APP_PUBKEY" "$APPCAST"
 step "Wrote $APPCAST (signed; verified against the app's key)"

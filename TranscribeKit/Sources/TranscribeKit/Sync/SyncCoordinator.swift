@@ -49,7 +49,11 @@ public final class SyncCoordinator {
     @ObservationIgnored private(set) var crashed = false
     @ObservationIgnored private var loopTask: Task<Void, Never>?
     @ObservationIgnored private var flushTask: Task<Void, Never>?
+    /// The latest follow-up, from when it is scheduled until its sync has finished, so awaiting it always covers that
+    /// sync (tests do), however early its delay ended. A sync it runs can schedule the next follow-up, which replaces it.
     @ObservationIgnored private(set) var followUpTask: Task<Void, Never>?
+    /// `followUpTask` is still waiting out its delay: no other follow-up is scheduled meanwhile.
+    @ObservationIgnored private var followUpWaiting = false
     @ObservationIgnored private var followUpAttempt = 0
     @ObservationIgnored private var lastRefresh: ContinuousClock.Instant?
     @ObservationIgnored private var refreshing = false
@@ -308,14 +312,15 @@ public final class SyncCoordinator {
     /// The coordinator's own sync a little later, after a send left work behind. Never runs inside an event handler
     /// (the engine waits for that handler), and backs off while the problem lasts.
     private func scheduleFollowUp() {
-        guard running, !crashed, followUpTask == nil, let last = followUpDelays.last else { return }
+        guard running, !crashed, !followUpWaiting, let last = followUpDelays.last else { return }
         let delay = followUpAttempt < followUpDelays.count ? followUpDelays[followUpAttempt] : last
         followUpAttempt += 1
         log.notice("Follow-up sync in \(delay.description, privacy: .public) (attempt \(self.followUpAttempt, privacy: .public))")
+        followUpWaiting = true
         followUpTask = Task { [weak self] in
             try? await Task.sleep(for: delay)
             guard !Task.isCancelled, let self else { return }
-            self.followUpTask = nil
+            self.followUpWaiting = false
             guard self.running, !self.crashed, !self.status.isPaused else { return }
             await self.sync(fullScan: false)
         }
@@ -461,8 +466,10 @@ public final class SyncCoordinator {
         running = false
         flushTask?.cancel()
         flushTask = nil
-        followUpTask?.cancel()
+        // Only a follow-up still waiting is cancelled; one already syncing finishes (it checks `running`), as before.
+        if followUpWaiting { followUpTask?.cancel() }
         followUpTask = nil
+        followUpWaiting = false
         followUpAttempt = 0
         detector.stopObserving()
         inFlight = [:]

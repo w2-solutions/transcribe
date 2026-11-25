@@ -79,6 +79,10 @@ struct FoldersSheet: View {
             } message: {
                 Text(errorMessage ?? "")
             }
+            // Deleted by sync while its Delete prompt is open: the held folder is gone, close the prompt.
+            .onChange(of: folders.map(\.id)) { _, _ in
+                if let folder = pendingDelete, GoneModels.isGone(folder) { pendingDelete = nil }
+            }
         }
         .presentationDetents([.medium, .large])
         .accessibilityElement(children: .contain)

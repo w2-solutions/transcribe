@@ -121,6 +121,9 @@ struct MacRecordingList: View {
         }
         .onChange(of: recordings.map(\.id)) { _, ids in
             if let id = selection.recording, !ids.contains(id) { selection.recording = nil }
+            // Deleted by sync while its Rename or Delete prompt is open: close the prompt.
+            if let id = pendingDelete, !ids.contains(id) { pendingDelete = nil }
+            if let id = renaming?.id, !ids.contains(id) { renaming = nil }
         }
         .onChange(of: selection.searchFocusRequest) { _, _ in searchFocused = true }
         .onChange(of: selection.sidebar) { _, _ in searchText = "" }
