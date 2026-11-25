@@ -15,8 +15,23 @@ import Testing
     @Test func iPhoneWordingIsUnchanged() {
         let c = DeviceCopy(platform: .iPhone)
         #expect(c.processingDefault == "This happens on your iPhone. You can leave and come back.")
-        #expect(c.processingModels == "Processing starts once the speech models are ready on this iPhone.")
-        #expect(c.preparingModels == "Preparing for this iPhone… (after installing or updating, about a minute)")
+        #expect(c.processingModels
+                == "Transcribe is getting ready on this iPhone. This recording is processed as soon as setup finishes.")
+        #expect(c.setupHeadline == "Getting ready on this iPhone")
+        #expect(c.setupReadyHeadline == "Ready on this iPhone")
+        #expect(c.setupOnce == "This happens once after installing or updating.")
+        #expect(c.setupRecordNow == "You can record now. Recordings are processed when setup finishes.")
+        // No number (only the iPhone 15 is measured, about 20 s), and true with and without Background Inference.
+        #expect(c.setupTypicalTime == "This can take a little while.")
+        #expect(c.setupKeepOpen == "If you leave Transcribe, setup may pause after a short while. It finishes when you come back.")
+        #expect(c.processingModelsFailed
+                == "Transcribe couldn't get ready on this iPhone, so this recording is still waiting. Tap Try again to finish setup.")
+        #expect(c.processingLeaveButton(waitingForSetup: true) == "Back to Recordings")
+        #expect(c.processingLeaveButton(waitingForSetup: false) == "Continue in background")
+        #expect(c.setupWaiting(count: 1) == "1 recording will be processed when setup finishes.")
+        #expect(c.setupWaiting(count: 3) == "3 recordings will be processed when setup finishes.")
+        #expect(c.setupPaused == "Paused while Transcribe is in the background. It carries on when you open it.")
+        #expect(c.setupResumed == "Carrying on where it left off.")
         #expect(c.needsSample == "Needs a new sample on this iPhone")
         #expect(c.capturingPreview == "Tap to go back to the recording.")
         #expect(c.libraryEmptyHint.hasPrefix("Tap the red button"))
@@ -26,8 +41,14 @@ import Testing
     @Test func macWording() {
         let c = DeviceCopy(platform: .mac)
         #expect(c.processingDefault == "This happens on your Mac. You can keep working.")
-        #expect(c.processingModels == "Processing starts once the speech models are ready on this Mac.")
-        #expect(c.preparingModels == "Preparing for this Mac… (after installing or updating, about a minute)")
+        #expect(c.processingModels
+                == "Transcribe is getting ready on this Mac. This recording is processed as soon as setup finishes.")
+        #expect(c.setupHeadline == "Getting ready on this Mac")
+        #expect(c.setupReadyHeadline == "Ready on this Mac")
+        #expect(c.setupKeepOpen == nil, "the Mac never pauses setup")
+        #expect(c.setupTypicalTime == "This can take a little while.")
+        #expect(c.processingModelsFailed.hasSuffix("Click Try again to finish setup."))
+        #expect(c.processingLeaveButton(waitingForSetup: true) == "Continue in background", "the Mac folds the panel")
         #expect(c.rememberHelp(who: "Karan") == "Saved on this Mac only. Used to label Karan automatically next time.")
         #expect(c.needsSample == "Needs a new sample on this Mac")
         #expect(c.voicesFooter == "Voice profiles are stored on this Mac only.")

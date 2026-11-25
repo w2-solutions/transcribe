@@ -3,8 +3,9 @@ import Observation
 import Synchronization
 import TranscribeKit
 
-/// Keeps the Mac awake while a recording is processed: holds a user-initiated `ProcessInfo` activity (idle system
-/// sleep disabled) from `begin` to `end`. The Mac never takes the time away, so `onExpire` is never called.
+/// Keeps the Mac awake while a recording is processed, or while the speech models prepare (`beginShortTask`): holds
+/// a user-initiated `ProcessInfo` activity (idle system sleep disabled) from `begin` to `end`. The Mac never takes the
+/// time away, so `onExpire` is never called.
 nonisolated final class MacActivityBridge: BackgroundTaskBridge {
     /// `beginActivity`'s opaque token, which is only handed back to `endActivity`.
     private struct Activity: @unchecked Sendable { let object: NSObjectProtocol }
@@ -17,6 +18,14 @@ nonisolated final class MacActivityBridge: BackgroundTaskBridge {
         let token = BackgroundToken()
         let activity = Activity(object: ProcessInfo.processInfo.beginActivity(
             options: [.userInitiated, .idleSystemSleepDisabled], reason: "Processing \(title)"))
+        activities.withLock { $0[token] = activity }
+        return token
+    }
+
+    func beginShortTask(name: String, onExpire: @escaping @Sendable () -> Void) async -> BackgroundToken? {
+        let token = BackgroundToken()
+        let activity = Activity(object: ProcessInfo.processInfo.beginActivity(
+            options: [.userInitiated, .idleSystemSleepDisabled], reason: name))
         activities.withLock { $0[token] = activity }
         return token
     }

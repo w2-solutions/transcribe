@@ -1,5 +1,6 @@
 import FluidAudio
 import Foundation
+import Synchronization
 import Testing
 import TranscribeCore
 @testable import TranscribeFluid
@@ -395,6 +396,252 @@ struct FluidEngineTests {
         #expect(separation.separator == .nemotron3)
     }
 
+    @Test("12. Without Background Inference, nothing starts in the background; a pause is not a failure")
+    func withoutEntitlementPausesBeforeStart() async throws {
+        let shared = try await Self.shared.value
+        let base = try TestAudio.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let log = base.appendingPathComponent("prepare-log.jsonl")
+        let activity = AppActivity(backgroundInference: false)
+        let engine = FluidSpeechEngine(modelsRoot: shared.paths.root, prepareLog: log, activity: activity)
+        activity.armGrace(UUID())   // a held short task is not enough without the entitlement
+        activity.enterBackground()
+        let refusedEvents = PrepareEventLog()
+        await #expect(throws: EngineError.cancelled) { try await engine.prepareModels(onEvent: refusedEvents.sink) }
+        #expect(refusedEvents.stages.isEmpty, "a refused stage sends no start")
+        #expect(refusedEvents.plans.count == 1)
+        #expect(await engine.modelStatus() == .installed)
+        #expect(await engine.nemotronDisabledReason == nil)
+        let record = try #require(await engine.lastPrepareRecord)
+        Self.log("log line: \(PrepareLog.line(record) ?? "")")
+        #expect(record.outcome == "paused" && record.pauseReason == "startRefused")
+        #expect(record.stages.map(\.verdict) == ["notStarted"])
+
+        // Back in front: ready, and both prepares are in the log file.
+        activity.becomeActive()
+        let events = PrepareEventLog()
+        try await engine.prepareModels(onEvent: events.sink)
+        #expect(await engine.modelStatus() == .ready)
+        // The plan, then a started/finished pair per stage, in order.
+        #expect(events.plans.count == 1 && events.all.first == .planned(events.plans[0]))
+        #expect(events.plans.first?.steps.map(\.stage) == [.diarizer, .nemotron, .asr, .warmup])
+        #expect(events.stages == PrepareEventLog.pairs([.diarizer, .nemotron, .asr, .warmup]))
+
+        let ready = try #require(await engine.lastPrepareRecord)
+        Self.log("log line: \(PrepareLog.line(ready) ?? "")")
+        #expect(ready.resumesPause == true)
+        #expect(ready.stages.map(\.name) == ["diarizer", "nemotron", "asr", "warmup"])
+        #expect(ready.nemotronUnits == "cpuOnly")
+        #expect(ready.stages.allSatisfy { $0.verdict == "kept" && $0.bgAtStart == false })
+        #expect(ready.nemotronWarmUpOK == true)
+        #expect(PrepareLog.read(log).map(\.outcome) == ["paused", "ready"])
+    }
+
+    @Test("13. With Background Inference, stages run and are kept in the background; ready in the background")
+    func withEntitlementRunsInBackground() async throws {
+        let shared = try await Self.shared.value
+        let activity = AppActivity(backgroundInference: true)
+        let engine = FluidSpeechEngine(modelsRoot: shared.paths.root, activity: activity)
+        let grace = UUID()
+        activity.armGrace(grace)
+        activity.enterBackground()
+        try await engine.prepareModels()
+        #expect(await engine.modelStatus() == .ready, "a stage that returns in the background is kept")
+        let ready = try #require(await engine.lastPrepareRecord)
+        Self.log("background: \(PrepareLog.summary(ready))")
+        #expect(ready.outcome == "ready" && ready.pauseReason == nil && ready.readyInBackground == true)
+        #expect(ready.backgroundInference == true)
+        #expect(ready.stages.map(\.name) == ["diarizer", "nemotron", "asr", "warmup"])
+        #expect(ready.stages.allSatisfy {
+            $0.verdict == "kept" && $0.bgAtStart == true && $0.bgAtEnd == true && $0.error == nil
+                && $0.aneAtStart == true && $0.aneAtEnd == true
+        })
+        #expect(await engine.nemotronDisabledReason == nil)
+        let words = try await engine.transcribe(Self.fixture("two-voices.wav"), language: .language("en")) { _ in }
+        #expect(!words.isEmpty)
+
+        // After the short task expired, a new prepare (another engine) starts nothing.
+        let later = FluidSpeechEngine(modelsRoot: shared.paths.root, activity: activity)
+        activity.graceExpired(grace)
+        await #expect(throws: EngineError.cancelled) { try await later.prepareModels() }
+        let refused = try #require(await later.lastPrepareRecord)
+        #expect(refused.pauseReason == "startRefused" && refused.stages.map(\.verdict) == ["notStarted"])
+        #expect(activity.transitions().last?.kind == .expired)
+        #expect(refused.transitions?.isEmpty == true, "the record keeps only transitions during its own prepare")
+        #expect(await later.modelStatus() == .installed)
+    }
+
+    @Test("13b. With Background Inference but no Neural Engine listed, Neural Engine stages only prime; ready in front")
+    func withEntitlementWithoutNeuralEnginePrimes() async throws {
+        let shared = try await Self.shared.value
+        let activity = AppActivity(backgroundInference: true)
+        // Core ML lists the Neural Engine only while the app is in front.
+        let engine = FluidSpeechEngine(modelsRoot: shared.paths.root, activity: activity,
+                                       neuralEngineProbe: { !activity.inBackground },
+                                       captureFactory: { MicrophoneCapture() })
+        activity.armGrace(UUID())
+        activity.enterBackground()
+        await #expect(throws: EngineError.cancelled) { try await engine.prepareModels() }
+        #expect(await engine.modelStatus() == .installed, "a model that may have loaded for the CPU is never kept")
+        let primed = try #require(await engine.lastPrepareRecord)
+        Self.log("background: \(PrepareLog.summary(primed))")
+        #expect(primed.outcome == "paused" && primed.pauseReason == "primedInBackground")
+        #expect(primed.stages.map(\.name) == ["diarizer", "nemotron", "asr", "warmup"])
+        #expect(primed.stages.allSatisfy { $0.bgAtStart == true && $0.aneAtEnd == false })
+        // Nemotron runs on the CPU: whether Core ML lists the Neural Engine says nothing about it, so it is kept.
+        #expect(primed.stages.map(\.verdict) == ["primed", "kept", "primed", "primed"])
+        #expect(await engine.nemotronDisabledReason == nil)
+        #expect(await engine.liveModels() == nil)
+
+        // In front: every Neural Engine model loads again (warm) and is kept; Nemotron is not loaded again.
+        activity.becomeActive()
+        try await engine.prepareModels()
+        #expect(await engine.modelStatus() == .ready)
+        let ready = try #require(await engine.lastPrepareRecord)
+        Self.log("front: \(PrepareLog.summary(ready))")
+        #expect(ready.outcome == "ready" && ready.resumesPause == true && ready.readyInBackground == nil)
+        #expect(ready.stages.map(\.name) == ["diarizer", "asr", "warmup"])
+        #expect(ready.stages.allSatisfy { $0.verdict == "kept" && $0.bgAtStart == false })
+    }
+
+    @Test("14. Without Background Inference, a stage that spanned a trip away is dropped; the next prepare is warm")
+    func withoutEntitlementDropsStageThatSpannedBackground() async throws {
+        let shared = try await Self.shared.value
+        // A fresh path, so the dropped stage compiles cold and the resumed one shows whether that compile was kept.
+        let clone = try Self.cloneModels(from: shared.paths.root)
+        defer { try? FileManager.default.removeItem(at: clone.deletingLastPathComponent()) }
+        let activity = AppActivity(backgroundInference: false)
+        let engine = FluidSpeechEngine(modelsRoot: clone, activity: activity, afterStageWork: { name in
+            if name == "asr", activity.epoch == 0 { activity.enterBackground(); activity.becomeActive() }
+        }, captureFactory: { MicrophoneCapture() })
+        let droppedEvents = PrepareEventLog()
+        await #expect(throws: EngineError.cancelled) { try await engine.prepareModels(onEvent: droppedEvents.sink) }
+        #expect(droppedEvents.stages == PrepareEventLog.pairs([.diarizer, .nemotron, .asr]),
+                "a dropped stage's compile is done: finished; the warm-up never starts")
+        #expect(await engine.modelStatus() == .installed)
+        let dropped = try #require(await engine.lastPrepareRecord)
+        Self.log("dropped: \(PrepareLog.summary(dropped))")
+        #expect(dropped.pauseReason == "returnedInBackground")
+        #expect(dropped.stages.map(\.verdict) == ["kept", "kept", "droppedBackground"])
+        #expect(await engine.liveModels() == nil)
+        let coldASR = try #require(dropped.stages.first { $0.name == "asr" })
+        #expect(coldASR.epochChanged == true && coldASR.error == nil)
+        #expect(coldASR.seconds > 2, "the dropped asr stage compiled cold on its new path (\(coldASR.seconds) s)")
+
+        let resumedEvents = PrepareEventLog()
+        try await engine.prepareModels(onEvent: resumedEvents.sink)
+        #expect(await engine.modelStatus() == .ready)
+        #expect(resumedEvents.plans.first?.step(.asr)?.expectedSeconds == PrepareEstimates.warmDefaults[.asr],
+                "asr compiled in this process: warm")
+        let ready = try #require(await engine.lastPrepareRecord)
+        Self.log("resumed: \(PrepareLog.summary(ready))")
+        #expect(ready.resumesPause == true)
+        #expect(ready.stages.map(\.name) == ["asr", "warmup"], "the diarizer and Nemotron were kept")
+        #expect(ready.stages.allSatisfy { $0.verdict == "kept" })
+        let asr = try #require(ready.stages.first { $0.name == "asr" })
+        #expect(asr.seconds < coldASR.seconds / 4,
+                "asr reloads warm from the dropped stage's compile (\(asr.seconds) s after \(coldASR.seconds) s cold)")
+    }
+
+    @Test("15. After the warm-up is dropped, the next plan keeps the diarizer and Nemotron done and runs the rest warm")
+    func aDroppedStageStillFinishesAndTheKeptStagesAreDone() async throws {
+        let shared = try await Self.shared.value
+        let activity = AppActivity(backgroundInference: false)
+        // The user leaves and comes back during the warm-up, the last stage: it is dropped, and the prepare pauses.
+        // The diarizer, Nemotron and Parakeet ran wholly in front; the diarizer and Nemotron are kept for the process.
+        let engine = FluidSpeechEngine(modelsRoot: shared.paths.root, activity: activity, afterStageWork: { name in
+            if name == "warmup", activity.epoch == 0 { activity.enterBackground(); activity.becomeActive() }
+        }, captureFactory: { MicrophoneCapture() })
+        let first = PrepareEventLog()
+        await #expect(throws: EngineError.cancelled) { try await engine.prepareModels(onEvent: first.sink) }
+        // A dropped stage's work returned (its compile is cached), so it still sends stageFinished; only a stage that
+        // throws sends none (FluidEngineBackgroundTests).
+        #expect(first.stages == PrepareEventLog.pairs([.diarizer, .nemotron, .asr, .warmup]))
+        let second = PrepareEventLog()
+        try await engine.prepareModels(onEvent: second.sink)
+        #expect(await engine.modelStatus() == .ready)
+        let plan = try #require(second.plans.first)
+        #expect(plan.step(.diarizer)?.isDone == true, "the diarizer was kept: not loaded again")
+        #expect(plan.step(.nemotron)?.isDone == true, "Nemotron was kept: not loaded again")
+        #expect(plan.steps.filter { !$0.isDone }.allSatisfy { $0.expectedSeconds == PrepareEstimates.warmDefaults[$0.stage] },
+                "every stage still to run compiled in this process: warm")
+        #expect(plan.timesFromThisDevice)
+        #expect(second.stages == PrepareEventLog.pairs([.asr, .warmup]))
+    }
+
+    @Test("16. Without Background Inference, Nemotron (CPU) is kept after a trip away; Parakeet then waits for the front")
+    func theCPUStageIsKeptInTheBackgroundWithoutTheEntitlement() async throws {
+        let shared = try await Self.shared.value
+        let activity = AppActivity(backgroundInference: false)
+        // The user leaves while Nemotron loads and stays away (the short task still held).
+        let engine = FluidSpeechEngine(modelsRoot: shared.paths.root, activity: activity, afterStageWork: { name in
+            if name == "nemotron", activity.epoch == 0 { activity.armGrace(UUID()); activity.enterBackground() }
+        }, captureFactory: { MicrophoneCapture() })
+        let first = PrepareEventLog()
+        await #expect(throws: EngineError.cancelled) { try await engine.prepareModels(onEvent: first.sink) }
+        #expect(first.stages == PrepareEventLog.pairs([.diarizer, .nemotron]), "Parakeet's start is refused")
+        let paused = try #require(await engine.lastPrepareRecord)
+        Self.log("cpu stage away: \(PrepareLog.summary(paused))")
+        #expect(paused.pauseReason == "startRefused")
+        #expect(paused.stages.map(\.verdict) == ["kept", "kept", "notStarted"])
+        let nemotron = try #require(paused.stages.first { $0.name == "nemotron" })
+        #expect(nemotron.bgAtEnd == true && nemotron.error == nil)
+        #expect(await engine.nemotronDisabledReason == nil)
+
+        activity.becomeActive()
+        let second = PrepareEventLog()
+        try await engine.prepareModels(onEvent: second.sink)
+        #expect(await engine.modelStatus() == .ready)
+        #expect(second.plans.first?.step(.nemotron)?.isDone == true)
+        #expect(second.stages == PrepareEventLog.pairs([.asr, .warmup]))
+    }
+
+    @Test("17. A Nemotron that fails after a trip away pauses; in front it falls back to community-1 and setup reaches ready")
+    func aNemotronLoadFailureFallsBackToCommunityOne() async throws {
+        let shared = try await Self.shared.value
+        // A copy whose Nemotron program is garbage: still "installed" (the bundle's files exist), but it cannot load.
+        // (A truncated weight.bin is no good here: Core ML crashes reading it instead of throwing.)
+        let clone = try Self.cloneModels(from: shared.paths.root)
+        defer { try? FileManager.default.removeItem(at: clone.deletingLastPathComponent()) }
+        let program = clone.appendingPathComponent(FluidModelPaths.nemotronFolderName, isDirectory: true)
+            .appendingPathComponent("\(NemotronSeparation.config.modelFileName)/model.mil")
+        try FileManager.default.removeItem(at: program)
+        try Data("not a program".utf8).write(to: program)
+        let activity = AppActivity(backgroundInference: false)
+        let engine = FluidSpeechEngine(modelsRoot: clone, activity: activity, afterStageWork: { name in
+            if name == "nemotron", activity.epoch == 0 { activity.enterBackground(); activity.becomeActive() }
+        }, captureFactory: { MicrophoneCapture() })
+        #expect(engine.paths.allInstalled)
+
+        // After a trip away the failure may be the background's doing: a pause, and Nemotron is not disabled.
+        let away = PrepareEventLog()
+        await #expect(throws: EngineError.cancelled) { try await engine.prepareModels(onEvent: away.sink) }
+        #expect(away.stages == PrepareEventLog.pairs([.diarizer]) + [.stageStarted(.nemotron)],
+                "a stage that throws sends no finish")
+        let paused = try #require(await engine.lastPrepareRecord)
+        Self.log("nemotron failed away: \(PrepareLog.summary(paused))")
+        #expect(paused.pauseReason == "failedInBackground")
+        #expect(paused.stages.map(\.verdict) == ["kept", "paused"])
+        #expect(await engine.nemotronDisabledReason == nil)
+
+        // In front it fails again: Nemotron is disabled for the process and setup carries on to ready.
+        let front = PrepareEventLog()
+        try await engine.prepareModels(onEvent: front.sink)
+        #expect(await engine.modelStatus() == .ready)
+        #expect(front.plans.first?.step(.nemotron) != nil, "not disabled yet when the plan was made")
+        #expect(front.stages == [.stageStarted(.nemotron)] + PrepareEventLog.pairs([.asr, .warmup]))
+        let ready = try #require(await engine.lastPrepareRecord)
+        Self.log("nemotron failed in front: \(PrepareLog.summary(ready))")
+        #expect(ready.outcome == "ready" && ready.nemotronWarmUpOK == false)
+        #expect(ready.stages.map(\.verdict) == ["failed", "kept", "kept"])
+        #expect(ready.stages.first?.error != nil)
+        #expect(await engine.nemotronDisabledReason != nil)
+
+        let separation = try await engine.separateSpeakers(Self.fixture("two-voices.wav")) { _ in }
+        #expect(separation.separator == .communityOne)
+        #expect(Set(separation.segments.map(\.speakerKey)).count >= 2)
+    }
+
     static func rtf(_ elapsed: Duration, _ audioSeconds: Double) -> String {
         let seconds = Double(elapsed.components.seconds) + Double(elapsed.components.attoseconds) / 1e18
         return String(format: "%.3f", seconds / Swift.max(audioSeconds, 0.001))
@@ -419,4 +666,17 @@ final class ProgressLog: @unchecked Sendable {
     private var storage: [Double] = []
     func append(_ v: Double) { lock.withLock { storage.append(v) } }
     var values: [Double] { lock.withLock { storage } }
+}
+
+/// Collects a prepare's events (`FluidSpeechEngine.prepareModels(onEvent:)`).
+final class PrepareEventLog: Sendable {
+    private let events = Mutex<[PrepareEvent]>([])
+    var sink: @Sendable (PrepareEvent) -> Void { { [self] e in events.withLock { $0.append(e) } } }
+    var all: [PrepareEvent] { events.withLock { $0 } }
+    var plans: [PreparePlan] { all.compactMap { if case .planned(let p) = $0 { p } else { nil } } }
+    /// Every event but the plans.
+    var stages: [PrepareEvent] { all.filter { if case .planned = $0 { false } else { true } } }
+    static func pairs(_ stages: [PrepareStage]) -> [PrepareEvent] {
+        stages.flatMap { [PrepareEvent.stageStarted($0), .stageFinished($0)] }
+    }
 }

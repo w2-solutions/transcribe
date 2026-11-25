@@ -1,5 +1,6 @@
 @preconcurrency import AVFoundation
 import Darwin
+import FluidAudio
 import Foundation
 import TranscribeCore
 @testable import TranscribeFluid
@@ -330,5 +331,46 @@ struct SegmentDiff: Sendable {
     var summary: String {
         let shift = maxBoundaryShift.map { String(format: "same segments, max boundary shift %.2f s", $0) } ?? "different segmentation"
         return String(format: "frames that differ %.2f%%; %@", disagreeShare * 100, shift)
+    }
+}
+
+/// A complete but fake `BundledModels` folder: every file `FluidModelPaths.allInstalled` checks (laid out as in
+/// FluidModelPathsTests), a few bytes each. It passes every installed check but cannot be loaded.
+enum FakeModelTree {
+    static func make(in parent: URL, name: String = FluidModelPaths.bundledFolderName) throws -> URL {
+        let root = parent.appendingPathComponent(name, isDirectory: true)
+        let paths = FluidModelPaths(root: root)
+        let fm = FileManager.default
+        var seed: UInt8 = 1
+        func file(_ url: URL, bytes: Int) throws {
+            try fm.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try Data(repeating: seed, count: bytes).write(to: url)
+            seed &+= 1
+        }
+        func compiled(_ dir: URL, _ name: String) throws {
+            let bundle = dir.appendingPathComponent(name, isDirectory: true)
+            try file(bundle.appendingPathComponent("coremldata.bin"), bytes: 300)
+            try file(bundle.appendingPathComponent("analytics/coremldata.bin"), bytes: 243)
+            try file(bundle.appendingPathComponent("weights/weight.bin"), bytes: 4_096)
+            // FluidAudio's layout check wants a program that ends with its closing brace.
+            try Data("program(1.0)\n{\n}\n".utf8).write(to: bundle.appendingPathComponent("model.mil"))
+        }
+        for name in ModelNames.ASR.requiredModelsV3(precision: .int8).sorted() { try compiled(paths.asrDirectory, name) }
+        try file(paths.asrDirectory.appendingPathComponent(ModelNames.ASR.vocabularyFile), bytes: 120)
+        for name in FluidModelPaths.diarizerRequiredFiles {
+            if name.hasSuffix(".mlmodelc") {
+                try compiled(paths.diarizerDirectory, name)
+            } else {
+                try file(paths.diarizerDirectory.appendingPathComponent(name), bytes: 90)
+            }
+        }
+        for name in FluidModelPaths.nemotronRequiredFiles {
+            if name.hasSuffix(".mlmodelc") {
+                try compiled(paths.nemotronDirectory, name)
+            } else {
+                try file(paths.nemotronDirectory.appendingPathComponent(name), bytes: FluidModelPaths.nemotronSilenceEmbeddingBytes)
+            }
+        }
+        return root
     }
 }

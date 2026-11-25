@@ -14,7 +14,7 @@ public struct EngineInfo: Sendable, Equatable {
 }
 
 /// The speech models ship inside the app (read-only), so there is nothing to download or remove:
-/// only the on-device prepare (load + Neural Engine compile + warm-up) runs.
+/// only the on-device prepare (load, the Neural Engine compile of Parakeet and community-1, warm-up) runs.
 public enum ModelStatus: Sendable, Equatable {
     case installed          // shipped in the app, not loaded yet
     case preparing          // loading + ANE compile + warm-up
@@ -105,6 +105,9 @@ public protocol SpeechEngine: Sendable {
     // Models
     func modelStatus() async -> ModelStatus
     func prepareModels() async throws                 // load + 1 s silent warm-up; idempotent
+    /// The same prepare, reporting its plan and each stage as it starts and finishes (`PrepareEvent`). Only the
+    /// caller that starts the prepare gets events. The default sends none.
+    func prepareModels(onEvent: @escaping @Sendable (PrepareEvent) -> Void) async throws
 
     // Microphone
     func microphonePermission() async -> MicPermission
@@ -120,4 +123,11 @@ public protocol SpeechEngine: Sendable {
                           progress: @escaping @Sendable (Double) -> Void) async throws -> SpeakerSeparation
     /// One normalised vector per span, same order. Spans must be inside the file.
     func embedVoice(_ audio: URL, spans: [TimeRange]) async throws -> [VoiceVector]
+}
+
+public extension SpeechEngine {
+    /// Engines without stage reporting (test doubles): the plain prepare, no events.
+    func prepareModels(onEvent: @escaping @Sendable (PrepareEvent) -> Void) async throws {
+        try await prepareModels()
+    }
 }

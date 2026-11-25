@@ -3,15 +3,44 @@ import TranscribeCore
 import TranscribeDesign
 import TranscribeKit
 
-/// Speech models card (§6.1): shown at the top of the Library only when the bundled models fail to load or are
-/// missing from this copy of the app. Recording still works meanwhile; recordings wait for the models before
-/// processing.
+/// Speech models card (§6.1), at the top of the Library (and the Mac recording list):
+/// - while the models get ready after an install or update, the setup progress (`SetupStatusView`), revealed only
+///   when setup takes longer than a moment (`ModelManager.setupCard`), then "Ready" briefly;
+/// - when the bundled models fail to load or are missing from this copy of the app, the failure and "Try again".
+/// Recording works meanwhile; recordings wait for the models before processing.
 struct ModelsCard: View {
+    /// Recordings waiting for setup (from the list's own query).
+    var waitingCount = 0
     @Environment(AppEnvironment.self) private var env
 
     private var models: ModelManager { env.models }
 
+    /// The card shows while setup runs (once revealed) or after a failure.
+    static func isShown(_ models: ModelManager) -> Bool {
+        if case .failed = models.status { return true }
+        return models.setupCard != .hidden
+    }
+
+    /// Recordings stored as waiting for the speech models.
+    static func waitingCount(_ recordings: [Recording]) -> Int {
+        recordings.filter { $0.stage.isProcessing && $0.queueReason == .modelsNotReady }.count
+    }
+
     var body: some View {
+        Group {
+            if case .failed = models.status {
+                failure
+            } else {
+                SetupStatusView(style: .card, prefix: AX.Setup.library, waitingCount: waitingCount)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .cardSurface()
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier(AX.Library.modelsCard)
+    }
+
+    private var failure: some View {
         VStack(alignment: .leading, spacing: 10) {
             Text("Speech models couldn't load")
                 .font(DS.Typo.headline)
@@ -25,10 +54,6 @@ struct ModelsCard: View {
                 .padding(.top, 4)
                 .accessibilityIdentifier(AX.Library.modelsRetryButton)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .cardSurface()
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier(AX.Library.modelsCard)
     }
 
     private func retry() {

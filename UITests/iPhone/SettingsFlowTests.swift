@@ -67,6 +67,26 @@ final class SettingsFlowTests: FlowTestCase {
         XCTAssertFalse(app.element(AX.ModelSettings.removeButton).exists, "No remove button")
     }
 
+    /// First launch: the Speech models screen shows setup at once (no reveal delay), then the ready text.
+    @MainActor func testSpeechModelsShowSetupOnFirstLaunch() {
+        let app = UITestApp.launch(seed: "firstRun", speed: "demo", route: "settings")
+        app.waitFor(AX.Settings.screen, timeout: 20)
+        Wait.label(app.waitFor(AX.Settings.modelRow), contains: "Getting ready…")
+        app.scrollTo(AX.Settings.modelRow).press()
+        app.waitFor(AX.ModelSettings.screen)
+        Wait.label(app.waitFor(AX.Setup.id(AX.Setup.modelSettings, .headline)), contains: "Getting ready on this iPhone")
+        Wait.label(app.waitFor(AX.Setup.id(AX.Setup.modelSettings, .step)), contains: "Setting up")
+        app.waitFor(AX.Setup.id(AX.Setup.modelSettings, .progress))
+        app.waitFor(AX.Setup.id(AX.Setup.modelSettings, .onceNote))
+        Wait.label(app.element(AX.Setup.id(AX.Setup.modelSettings, .keepOpenNote)), contains: "If you leave Transcribe")
+        Wait.label(app.waitFor(AX.ModelSettings.speechRow), contains: "Included · Getting ready")
+        Wait.label(app.waitFor(AX.ModelSettings.speakersRow), contains: "Included · Getting ready")
+
+        Wait.label(app.element(AX.ModelSettings.speechRow), contains: "Included · Ready", timeout: 30)
+        Wait.label(app.waitFor(AX.ModelSettings.status), contains: "Ready.")
+        XCTAssertFalse(app.element(AX.Setup.id(AX.Setup.modelSettings, .progress)).exists, "No setup bar once ready")
+    }
+
     @MainActor func testLanguagePicker() {
         let app = launchSettings()
         app.scrollTo(AX.Settings.languageRow).press()

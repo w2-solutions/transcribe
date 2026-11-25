@@ -14,6 +14,10 @@ import UIKit
 /// parks the job at its checkpoint). If the request is refused, it falls back to
 /// `UIApplication.beginBackgroundTask`.
 ///
+/// `beginShortTask` (the speech-model prepare) never submits anything: it holds `UIApplication.beginBackgroundTask`
+/// only, about 30 s once the app leaves the screen, with no Live Activity. It returns nil when the system grants
+/// none (`.invalid`). On expiry it calls `onExpire` and releases the time; `end` then drops the entry.
+///
 /// Info.plist needs `BGTaskSchedulerPermittedIdentifiers` = ["ai.w2solutions.transcribe.process.*"].
 /// Each job registers its own concrete identifier right before submitting it (registering the wildcard
 /// string itself is rejected by the system on iOS 27).
@@ -32,6 +36,13 @@ nonisolated final class ContinuedProcessingBridge: BackgroundTaskBridge, Sendabl
             await ContinuedProcessingRegistry.shared.beginFallback(token: token, name: title)
         }
         return token
+    }
+
+    func beginShortTask(name: String, onExpire: @escaping @Sendable () -> Void) async -> BackgroundToken? {
+        let token = BackgroundToken()
+        let granted = await ContinuedProcessingRegistry.shared.beginShort(token: token, name: name, onExpire: onExpire)
+        if !granted { Self.log.notice("\(name, privacy: .public): no background time granted") }
+        return granted ? token : nil
     }
 
     func update(_ token: BackgroundToken, fraction: Double, subtitle: String) async {
@@ -109,6 +120,8 @@ final class ContinuedProcessingRegistry {
         let token: BackgroundToken
         let identifier: String
         let onExpire: @Sendable () -> Void
+        /// A short task (`beginShort`): `beginBackgroundTask` only, never a scheduler request.
+        var isShort = false
         var task: BGContinuedProcessingTask?
         var fallbackID: UIBackgroundTaskIdentifier = .invalid
         var fraction = 0.0
@@ -155,6 +168,22 @@ final class ContinuedProcessingRegistry {
         }
     }
 
+    /// A short task: `beginBackgroundTask` only. Returns false (and keeps no entry) when the system grants none.
+    func beginShort(token: BackgroundToken, name: String, onExpire: @escaping @Sendable () -> Void) -> Bool {
+        let entry = Entry(token: token, identifier: "", onExpire: onExpire)
+        entry.isShort = true
+        entries[token] = entry
+        entry.fallbackID = UIApplication.shared.beginBackgroundTask(withName: name) { [weak self] in
+            onExpire()
+            self?.endFallback(token)
+        }
+        if entry.fallbackID == .invalid {
+            entries[token] = nil
+            return false
+        }
+        return true
+    }
+
     func update(token: BackgroundToken, fraction: Double, subtitle: String) {
         guard let entry = entries[token] else { return }
         entry.fraction = Swift.min(1, Swift.max(0, fraction))
@@ -170,7 +199,7 @@ final class ContinuedProcessingRegistry {
         if let task = entry.task {
             if success { task.progress.completedUnitCount = Self.progressUnits }
             task.setTaskCompleted(success: success)
-        } else {
+        } else if !entry.isShort {
             // Not launched yet (or never will be): withdraw the request.
             BGTaskScheduler.shared.cancel(taskRequestWithIdentifier: entry.identifier)
         }

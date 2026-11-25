@@ -55,18 +55,46 @@ struct ProcessingViewStateTests {
     @Test func waitingForModels() {
         let s = ProcessingViewState(stage: .queued, queueReason: .modelsNotReady, snapshot: nil, platform: .iPhone)
         #expect(s.mode == .waiting(.modelsNotReady))
-        #expect(s.heading == "Waiting for speech models")
-        #expect(s.message == "Processing starts once the speech models are ready on this iPhone.")
+        #expect(s.heading == "Waiting for setup to finish")
+        #expect(s.message == "Transcribe is getting ready on this iPhone. This recording is processed as soon as setup finishes.")
         #expect(s.isWaitingForModels)
-        #expect(s.collapsedText == "Waiting for speech models")
-        #expect(s.cardText == "Waiting for speech models")
+        #expect(s.collapsedText == "Waiting for setup")
+        #expect(s.cardText == "Waiting for setup")
+        // Nothing of the recording has started: every row waits, none spins, and its bar is empty.
+        #expect(states(s) == ["waiting", "waiting", "waiting"])
+        #expect(ProcessingViewState.rowTitle(s.steps[0]) == "Transcribing", "a waiting row never reads \"Transcribed\"")
+        #expect(s.steps[0].subtitle == ProcessingCopy.subtitle(step: .transcribing, state: .waiting, voicesFound: nil,
+                                                               comparedWith: []))
+        #expect(s.overall == 0)
+        #expect(!s.isWaitingForFailedSetup)
+    }
+
+    @Test func waitingForModelsKeepsDoneRowsDone() {
+        let s = ProcessingViewState(stage: .transcribed, queueReason: .modelsNotReady, snapshot: nil, platform: .iPhone)
+        #expect(states(s) == ["done", "waiting", "waiting"])
+    }
+
+    /// Setup failed while the recording waits: the panel says so and points at Try again, never "getting ready".
+    @Test func waitingForAFailedSetup() {
+        let s = ProcessingViewState(stage: .queued, queueReason: .modelsNotReady, snapshot: nil, setupFailed: true,
+                                    platform: .iPhone)
+        #expect(s.heading == "Setup couldn't finish")
+        #expect(s.message
+                == "Transcribe couldn't get ready on this iPhone, so this recording is still waiting. Tap Try again to finish setup.")
+        #expect(s.collapsedText == "Setup couldn't finish")
+        #expect(s.cardText == "Setup couldn't finish")
+        #expect(s.isWaitingForFailedSetup)
+        // A failed setup changes nothing for a recording that is not waiting for it.
+        let running = ProcessingViewState(stage: .separating, queueReason: nil, snapshot: nil, setupFailed: true,
+                                          platform: .iPhone)
+        #expect(running.heading == "Working out who said what" && !running.isWaitingForFailedSetup)
     }
 
     @Test func macWording() {
         let running = ProcessingViewState(stage: .separating, queueReason: nil, snapshot: nil, platform: .mac)
         #expect(running.message == "This happens on your Mac. You can keep working.")
         let waiting = ProcessingViewState(stage: .queued, queueReason: .modelsNotReady, snapshot: nil, platform: .mac)
-        #expect(waiting.message == "Processing starts once the speech models are ready on this Mac.")
+        #expect(waiting.message == "Transcribe is getting ready on this Mac. This recording is processed as soon as setup finishes.")
     }
 
     @Test func queuedSnapshotReasonWinsOverTheStoredOne() {

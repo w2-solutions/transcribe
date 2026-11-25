@@ -16,6 +16,8 @@ final class AppPathsTests {
         #expect(fm.fileExists(atPath: paths.audioDirectory.path))
         #expect(!fm.fileExists(atPath: paths.legacyModelsDirectory.path))
         #expect(paths.legacyModelsDirectory.lastPathComponent == "Models")
+        #expect(paths.prepareLogURL == root.appendingPathComponent("prepare-log.jsonl"))
+        #expect(!fm.fileExists(atPath: paths.prepareLogURL.path), "prepare() does not create the prepare log")
     }
 
     @Test func removeLegacyModelsDeletesTheOldDownload() throws {

@@ -13,8 +13,7 @@ import TranscribeCore
 ///
 /// Same model as macparakeet's default: the fp16 monolithic `fast128` preset (190 MB; 10.24 s chunks; AMI DER 9.36 with
 /// 16/16 speaker counts in Fluid Inference's BENCHMARKS.md, against 9.63 for the 95 MB `c128-split-w8a8`). One
-/// difference for the iPhone: `.cpuAndNeuralEngine`, never the GPU (processing may run in the background; iOS forbids
-/// GPU work there). FluidAudio's ANE profile places `fast128` 98% on the Neural Engine and 2% on the CPU. The
+/// difference: it runs on the CPU only (`computeUnits`, decided 2026-11-25), never the Neural Engine or the GPU. The
 /// `offline` preset is never used: its graph fails the Neural Engine compile and silently runs on the GPU.
 ///
 /// The weights ship in the app bundle, flat: `<dir>/<bundle>.mlmodelc` plus `<dir>/learnable_sil_emb.bin`, loaded with
@@ -114,7 +113,9 @@ enum NemotronSeparation {
 
     // MARK: Models
 
-    /// Loads the bundled preset once and releases it (warms the Neural Engine compile cache). Returns seconds.
+    /// Loads the bundled preset once and releases it: the setup's check that Nemotron loads on this device (a
+    /// failure there makes separation use community-1 for the process). On the CPU there is no Neural Engine compile
+    /// to warm; the load takes about 1 s. Returns seconds.
     @concurrent
     static func warmUp(directory: URL) async throws -> TimeInterval {
         let start = Date()
@@ -122,8 +123,13 @@ enum NemotronSeparation {
         return Date().timeIntervalSince(start)
     }
 
-    /// Neural Engine with CPU for the rest; never the GPU (iOS forbids GPU work in the background).
-    static let computeUnits: MLComputeUnits = .cpuAndNeuralEngine
+    /// The CPU only (decided by Liam on 2026-11-25). On the Neural Engine its first load after every install compiled
+    /// for 55–58 s on an iPhone 15 (A16), most of the whole setup; on the CPU the cold load is 0.89 s there (0.5–0.65 s
+    /// against about 30 s on an M4 Max). Per 10.24 s chunk the CPU is slower (46 ms against 24 ms on the M4 Max), and
+    /// the outputs agree within 0.0002 on random input. The CPU also needs no Background Inference entitlement in the
+    /// background, and never the GPU, which iOS forbids there. Pinned by `presetIsTheFullPrecisionFast128Bundle`;
+    /// `PrepareStage.usesNeuralEngine` must agree.
+    static let computeUnits: MLComputeUnits = .cpuOnly
 
     // MARK: Inference
 

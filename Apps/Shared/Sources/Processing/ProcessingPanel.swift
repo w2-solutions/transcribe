@@ -53,7 +53,7 @@ struct ProcessingPanel: View {
             .scrollIndicators(infoHeight > scrollLimit ? .automatic : .hidden)
             .frame(height: infoHeight > 0 ? Swift.min(infoHeight, scrollLimit) : nil)
 
-            buttons
+            buttons(state)
                 .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { buttonsHeight = $0 }
         }
         .padding(EdgeInsets(top: 26, leading: 22, bottom: 14, trailing: 22))
@@ -90,27 +90,44 @@ struct ProcessingPanel: View {
             .padding(.top, 22)
             .animation(.snappy, value: state.steps)
 
-            VStack(alignment: .leading, spacing: 8) {
-                AccentProgressBar(fraction: state.overall)
-                    .accessibilityElement()
-                    .accessibilityLabel("Processing progress")
-                    .accessibilityValue(state.progressValueText)
-                    .accessibilityIdentifier(AX.Processing.progressBar)
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: 8) {
-                        stepCounter(state)
-                        Spacer(minLength: 8)
-                        privacyLine
-                    }
-                    VStack(alignment: .leading, spacing: 4) {
-                        stepCounter(state)
-                        privacyLine
-                    }
+            if state.isWaitingForModels, env.models.isSettingUp {
+                // Waiting for setup: the setup's own bar, step and time instead of this recording's.
+                VStack(alignment: .leading, spacing: 8) {
+                    SetupStatusView(style: .compact, prefix: AX.Setup.processing)
+                    privacyLine
+                        .font(DS.Typo.meta)
+                        .foregroundStyle(DS.Colour.secondary)
                 }
-                .font(DS.Typo.meta)
-                .foregroundStyle(DS.Colour.secondary)
+                .padding(.top, 20)
+            } else if state.isWaitingForFailedSetup {
+                // Setup failed: nothing moves until Try again (below), so no bar and no step counter.
+                privacyLine
+                    .font(DS.Typo.meta)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .padding(.top, 20)
+            } else {
+                VStack(alignment: .leading, spacing: 8) {
+                    AccentProgressBar(fraction: state.overall)
+                        .accessibilityElement()
+                        .accessibilityLabel("Processing progress")
+                        .accessibilityValue(state.progressValueText)
+                        .accessibilityIdentifier(AX.Processing.progressBar)
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: 8) {
+                            stepCounter(state)
+                            Spacer(minLength: 8)
+                            privacyLine
+                        }
+                        VStack(alignment: .leading, spacing: 4) {
+                            stepCounter(state)
+                            privacyLine
+                        }
+                    }
+                    .font(DS.Typo.meta)
+                    .foregroundStyle(DS.Colour.secondary)
+                }
+                .padding(.top, 20)
             }
-            .padding(.top, 20)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -129,16 +146,31 @@ struct ProcessingPanel: View {
         .accessibilityElement(children: .combine)
     }
 
-    private var buttons: some View {
+    /// Waiting for a failed setup: Try again leads (it is the only way on). Otherwise the leave button, which on
+    /// iPhone says "Back to Recordings" while the recording waits for setup (nothing of it runs in the background).
+    @ViewBuilder
+    private func buttons(_ state: ProcessingViewState) -> some View {
         VStack(spacing: 4) {
-            GlassCapsuleButton("Continue in background", height: 50, action: onContinueInBackground)
-                .glassCapsuleFullWidth()
-                .accessibilityIdentifier(AX.Processing.continueInBackground)
+            if state.isWaitingForFailedSetup {
+                GlassCapsuleButton("Try again", systemImage: "arrow.clockwise", height: 50) { retrySetup() }
+                    .glassCapsuleFullWidth()
+                    .accessibilityIdentifier(AX.Processing.retrySetup)
+            } else {
+                GlassCapsuleButton(env.copy.processingLeaveButton(waitingForSetup: state.isWaitingForModels),
+                                   height: 50, action: onContinueInBackground)
+                    .glassCapsuleFullWidth()
+                    .accessibilityIdentifier(AX.Processing.continueInBackground)
+            }
             LinkButton("Show transcript now", font: .subheadline.weight(.semibold), action: onShowTranscriptNow)
                 .frame(maxWidth: .infinity)
                 .accessibilityIdentifier(AX.Processing.showTranscriptNow)
         }
         .padding(.top, 22)
+    }
+
+    private func retrySetup() {
+        let models = env.models
+        Task { await models.retry() }
     }
 
     static func rowState(_ state: StepState) -> StepRow.State {
@@ -163,6 +195,7 @@ enum ProcessingPanelData {
         return ProcessingViewState(stage: recording?.stage ?? .queued, queueReason: recording?.queueReason,
                                    snapshot: env.monitor.snapshot(for: id), savedVoiceNames: names,
                                    identifySpeakers: env.settings.identifySpeakers,
-                                   recogniseVoices: env.settings.recogniseVoices)
+                                   recogniseVoices: env.settings.recogniseVoices,
+                                   setupFailed: env.models.hasFailed)
     }
 }
