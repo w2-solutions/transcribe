@@ -19,28 +19,64 @@ public enum UpdateAvailability: Sendable, Equatable {
     }
 }
 
-/// Holds back a scheduled update alert while a recording runs (D23). Sparkle asks before showing a scheduled update;
-/// while busy the answer is "not now", and the alert is shown once the recording stops. User-initiated checks never
-/// come through here.
-public struct UpdateDeferral: Sendable, Equatable {
-    public private(set) var pending: Bool = false
+/// The quiet "Update available" reminder (D23). Sparkle never opens its update window by itself: a scheduled check that
+/// finds an update only sets `version`, and the Mac app shows it as a small control in the sidebar, "Update
+/// Available…" in the app menu and on Settings → Updates. Choosing any of them brings Sparkle's window up. Nothing shows
+/// during a recording. In memory only, driven by Sparkle's delegate callbacks, so it cannot outlive what Sparkle knows
+/// by more than the current run.
+public struct UpdateReminder: Sendable, Equatable {
+    /// The user's answer in Sparkle's update window.
+    public enum Choice: Sendable, Equatable {
+        case install
+        case skip
+        /// Remind Me Later, or the window closed.
+        case later
+    }
+
+    public enum Event: Sendable, Equatable {
+        /// Sparkle has an update to show: from a scheduled check (only this reminder shows it) or from Check for
+        /// Updates… (Sparkle's window is already up).
+        case found(version: String)
+        case chose(Choice)
+        /// A check found nothing newer (or only a skipped version).
+        case notFound
+        /// Sparkle's update session finished: after a choice, an error, or "You're up to date".
+        case sessionEnded
+        case recordingChanged(isRecording: Bool)
+    }
+
+    /// The version of the update the user has not yet installed or skipped.
+    public private(set) var version: String?
+    public private(set) var isRecording = false
+    /// The user chose Remind Me Later in this session: the update is still there when the session ends.
+    private var keepsAfterSession = false
 
     public init() {}
 
-    /// true: let Sparkle show the scheduled update now; false: deferred until busyEnded().
-    public mutating func scheduledUpdateFound(busy: Bool) -> Bool {
-        if busy { pending = true }
-        return !busy
-    }
+    /// What the sidebar, the menu and Settings show: nil while there is no update, and during a recording.
+    public var visibleVersion: String? { isRecording ? nil : version }
 
-    /// true exactly once after a deferral: present it now.
-    public mutating func busyEnded() -> Bool {
-        defer { pending = false }
-        return pending
+    public mutating func apply(_ event: Event) {
+        switch event {
+        case .found(let found):
+            version = found
+            keepsAfterSession = false
+        case .chose(.later):
+            keepsAfterSession = true
+        case .chose(.install), .chose(.skip), .notFound:
+            // Installing: Sparkle's own progress window takes over. Skipped: it is not offered again.
+            version = nil
+            keepsAfterSession = false
+        case .sessionEnded:
+            if !keepsAfterSession { version = nil }
+            keepsAfterSession = false
+        case .recordingChanged(let recording):
+            isRecording = recording
+        }
     }
 }
 
-/// Wording for Settings → Updates and the postponed-install alert (Mac only).
+/// Wording for Settings → Updates, the app menu, the sidebar reminder and the postponed-install alert (Mac only).
 public enum UpdateCopy {
     /// The note under the Updates card.
     public static func note(for availability: UpdateAvailability) -> String {
@@ -55,6 +91,20 @@ public enum UpdateCopy {
             "This copy of Transcribe can't check for updates. Download the latest version from w2solutions.ai/transcribe."
         }
     }
+
+    /// The app menu item and the Settings button: "Update Available…" while an update waits, else "Check for Updates…".
+    /// Both bring up Sparkle's window: the waiting update, or a new check.
+    public static func checkTitle(pendingVersion: String?) -> String {
+        pendingVersion == nil ? "Check for Updates…" : "Update Available…"
+    }
+
+    /// The sidebar reminder, its tooltip and its accessibility label.
+    public static func reminderTitle(version: String) -> String { "Update available · \(version)" }
+    public static func reminderHelp(version: String) -> String {
+        "Transcribe \(version) is ready to download. Click to see what's new."
+    }
+    public static func reminderAccessibilityLabel(version: String) -> String { "Update available: Transcribe \(version)" }
+    public static let reminderAccessibilityHint = "Shows what's new and lets you install it"
 
     /// The alert when the user installs an update while a recording runs.
     public static let postponeTitle = "Update after this recording"

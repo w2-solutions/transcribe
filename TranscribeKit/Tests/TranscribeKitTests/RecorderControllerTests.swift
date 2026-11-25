@@ -242,9 +242,43 @@ struct RecorderControllerTests {
         defer { rig.cleanUp() }
         try await rig.recorder.start()
         #expect(rig.recorder.liveTextNote == RecorderController.modelsNotReadyNote)
-        #expect(rig.recorder.liveTextNote == "Live text appears once speech models are ready")
+        #expect(rig.recorder.liveTextNote == "Live text starts when setup finishes.")
         try await Task.sleep(for: .milliseconds(300))
         #expect(rig.recorder.liveText.isEmpty)
+        await rig.recorder.discard()
+    }
+
+    /// After a failed setup the note never promises that setup will finish on its own.
+    @Test func liveTextNoteAfterAFailedSetup() {
+        #expect(RecorderController.noteWithoutModels(setupFailed: false) == "Live text starts when setup finishes.")
+        #expect(RecorderController.noteWithoutModels(setupFailed: true)
+                == "Live text is off because setup couldn't finish. Recording still works.")
+    }
+
+    /// The recording screen's note promises live text once setup finishes: `modelsBecameReady` turns it on
+    /// mid-recording.
+    @Test func liveTextStartsWhenSetupFinishesMidRecording() async throws {
+        let rig = try makeRig(models: .missing)
+        defer { rig.cleanUp() }
+        try await rig.recorder.start()
+        #expect(rig.recorder.liveTextNote == RecorderController.modelsNotReadyNote)
+        await rig.models.prepareIfInstalled()
+        #expect(rig.models.isReady)
+        await rig.recorder.modelsBecameReady()
+        #expect(rig.recorder.liveTextNote == nil)
+        #expect(await wait(timeout: 600) { rig.recorder.liveText.confirmed.contains("Karan") })
+        await rig.recorder.discard()
+    }
+
+    @Test func modelsBecameReadyDoesNothingWhenIdleOrAlreadyLive() async throws {
+        let rig = try makeRig(models: .installed)
+        defer { rig.cleanUp() }
+        await rig.recorder.modelsBecameReady()   // idle: nothing to do
+        #expect(rig.recorder.state == .idle && rig.recorder.liveTextNote == nil)
+        await rig.models.prepareIfInstalled()
+        try await rig.recorder.start()
+        await rig.recorder.modelsBecameReady()   // already live
+        #expect(rig.recorder.liveTextNote == nil)
         await rig.recorder.discard()
     }
 

@@ -6,6 +6,14 @@ public protocol BackgroundTaskBridge: Sendable {
     func begin(recordingID: UUID, title: String, onExpire: @escaping @Sendable () -> Void) async -> BackgroundToken?
     func update(_ token: BackgroundToken, fraction: Double, subtitle: String) async
     func end(_ token: BackgroundToken, success: Bool) async
+    /// A short system grace period with no progress UI and no continued-processing request (the speech-model
+    /// prepare): on iPhone `UIApplication.beginBackgroundTask` (about 30 s once the app leaves the screen), on the Mac
+    /// a user-initiated activity. Returns nil when the system grants none. `onExpire` is called (any thread) when the
+    /// system ends the time; the bridge then releases it itself. End it with `end(_:success:)`.
+    func beginShortTask(name: String, onExpire: @escaping @Sendable () -> Void) async -> BackgroundToken?
+}
+public extension BackgroundTaskBridge {
+    func beginShortTask(name: String, onExpire: @escaping @Sendable () -> Void) async -> BackgroundToken? { nil }
 }
 public struct NoopBackgroundTaskBridge: BackgroundTaskBridge {
     public init() {}

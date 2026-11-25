@@ -2,6 +2,7 @@
 import CoreML
 import FluidAudio
 import Foundation
+import Synchronization
 import Testing
 import TranscribeCore
 @testable import TranscribeFluid
@@ -430,6 +431,49 @@ struct FluidEngineNoModelsTests {
         #expect(try FileManager.default.contentsOfDirectory(atPath: root.path).isEmpty)
     }
 
+    @Test func noModelsWritesNoPrepareRecord() async throws {
+        let base = try TestAudio.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let root = base.appendingPathComponent("BundledModels", isDirectory: true)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        let log = base.appendingPathComponent("prepare-log.jsonl")
+        let engine = FluidSpeechEngine(modelsRoot: root, prepareLog: log, captureFactory: { ScriptedCaptureSource() })
+        await #expect(throws: EngineError.modelsMissing) { try await engine.prepareModels() }
+        #expect(await engine.modelStatus() == .failed(ModelStatus.missingFromAppMessage))
+        #expect(await engine.lastPrepareRecord == nil)
+        #expect(!FileManager.default.fileExists(atPath: log.path))
+    }
+
+    /// A complete-looking but unloadable model tree: the prepare fails in front, and each attempt writes one
+    /// failed record (to the file and, as a summary, to the unified log).
+    @Test func aFailedPrepareInFrontIsRecorded() async throws {
+        let base = try TestAudio.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: base) }
+        let bundle = try FakeModelTree.make(in: base.appendingPathComponent("App.app", isDirectory: true))
+        let log = base.appendingPathComponent("prepare-log.jsonl")
+        let engine = FluidSpeechEngine(modelsRoot: bundle, prepareLog: log, captureFactory: { ScriptedCaptureSource() })
+        #expect(await engine.modelStatus() == .installed)
+        await #expect(throws: EngineError.self) { try await engine.prepareModels() }
+        guard case .failed = await engine.modelStatus() else {
+            Issue.record("a failed prepare reads failed")
+            return
+        }
+        let record = try #require(await engine.lastPrepareRecord)
+        #expect(record.outcome == "failed" && record.pauseReason == nil)
+        #expect(record.error?.isEmpty == false)
+        #expect(record.stages.map(\.name) == ["diarizer"], "the first stage fails; nothing after it runs")
+        #expect(record.stages.allSatisfy { $0.error != nil && $0.verdict == "failed" && $0.seconds >= 0 })
+        #expect(record.backgroundInference == false)
+        #expect(PrepareLog.read(log) == [record])
+
+        // Try again: the same failure, one more line.
+        await #expect(throws: EngineError.self) { try await engine.prepareModels() }
+        #expect(PrepareLog.read(log).map(\.outcome) == ["failed", "failed"])
+        let summary = PrepareLog.summary(try #require(await engine.lastPrepareRecord))
+        #expect(summary.hasPrefix("prepare outcome=failed") && summary.contains("diarizer=") && summary.contains("!/f"))
+        #expect(summary.utf8.count <= PrepareLog.summaryLimit)
+    }
+
     @Test func engineLocksFluidAudioDown() throws {
         _ = try makeEngine()
         #expect(ModelHub.offlineMode == true)
@@ -561,7 +605,13 @@ struct NemotronSeparationTests {
         #expect((config.chunkLen, config.chunkRightContext, config.fifoLen, config.spkcacheLen, config.spkcacheUpdatePeriod)
                 == (upstream.chunkLen, upstream.chunkRightContext, upstream.fifoLen, upstream.spkcacheLen, upstream.spkcacheUpdatePeriod))
         #expect(config.numSpeakers == NemotronSeparation.speakerChannels)
-        #expect(NemotronSeparation.computeUnits == .cpuAndNeuralEngine)
+        // On the CPU only (decided 2026-11-25): its Neural Engine compile took 55–58 s of every setup on an iPhone 15,
+        // the CPU load under a second. The background rules treat its stage as CPU work, so the two must agree.
+        #expect(NemotronSeparation.computeUnits == .cpuOnly)
+        #expect(PrepareStage.nemotron.usesNeuralEngine == (NemotronSeparation.computeUnits != .cpuOnly))
+        #expect(FluidSpeechEngine.makeDiarizerMLConfiguration().computeUnits == .cpuAndNeuralEngine,
+                "community-1 stays on the Neural Engine")
+        #expect(PrepareStage.diarizer.usesNeuralEngine && PrepareStage.asr.usesNeuralEngine)
     }
 
     @Test func speakersAreKeyedByFirstSpeechAndSegmentsSorted() throws {
@@ -620,5 +670,225 @@ struct NemotronSeparationTests {
         #expect(second.channel == 5 && abs(second.start - 1.5) < 1e-6 && abs(second.end - 3.0) < 1e-6)
         #expect(abs(second.meanProbability - 0.6) < 1e-6)
         #expect(NemotronSeparation.activities(probabilities: [], frameCount: 10).isEmpty)
+    }
+}
+
+/// The background rules (`FluidSpeechEngine` type doc) on a complete-looking but unloadable model tree: a pause
+/// is never a failure, and leaves the status installed.
+@Suite("FluidSpeechEngine in the background (no models)")
+struct FluidEngineBackgroundTests {
+    struct Rig {
+        let base: URL
+        let bundle: URL
+        var log: URL { base.appendingPathComponent("prepare-log.jsonl") }
+        func cleanup() { try? FileManager.default.removeItem(at: base) }
+    }
+
+    func rig() throws -> Rig {
+        let base = try TestAudio.temporaryDirectory()
+        let bundle = try FakeModelTree.make(in: base.appendingPathComponent("App.app", isDirectory: true))
+        return Rig(base: base, bundle: bundle)
+    }
+
+    @Test func withoutTheEntitlementNoStageStartsInTheBackground() async throws {
+        let r = try rig()
+        defer { r.cleanup() }
+        let activity = AppActivity(backgroundInference: false)
+        let engine = FluidSpeechEngine(modelsRoot: r.bundle, prepareLog: r.log, activity: activity,
+                                       captureFactory: { ScriptedCaptureSource() })
+        activity.enterBackground()
+        await #expect(throws: EngineError.cancelled) { try await engine.prepareModels() }
+        #expect(await engine.modelStatus() == .installed, "a pause never reads as couldn't load")
+        let first = try #require(await engine.lastPrepareRecord)
+        #expect(first.outcome == "paused" && first.pauseReason == "startRefused")
+        #expect(first.backgroundInference == false)
+        #expect(first.stages.map(\.name) == ["diarizer"], "the first stage (Neural Engine) is refused")
+        #expect(first.stages.first?.verdict == "notStarted" && first.stages.first?.bgAtStart == true)
+        #expect(first.resumesPause == nil)
+        #expect(first.transitions?.isEmpty == true, "the trip began before this prepare")
+        #expect(await engine.nemotronDisabledReason == nil)
+
+        // The next prepare in this process carries on from the pause.
+        await #expect(throws: EngineError.cancelled) { try await engine.prepareModels() }
+        let second = try #require(await engine.lastPrepareRecord)
+        #expect(second.resumesPause == true)
+        #expect(PrepareLog.read(r.log).map(\.outcome) == ["paused", "paused"])
+        #expect(PrepareLog.summary(second).contains("pause=startRefused"))
+        #expect(PrepareLog.summary(second).contains("diarizer=0.00/n^"))
+    }
+
+    @Test func withTheEntitlementAStageThatThrowsInTheBackgroundIsAPause() async throws {
+        let r = try rig()
+        defer { r.cleanup() }
+        let activity = AppActivity(backgroundInference: true)
+        let engine = FluidSpeechEngine(modelsRoot: r.bundle, activity: activity, captureFactory: { ScriptedCaptureSource() })
+        activity.armGrace(UUID())
+        activity.enterBackground()
+        await #expect(throws: EngineError.cancelled) { try await engine.prepareModels() }
+        #expect(await engine.modelStatus() == .installed)
+        let record = try #require(await engine.lastPrepareRecord)
+        #expect(record.outcome == "paused" && record.pauseReason == "failedInBackground")
+        #expect(record.backgroundInference == true)
+        #expect(record.stages.map(\.name) == ["diarizer"])
+        let stage = try #require(record.stages.first)
+        #expect(stage.verdict == "paused" && stage.error != nil && stage.bgAtStart == true && stage.bgAtEnd == true)
+        #expect(stage.epochChanged == false && stage.aneAtStart != nil && stage.suspendedSeconds == 0)
+    }
+
+    @Test func aStageThatThrowsAfterATripAwayIsAPauseAndInFrontAFailure() async throws {
+        let r = try rig()
+        defer { r.cleanup() }
+        let activity = AppActivity(backgroundInference: false)
+        let engine = FluidSpeechEngine(modelsRoot: r.bundle, activity: activity,
+                                       afterStageWork: { _ in
+                                           // The user leaves and comes back while the stage runs.
+                                           if activity.epoch == 0 { activity.enterBackground(); activity.becomeActive() }
+                                       },
+                                       captureFactory: { ScriptedCaptureSource() })
+        let events = Mutex<[PrepareEvent]>([])
+        await #expect(throws: EngineError.cancelled) {
+            try await engine.prepareModels(onEvent: { e in events.withLock { $0.append(e) } })
+        }
+        let sent = events.withLock { $0 }
+        #expect(sent.count == 2 && sent.last == .stageStarted(.diarizer), "a stage that throws sends no finished event")
+        #expect(await engine.modelStatus() == .installed)
+        let paused = try #require(await engine.lastPrepareRecord)
+        #expect(paused.pauseReason == "failedInBackground")
+        #expect(paused.stages.first?.verdict == "paused" && paused.stages.first?.bgAtStart == false)
+        #expect(paused.stages.first?.bgAtEnd == false && paused.stages.first?.epochChanged == true)
+        #expect(paused.transitions?.map(\.kind) == ["background", "active"])
+        #expect(paused.stages.first?.expectedWarm == false, "the plan expected a cold diarizer")
+
+        // Wholly in front, the same throw is a real failure. Its plan does not count the stage that threw as
+        // compiled: it is still cold, so the bar cannot treat it as nearly free.
+        let again = Mutex<[PrepareEvent]>([])
+        await #expect(throws: EngineError.self) {
+            try await engine.prepareModels(onEvent: { e in again.withLock { $0.append(e) } })
+        }
+        let resent = again.withLock { $0 }
+        guard case .planned(let plan) = resent.first else {
+            Issue.record("no plan first")
+            return
+        }
+        #expect(plan.step(.diarizer)?.isWarm == false)
+        #expect(plan.step(.diarizer)?.expectedSeconds != PrepareEstimates.warmDefaults[.diarizer])
+        #expect(!resent.contains(.stageFinished(.diarizer)), "the second throw sends no finished event either")
+        guard case .failed = await engine.modelStatus() else {
+            Issue.record("a failure in front reads failed")
+            return
+        }
+        let failed = try #require(await engine.lastPrepareRecord)
+        #expect(failed.outcome == "failed" && failed.pauseReason == nil && failed.resumesPause == true)
+        #expect(failed.stages.map(\.verdict) == ["failed"])
+    }
+
+    @Test func suspendedSecondsCountOnlyTheFrozenPart() {
+        let t = Date(timeIntervalSince1970: 0)
+        func at(_ s: Double) -> Date { t.addingTimeInterval(s) }
+        let transitions = [AppActivity.Transition(kind: .background, at: at(5)),
+                           AppActivity.Transition(kind: .expired, at: at(35)),
+                           AppActivity.Transition(kind: .active, at: at(100)),
+                           AppActivity.Transition(kind: .background, at: at(110)),
+                           AppActivity.Transition(kind: .expired, at: at(140))]
+        #expect(PrepareLog.suspendedSeconds(start: at(0), end: at(120), transitions: transitions) == 65)
+        #expect(PrepareLog.suspendedSeconds(start: at(50), end: at(60), transitions: transitions) == 10)
+        #expect(PrepareLog.suspendedSeconds(start: at(130), end: at(150), transitions: transitions) == 10, "still frozen")
+        #expect(PrepareLog.suspendedSeconds(start: at(0), end: at(30), transitions: transitions) == 0)
+    }
+}
+
+@Suite("Prepare log")
+struct PrepareLogTests {
+    private func record(_ at: String) -> PrepareRecord {
+        var r = PrepareRecord.begin()
+        r.at = at
+        return r
+    }
+
+    @Test func keepsTheLast200Lines() throws {
+        let folder = try TestAudio.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("prepare-log.jsonl")
+        for i in 0..<205 { PrepareLog.append(record("r\(i)"), to: file) }
+        let lines = try String(contentsOf: file, encoding: .utf8).split(separator: "\n")
+        #expect(lines.count == PrepareLog.keptLines)
+        let records = PrepareLog.read(file)
+        #expect(records.count == 200)
+        #expect(records.first?.at == "r5")
+        #expect(records.last?.at == "r204")
+    }
+
+    @Test func neverCreatesAFolder() throws {
+        let absent = try TestAudio.temporaryDirectory().appendingPathComponent("Transcribe", isDirectory: true)
+        PrepareLog.append(record("x"), to: absent.appendingPathComponent("prepare-log.jsonl"))
+        #expect(!FileManager.default.fileExists(atPath: absent.path), "the log never creates the folder")
+        PrepareLog.append(record("x"), to: nil)   // logged only
+    }
+
+    @Test func aRecordRoundTripsAsOneLineAndItsSummaryFitsTheUnifiedLog() throws {
+        var r = record("2026-11-25T10:00:00.000Z")
+        r.appVersion = "0.1.1"
+        r.appBuild = "9200"
+        r.osBuild = "24B156"
+        r.addStage("asr", start: Date(timeIntervalSince1970: 0), end: Date(timeIntervalSince1970: 2))
+        r.noteLastStage(bgAtStart: false, bgAtEnd: true, epochChanged: true, verdict: .primed, suspendedSeconds: 0.5,
+                        aneAtStart: true, aneAtEnd: false)
+        r.addRefusedStage("diarizer", at: Date(timeIntervalSince1970: 3), inBackground: true)
+        r.noteTransitions([AppActivity.Transition(kind: .background, at: Date(timeIntervalSince1970: 1))])
+        r.totalSeconds = 3.25
+        r.outcome = "paused"
+        r.pauseReason = PreparePauseReason.startRefused.rawValue
+        r.backgroundInference = true
+        r.resumesPause = true
+        r.lowPower = false
+        r.error = String(repeating: "e", count: 2_000)
+        let line = try #require(PrepareLog.line(r))
+        #expect(!line.contains("\n"))
+        let decoded = try JSONDecoder().decode(PrepareRecord.self, from: Data(line.utf8))
+        #expect(decoded == r)
+        #expect(decoded.stages.first?.start == "1970-01-01T00:00:00.000Z")
+        #expect(decoded.transitions == [PrepareRecord.Transition(kind: "background", at: "1970-01-01T00:00:01.000Z")])
+        #expect(decoded.stages.map(\.verdict) == ["primed", "notStarted"])
+        // The JSON line is too long for the unified log, which gets the summary instead.
+        #expect(line.utf8.count > 1_024)
+        let summary = PrepareLog.summary(decoded)
+        #expect(summary.hasPrefix("prepare outcome=paused pause=startRefused"))
+        for part in ["build=9200", "os=24B156", "asr=2.00/p^", "diarizer=0.00/n^", "total=3.25", "bi=1", "tr=b",
+                     "resumes=1", "error=eee"] {
+            #expect(summary.contains(part), "\(part) in \(summary)")
+        }
+        #expect(!summary.contains("\n"))
+        #expect(summary.utf8.count <= PrepareLog.summaryLimit, "\(summary.utf8.count) bytes")
+    }
+
+    @Test func theOSBuildIsRead() {
+        #expect(PrepareLog.osBuild()?.isEmpty == false)
+    }
+
+    /// Lines written before `installStamp` and `nemotronUnits` existed still decode.
+    @Test func oldLinesWithoutTheNewFieldsStillDecode() throws {
+        let old = #"{"at":"2026-11-24T10:00:00.000Z","appBuild":"9200","osBuild":"24B156","outcome":"ready","stages":[{"end":"x","name":"asr","seconds":21.5,"start":"x","verdict":"kept"}],"totalSeconds":80.2}"#
+        let folder = try TestAudio.temporaryDirectory()
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("prepare-log.jsonl")
+        try Data((old + "\n").utf8).write(to: file)
+        let records = PrepareLog.read(file)
+        #expect(records.count == 1)
+        #expect(records.first?.installStamp == nil && records.first?.nemotronUnits == nil)
+        #expect(records.first?.stages.first?.seconds == 21.5)
+    }
+
+    @Test func aNewRecordCarriesItsInstallAndNemotronUnits() {
+        let r = PrepareRecord.begin()
+        #expect(r.nemotronUnits == PrepareEstimates.unitsName(NemotronSeparation.computeUnits))
+        #expect(PrepareLog.summary(r).contains("units=\(r.nemotronUnits ?? "")"))
+        // The test runner has an executable: build@modified-seconds.
+        #expect(r.installStamp?.contains("@") == true)
+        let file = FileManager.default.temporaryDirectory.appendingPathComponent("stamp-\(UUID().uuidString)")
+        FileManager.default.createFile(atPath: file.path, contents: Data("x".utf8),
+                                       attributes: [.modificationDate: Date(timeIntervalSince1970: 1_700_000_000)])
+        defer { try? FileManager.default.removeItem(at: file) }
+        #expect(PrepareLog.installStamp(executable: file, build: "9300") == "9300@1700000000")
+        #expect(PrepareLog.installStamp(executable: nil, build: "9300") == nil)
     }
 }

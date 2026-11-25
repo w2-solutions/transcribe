@@ -66,6 +66,8 @@ enum AX {
         static let continueInBackground = "processing.continueInBackground"
         static let showTranscriptNow = "processing.showTranscriptNow"
         static let collapsedPill = "processing.collapsedPill"
+        /// "Try again" when the recording waits for a setup that failed.
+        static let retrySetup = "processing.retrySetup"
     }
 
     enum Transcript {
@@ -272,11 +274,25 @@ enum AX {
         static let speechRow = "modelSettings.speechRow"
         static let speakersRow = "modelSettings.speakersRow"
         static let status = "modelSettings.status"
-        static let progress = "modelSettings.progress"
         static let downloadButton = "modelSettings.downloadButton"
         static let removeButton = "modelSettings.removeButton"
         static let removeConfirm = "modelSettings.removeConfirm"
         static let cellularConfirm = "modelSettings.cellularConfirm"   // WP7 addition
+    }
+
+    /// The setup status (`SetupStatusView`): one prefix per place it shows, so ids stay unique when the Mac's
+    /// Settings and main windows are open together.
+    enum Setup {
+        static let library = "library.setup"
+        static let modelSettings = "modelSettings.setup"
+        static let processing = "processing.setup"
+
+        static func id(_ prefix: String, _ part: Part) -> String { "\(prefix).\(part.rawValue)" }
+
+        enum Part: String {
+            case headline, step, progress, timeLeft, typicalTime, onceNote, keepOpenNote, recordNote, waitingNote,
+                 resumedNote, pausedNote
+        }
     }
 
     enum Language {
@@ -294,6 +310,8 @@ enum AX {
         static let sidebarVoicesBadge = "mac.sidebar.voicesBadge"
         static let sidebarNewRecording = "mac.sidebar.newRecording"
         static let sidebarFooter = "mac.sidebar.footer"
+        /// "Update available · 0.3.1" above the footer while an update waits (D23).
+        static let sidebarUpdate = "mac.sidebar.update"
         static let recordingList = "mac.list.recordings"
         static let voiceList = "mac.list.voices"
         static let detailEmpty = "mac.detail.empty"

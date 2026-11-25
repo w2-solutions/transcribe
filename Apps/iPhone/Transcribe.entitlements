@@ -14,5 +14,7 @@
 	<string>$(TRANSCRIBE_ICLOUD_ENV)</string>
 	<key>aps-environment</key>
 	<string>$(TRANSCRIBE_APS_ENV)</string>
+	<key>com.apple.developer.background-tasks.continued-processing.inference</key>
+	<true/>
 </dict>
 </plist>

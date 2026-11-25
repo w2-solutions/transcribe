@@ -1,12 +1,15 @@
+import SwiftData
 import SwiftUI
 import TranscribeCore
 import TranscribeDesign
 import TranscribeKit
 
 /// Speech models screen (§6.10): read-only. The models ship inside the app, so this only shows what is included
-/// and whether it is ready on this iPhone.
+/// and whether it is ready on this iPhone. While the models get ready it shows the setup progress at once (no
+/// reveal delay: the user opened this screen to see it).
 struct ModelSettingsView: View {
     @Environment(AppEnvironment.self) private var env
+    @Query private var recordings: [Recording]
 
     private var models: ModelManager { env.models }
 
@@ -47,14 +50,20 @@ struct ModelSettingsView: View {
 
     @ViewBuilder
     private var statusBlock: some View {
+        if models.isSettingUp {
+            SetupStatusView(style: .settings, prefix: AX.Setup.modelSettings,
+                            waitingCount: ModelsCard.waitingCount(recordings))
+                .cardSurface()
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(AX.ModelSettings.status)
+        } else {
+            readyOrFailed
+        }
+    }
+
+    /// Ready, or the failure (unchanged).
+    private var readyOrFailed: some View {
         VStack(alignment: .leading, spacing: 10) {
-            if isPreparing {
-                ProgressView()
-                    .progressViewStyle(.linear)
-                    .tint(DS.Colour.accent)
-                    .accessibilityLabel("Preparing models")
-                    .accessibilityIdentifier(AX.ModelSettings.progress)
-            }
             HStack(alignment: .top, spacing: 8) {
                 Image(systemName: statusSymbol)
                     .font(.system(size: 14, weight: .semibold))
@@ -72,35 +81,19 @@ struct ModelSettingsView: View {
         .cardSurface()
     }
 
-    private var isPreparing: Bool {
-        switch models.status {
-        case .installed, .preparing: true
-        case .ready, .failed: false
-        }
-    }
-
     private var statusText: String {
-        switch models.status {
-        case .ready: DeviceCopy().modelsReady
-        case .installed, .preparing: ModelManager.Copy.preparing
-        case .failed(let reason): reason
-        }
+        if case .failed(let reason) = models.status { return reason }
+        return DeviceCopy().modelsReady
     }
 
     private var statusSymbol: String {
-        switch models.status {
-        case .ready: "checkmark.circle.fill"
-        case .installed, .preparing: "gearshape.2"
-        case .failed: "exclamationmark.triangle.fill"
-        }
+        if case .failed = models.status { return "exclamationmark.triangle.fill" }
+        return "checkmark.circle.fill"
     }
 
     private var statusColor: Color {
-        switch models.status {
-        case .ready: DS.Colour.accent
-        case .failed: DS.Colour.destructive
-        case .installed, .preparing: DS.Colour.secondary
-        }
+        if case .failed = models.status { return DS.Colour.destructive }
+        return DS.Colour.accent
     }
 
     private func modelRow(systemImage: String, title: String) -> some View {
@@ -125,11 +118,11 @@ struct ModelSettingsView: View {
         .accessibilityElement(children: .combine)
     }
 
-    /// "Included · Ready", "Included · Preparing" or "Included · Not ready".
+    /// "Included · Ready", "Included · Getting ready" or "Included · Not ready".
     private var componentValue: String {
         switch models.status {
         case .ready: "Included · Ready"
-        case .installed, .preparing: "Included · Preparing"
+        case .installed, .preparing: "Included · Getting ready"
         case .failed: "Included · Not ready"
         }
     }

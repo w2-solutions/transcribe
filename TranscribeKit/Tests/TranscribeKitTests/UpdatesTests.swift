@@ -2,8 +2,8 @@ import Foundation
 import Testing
 @testable import TranscribeKit
 
-/// In-app updates on the Mac (D10, D23): when the updater may run, the Settings note, and holding back a scheduled
-/// update alert while recording.
+/// In-app updates on the Mac (D10, D23): when the updater may run, the wording, and the quiet "Update available"
+/// reminder that replaces Sparkle's uninvited window (hidden during a recording).
 @Suite struct UpdatesTests {
     static let feed = "https://w2solutions.ai/transcribe/appcast.xml"
     /// Base64 of 32 bytes, the length of an Ed25519 public key.
@@ -60,31 +60,84 @@ import Testing
         #expect(UpdateCopy.postponeText == "Transcribe will install the update and reopen when you stop recording.")
     }
 
-    @Test func notBusyShowsAtOnce() {
-        var d = UpdateDeferral()
-        let show = d.scheduledUpdateFound(busy: false)
-        #expect(show)
-        #expect(!d.pending)
-        let present = d.busyEnded()
-        #expect(!present, "nothing was deferred")
+    @Test func reminderWording() {
+        #expect(UpdateCopy.checkTitle(pendingVersion: nil) == "Check for Updates…")
+        #expect(UpdateCopy.checkTitle(pendingVersion: "0.3.1") == "Update Available…")
+        #expect(UpdateCopy.reminderTitle(version: "0.3.1") == "Update available · 0.3.1")
+        #expect(UpdateCopy.reminderHelp(version: "0.3.1") == "Transcribe 0.3.1 is ready to download. Click to see what's new.")
+        #expect(UpdateCopy.reminderAccessibilityLabel(version: "0.3.1") == "Update available: Transcribe 0.3.1")
+        #expect(UpdateCopy.reminderAccessibilityHint == "Shows what's new and lets you install it")
     }
 
-    @Test func busyDefersUntilTheRecordingStopsThenShowsOnce() {
-        var d = UpdateDeferral()
-        let show = d.scheduledUpdateFound(busy: true)
-        #expect(!show)
-        #expect(d.pending)
-        let first = d.busyEnded()
-        #expect(first)
-        #expect(!d.pending)
-        let second = d.busyEnded()
-        #expect(!second, "presented once only")
+    static func reminder(_ events: UpdateReminder.Event...) -> UpdateReminder {
+        var r = UpdateReminder()
+        for e in events { r.apply(e) }
+        return r
     }
 
-    @Test func busyEndedWithoutADeferralDoesNothing() {
-        var d = UpdateDeferral()
-        let present = d.busyEnded()
-        #expect(!present)
-        #expect(d == UpdateDeferral())
+    @Test func nothingShowsUntilAnUpdateIsFound() {
+        let r = UpdateReminder()
+        #expect(r.version == nil && r.visibleVersion == nil && !r.isRecording)
+        #expect(Self.reminder(.notFound, .sessionEnded) == UpdateReminder())
+    }
+
+    @Test func aFoundUpdateShowsItsVersion() {
+        let r = Self.reminder(.found(version: "0.3.1"))
+        #expect(r.version == "0.3.1")
+        #expect(r.visibleVersion == "0.3.1")
+        #expect(Self.reminder(.found(version: "0.3.1"), .found(version: "0.3.2")).visibleVersion == "0.3.2", "the newest wins")
+    }
+
+    @Test func installingOrSkippingClearsIt() {
+        for choice in [UpdateReminder.Choice.install, .skip] {
+            #expect(Self.reminder(.found(version: "0.3.1"), .chose(choice)).visibleVersion == nil, "\(choice)")
+            #expect(Self.reminder(.found(version: "0.3.1"), .chose(choice), .sessionEnded).visibleVersion == nil, "\(choice)")
+        }
+    }
+
+    @Test func remindMeLaterKeepsItAfterTheSessionEnds() {
+        let later = Self.reminder(.found(version: "0.3.1"), .chose(.later), .sessionEnded)
+        #expect(later.visibleVersion == "0.3.1", "the update is still available")
+        // Only for that session: a later session that ends with no choice (an error, "You're up to date") clears it.
+        #expect(Self.reminder(.found(version: "0.3.1"), .chose(.later), .sessionEnded, .sessionEnded).visibleVersion == nil)
+        // A new check that finds it again starts over: the next choice decides.
+        let again = Self.reminder(.found(version: "0.3.1"), .chose(.later), .sessionEnded, .found(version: "0.3.1"))
+        #expect(again.visibleVersion == "0.3.1")
+        let againThenNothing = Self.reminder(.found(version: "0.3.1"), .chose(.later), .sessionEnded,
+                                             .found(version: "0.3.1"), .sessionEnded)
+        #expect(againThenNothing.visibleVersion == nil)
+    }
+
+    @Test func aSessionThatEndsWithoutAChoiceClearsIt() {
+        // An error during the download or the check, after the update was shown.
+        #expect(Self.reminder(.found(version: "0.3.1"), .sessionEnded).visibleVersion == nil)
+    }
+
+    @Test func noUpdateFoundClearsIt() {
+        // A later check finds nothing newer (the version was skipped, or withdrawn from the feed).
+        #expect(Self.reminder(.found(version: "0.3.1"), .chose(.later), .sessionEnded, .notFound).visibleVersion == nil)
+        #expect(Self.reminder(.found(version: "0.3.1"), .chose(.later), .notFound, .sessionEnded).visibleVersion == nil)
+    }
+
+    @Test func hiddenDuringARecordingAndShownWhenItStops() {
+        // Found while recording: nothing at all until the recording stops.
+        var r = Self.reminder(.recordingChanged(isRecording: true), .found(version: "0.3.1"))
+        #expect(r.version == "0.3.1")
+        #expect(r.visibleVersion == nil)
+        r.apply(.recordingChanged(isRecording: false))
+        #expect(r.visibleVersion == "0.3.1")
+        // Already showing when a recording starts: hidden for the recording, back afterwards.
+        r.apply(.recordingChanged(isRecording: true))
+        #expect(r.visibleVersion == nil)
+        r.apply(.recordingChanged(isRecording: false))
+        #expect(r.visibleVersion == "0.3.1")
+    }
+
+    @Test func choicesDuringARecordingStillCount() {
+        // Check for Updates… during a recording opens Sparkle's window; skipping there leaves nothing to show later.
+        let r = Self.reminder(.recordingChanged(isRecording: true), .found(version: "0.3.1"), .chose(.skip), .sessionEnded,
+                              .recordingChanged(isRecording: false))
+        #expect(r.visibleVersion == nil)
+        #expect(Self.reminder(.recordingChanged(isRecording: true), .recordingChanged(isRecording: false)) == UpdateReminder())
     }
 }

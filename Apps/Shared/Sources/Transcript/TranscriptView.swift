@@ -101,7 +101,9 @@ struct TranscriptView: View {
                         .accessibilityIdentifier(AX.Transcript.speakersPendingPill)
                 }
                 if state.turns.isEmpty {
-                    Text("Your transcript appears here in a moment.")
+                    // Waiting for setup can take a while (and longer if the app was left): never "in a moment" then.
+                    Text(waitsForSetup(recording)
+                         ? ProcessingViewState.modelsPlaceholder : "Your transcript appears here in a moment.")
                         .font(DS.Typo.cardBody)
                         .foregroundStyle(DS.Colour.secondary)
                         .accessibilityIdentifier(AX.Transcript.pendingPlaceholder)
@@ -146,6 +148,12 @@ struct TranscriptView: View {
         .navigationTitle(DisplayFormat.shortDate(recording.createdAt))
         .inlineNavigationTitle()
         .screenBackground()
+    }
+
+    /// The recording waits for the speech-model setup (the live reason first, as the panel reads it).
+    private func waitsForSetup(_ recording: Recording) -> Bool {
+        ProcessingViewState.queueReason(snapshot: env.monitor.snapshot(for: recording.id),
+                                        stored: recording.queueReason) == .modelsNotReady
     }
 
     /// iPhone: back to the Library. Mac: the transcript is the detail column's root (nothing to pop), so the panel

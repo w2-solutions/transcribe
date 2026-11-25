@@ -116,7 +116,12 @@ struct LibraryQueryTests {
 
         let waiting = LibraryCardStatus.make(stage: .queued, queueReason: .modelsNotReady, hasUnseenResult: false,
                                              duration: 24, snapshot: nil)
-        #expect(waiting.text == "Waiting for speech models")
+        #expect(waiting.text == "Waiting for setup")
+        if case .processing(_, let fraction) = waiting { #expect(fraction == 0, "nothing has started") }
+
+        let stuck = LibraryCardStatus.make(stage: .queued, queueReason: .modelsNotReady, hasUnseenResult: false,
+                                           duration: 24, snapshot: nil, setupFailed: true)
+        #expect(stuck.text == "Setup couldn't finish")
 
         let queued = LibraryCardStatus.make(stage: .queued, queueReason: nil, hasUnseenResult: false, duration: 24, snapshot: nil)
         #expect(queued.text == "Transcribing… 1/3")
@@ -149,6 +154,11 @@ struct LibraryQueryTests {
                 == LibraryCardPreview(text: "Hey, Karan.", isPlaceholder: false))
         #expect(LibraryCardPreview.make(previewText: "", stage: .transcribing, noSpeech: false)
                 == LibraryCardPreview(text: "Transcribing…", isPlaceholder: true))
+        // Waiting for setup: nothing is transcribing yet, so the preview never says it is.
+        #expect(LibraryCardPreview.make(previewText: "", stage: .queued, noSpeech: false, queueReason: .modelsNotReady)
+                == LibraryCardPreview(text: "Processed when setup finishes.", isPlaceholder: true))
+        #expect(LibraryCardPreview.make(previewText: "", stage: .queued, noSpeech: false, queueReason: .pausedForRecording).text
+                == "Transcribing…")
         #expect(LibraryCardPreview.make(previewText: " ", stage: .ready, noSpeech: true).text == "No speech found")
         #expect(LibraryCardPreview.make(previewText: "", stage: .capturing, noSpeech: false, platform: .iPhone).text
                 == "Tap to go back to the recording.")
