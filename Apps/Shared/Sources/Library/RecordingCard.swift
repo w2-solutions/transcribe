@@ -19,6 +19,12 @@ struct RecordingCard: View {
     static let waveformBars = 21
 
     var body: some View {
+        // Deleted (by sync from another device) while the row is still on screen, e.g. during its removal: it would
+        // only show stale values, so it shows nothing (`GoneModels`).
+        if !GoneModels.isGone(recording) { card }
+    }
+
+    @ViewBuilder private var card: some View {
         let status = LibraryCardStatus.make(stage: recording.stage, queueReason: recording.queueReason,
                                             hasUnseenResult: recording.hasUnseenResult, duration: recording.duration,
                                             snapshot: env.monitor.snapshot(for: recording.id),

@@ -26,6 +26,7 @@ struct RootView: View {
             switch sheet { case .nameSpeaker(let ctx): NameSpeakerSheet(context: ctx) }
         }
         .modifier(AutoCopyObserver())
+        .modifier(GoneModelObserver())
         .syncPrompts()
         // A system end while the recording screen is minimised: the recorder has already stopped and saved.
         // With the screen showing, RecordingView presents this alert instead.

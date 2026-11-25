@@ -95,6 +95,8 @@ struct MacSidebar: View {
         }
         .onChange(of: folders.map(\.id)) { _, ids in
             if case .folder(let id) = selection.sidebar, !ids.contains(id) { selection.sidebar = .all }
+            // Deleted by sync while its Delete prompt is open: the held folder is gone, close the prompt.
+            if let folder = pendingFolderDelete, GoneModels.isGone(folder) { pendingFolderDelete = nil }
         }
     }
 

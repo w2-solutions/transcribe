@@ -102,9 +102,16 @@ struct LibraryView: View {
         .onChange(of: folders.map(\.id)) { _, ids in
             if case .folder(let id) = query.filter, !ids.contains(id) { query.filter = .all }
         }
+        .onChange(of: recordings.map(\.id)) { _, ids in closePrompts(keeping: ids) }
         .onChange(of: isSearchPresented) { _, presented in
             if !presented { query.searchText = "" }
         }
+    }
+
+    /// A recording deleted (by sync) while its Rename or Delete prompt is open: the prompt closes.
+    private func closePrompts(keeping ids: [UUID]) {
+        if let id = pendingDelete?.id, !ids.contains(id) { pendingDelete = nil }
+        if let id = renaming?.id, !ids.contains(id) { renaming = nil }
     }
 
     // MARK: Toolbar
