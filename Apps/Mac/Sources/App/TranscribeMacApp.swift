@@ -11,6 +11,11 @@ import TranscribeMCPHost
     /// "Let Claude read transcripts": created and started here, before any window, so a background launch by the
     /// Claude helper serves straight away.
     @State private var claude: ClaudeAccess
+    /// In-app updates (Sparkle): created here, started the first time the app is active with the main window, or from
+    /// Settings or Check for Updates…. A background launch by the Claude helper opens the main window behind other
+    /// apps but does not start it. Off in Debug, fake-engine and UI-test runs. It follows the recorder itself, so a scheduled
+    /// update held back during a recording shows when the recording stops, whichever windows are open (D23).
+    @State private var updater: AppUpdater
     @State private var router = Router()
     @State private var selection = MacSelection()
     @State private var captureActivity = CaptureActivity()
@@ -44,14 +49,21 @@ import TranscribeMCPHost
         // A Claude app asked to read transcripts: bounce the Dock icon once (nothing happens while Transcribe is in
         // front), without bringing Transcribe forward. The request shows on the main window and in Settings → Claude.
         claude.onNewRequest = { _ = NSApplication.shared.requestUserAttention(.informationalRequest) }
+        let availability = UpdateAvailability.resolve(isDebugBuild: Self.isDebugBuild,
+            uiTesting: env.config.uiTesting, useFakeEngine: env.config.useFakeEngine,
+            feedURL: Bundle.main.infoDictionary?["SUFeedURL"] as? String,
+            publicKey: Bundle.main.infoDictionary?["SUPublicEDKey"] as? String)
+        let updater = AppUpdater(availability: availability, isBusy: { [env] in env.recorder.isActive })
+        env.updatesAvailable = availability == .on
         _env = State(initialValue: env)
         _claude = State(initialValue: claude)
+        _updater = State(initialValue: updater)
         Task { @MainActor in
             await claude.start()
             #if DEBUG
-            // The smoke script and the helper's fake launch may get no window (a background launch opens none), and
-            // the window is what runs onLaunch, so the session's seed would never apply. Run it here as well; it runs
-            // once, and a second caller waits for that run.
+            // The window is what runs onLaunch, and the seed of the smoke script and the helper's fake launch must not
+            // depend on one appearing (a background launch opens the main window behind other apps). Run it here as
+            // well; it runs once, and a second caller waits for that run.
             if env.config.mcpOn { await env.onLaunch() }
             #endif
         }
@@ -62,8 +74,12 @@ import TranscribeMCPHost
             MacRootView()
                 .frame(minWidth: 960, minHeight: 600)
                 .modifier(ClaudePairingAlert())
-                .modifier(SceneEnvironment(env: env, claude: claude, router: router, selection: selection))
+                .modifier(SceneEnvironment(env: env, claude: claude, updater: updater, router: router, selection: selection))
                 .onAppear { [env, captureActivity] in captureActivity.follow { env.recorder.isActive } }
+                // Only once Transcribe is in front: a background launch by the Claude helper also opens this window
+                // (behind other apps), and must not show Sparkle's prompt or start a scheduled check (D11). The
+                // activation below starts it otherwise.
+                .task { if NSApp.isActive { updater.startIfNeeded() } }
                 #if DEBUG
                 // `-seedCloudSchema`: complete the Development iCloud schema before a deploy (CloudSchemaSeeder).
                 .task {
@@ -76,6 +92,7 @@ import TranscribeMCPHost
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
                     PlatformServices.syncOnActivation(env, active: true)
+                    updater.startIfNeeded()
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.didResignActiveNotification)) { _ in
                     PlatformServices.syncOnActivation(env, active: false)
@@ -83,12 +100,12 @@ import TranscribeMCPHost
         }
         .defaultSize(width: 1280, height: 820)
         .windowResizability(.contentMinSize)
-        .commands { MacCommands(env: env, router: router, selection: selection) }
+        .commands { MacCommands(env: env, router: router, selection: selection, updater: updater) }
         .onChange(of: scenePhase) { _, p in Task { await env.onPhase(Self.appPhase(p)) } }
 
         Window("Recording", id: "recording") {
             MacRecordingWindow()
-                .modifier(SceneEnvironment(env: env, claude: claude, router: router, selection: selection))
+                .modifier(SceneEnvironment(env: env, claude: claude, updater: updater, router: router, selection: selection))
                 .onAppear { [env, captureActivity] in captureActivity.follow { env.recorder.isActive } }
                 #if DEBUG
                 // `-seedCloudSchema`: complete the Development iCloud schema before a deploy (CloudSchemaSeeder).
@@ -105,9 +122,19 @@ import TranscribeMCPHost
         Settings {
             MacSettingsRoot()
                 .frame(width: 520, height: 640)
-                .modifier(SceneEnvironment(env: env, claude: claude, router: router, selection: selection))
+                .modifier(SceneEnvironment(env: env, claude: claude, updater: updater, router: router, selection: selection))
+                .task { updater.startIfNeeded() }
         }
     }
+
+    /// Debug builds never run the updater, whatever their Info.plist says (D10).
+    private static let isDebugBuild: Bool = {
+        #if DEBUG
+        true
+        #else
+        false
+        #endif
+    }()
 
     private static func appPhase(_ p: ScenePhase) -> AppPhase {
         switch p {
@@ -118,11 +145,12 @@ import TranscribeMCPHost
     }
 }
 
-/// What every scene gets: the app environment, Claude access, the router, the Mac selection, the SwiftData container,
-/// tint and appearance, and (UI tests) no animations.
+/// What every scene gets: the app environment, Claude access, the updater, the router, the Mac selection, the SwiftData
+/// container, tint and appearance, and (UI tests) no animations.
 private struct SceneEnvironment: ViewModifier {
     let env: AppEnvironment
     let claude: ClaudeAccess
+    let updater: AppUpdater
     let router: Router
     let selection: MacSelection
 
@@ -130,6 +158,7 @@ private struct SceneEnvironment: ViewModifier {
         content
             .environment(env)
             .environment(claude)
+            .environment(updater)
             .environment(router)
             .environment(selection)
             .modelContainer(env.container)

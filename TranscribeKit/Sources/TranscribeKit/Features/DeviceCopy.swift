@@ -44,12 +44,17 @@ public struct DeviceCopy: Sendable, Equatable {
     public var cloudCopyKept: Bool
     /// Mac only: "Let Claude read transcripts" is on, so no privacy line may claim that nothing is shared (D20).
     public var claudeOn: Bool
+    /// Mac only: the Sparkle updater runs in this build, so the privacy wording says the app contacts w2solutions.ai
+    /// for updates. Ignored on the iPhone.
+    public var updatesAvailable: Bool
 
-    public init(platform: DevicePlatform = .current, syncOn: Bool = false, cloudCopyKept: Bool = false, claudeOn: Bool = false) {
+    public init(platform: DevicePlatform = .current, syncOn: Bool = false, cloudCopyKept: Bool = false, claudeOn: Bool = false,
+                updatesAvailable: Bool = false) {
         self.platform = platform
         self.syncOn = syncOn
         self.cloudCopyKept = cloudCopyKept && !syncOn
         self.claudeOn = claudeOn
+        self.updatesAvailable = updatesAvailable
     }
 
     private var noun: String { platform.noun }
@@ -127,24 +132,34 @@ public struct DeviceCopy: Sendable, Equatable {
     /// Settings → Privacy row value.
     public var privacyValue: String { syncOn || cloudCopyKept || claudeOn ? "Audio on this \(noun) only" : "On this \(noun) only" }
 
+    /// The update sentence of the privacy explanation (Mac with the updater only). It always comes before a branch's
+    /// closing absolute ("shares nothing else", "never shared"), never after it.
+    private var updateLine: String {
+        updatesAvailable && isMac
+            ? " Transcribe contacts w2solutions.ai only to check for updates and download them, and sends no recordings, transcripts or names."
+            : ""
+    }
+
     /// Settings → Privacy explanation.
     public var privacyDetail: String {
         let claudeLine = " Claude on this Mac can read your transcripts and speaker names, and what it reads is sent to Anthropic."
         if syncOn {
             let base = "Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles sync through your private iCloud. Speech is processed on each device."
-            if claudeOn { return base + claudeLine + " Transcribe shares nothing else." }
-            if isMac { return base + " Nothing is shared with anyone else." }
+            if claudeOn { return base + claudeLine + updateLine + " Transcribe shares nothing else." }
+            if isMac { return base + updateLine + " Nothing is shared with anyone else." }
             // The iPhone cannot see the Mac's switch, and synced transcripts can be read there.
             return base + " If you let Claude read transcripts on your Mac, synced transcripts can be read there too."
         }
         if cloudCopyKept {
             return "Sync is off. Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles synced earlier remain in your private iCloud and on your other devices until you remove them."
-                + (claudeOn ? claudeLine : "")
+                + (claudeOn ? claudeLine : "") + updateLine
         }
         if claudeOn {
-            return "Audio, transcripts and voice profiles are stored only on this \(noun)." + claudeLine + " Audio and voice samples are never shared."
+            return "Audio, transcripts and voice profiles are stored only on this \(noun)." + claudeLine + updateLine
+                + " Audio and voice samples are never shared."
         }
-        return "Audio, transcripts and voice profiles are stored only on this \(noun). Voice profiles are never synced or shared."
+        return "Audio, transcripts and voice profiles are stored only on this \(noun)." + updateLine
+            + " Voice profiles are never synced or shared."
     }
 
     /// The line under the Voices title.
@@ -154,9 +169,12 @@ public struct DeviceCopy: Sendable, Equatable {
             : "People Transcribe can recognise. Stored only on this device."
     }
 
-    /// Speech models screen, intro.
+    /// Speech models screen, intro. On a Mac that updates itself the models do arrive over the network, inside an app
+    /// update, so it says that instead of "Nothing is downloaded".
     public var modelsIntro: String {
-        "These come with Transcribe. Speech and speakers are processed on this \(noun), even offline. Nothing is downloaded."
+        updatesAvailable && isMac
+            ? "These come with Transcribe. Speech and speakers are processed on this Mac, even offline. They are never downloaded on their own; they change only with an app update."
+            : "These come with Transcribe. Speech and speakers are processed on this \(noun), even offline. Nothing is downloaded."
     }
 
     /// Speech models screen, ready status.

@@ -97,6 +97,9 @@ struct SettingsView: View {
                 // CLAUDE (Mac only): off by default. Its toasts use this screen's overlay, so they show wherever the
                 // list is scrolled.
                 ClaudeSettingsSection { showToast($0, systemImage: $1, id: AX.Claude.copiedToast) }
+
+                // UPDATES (Mac only): Sparkle's automatic-check switch, Check for Updates… and the version.
+                UpdatesSettingsSection()
                 #endif
 
                 // ABOUT
@@ -129,8 +132,11 @@ struct SettingsView: View {
                                 .accessibilityIdentifier(AX.Settings.privacyDetail)
                         }
                     }
+                    #if !os(macOS)
+                    // On the Mac the version sits in Settings → Updates.
                     ValueRow(systemImage: "info.circle", tint: .neutral, title: "Version", value: Self.versionText, accessory: .none)
                         .accessibilityIdentifier(AX.Settings.versionRow)
+                    #endif
                 }
 
                 HStack(spacing: 6) {

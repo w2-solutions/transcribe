@@ -4,10 +4,12 @@ import TranscribeDesign
 import TranscribeKit
 
 extension AppEnvironment {
-    /// Device wording with the sync switch (and, on the Mac, the Claude switch) applied ("Saved to your voices and
-    /// synced with iCloud", "Delete from all your devices?"). Shared views read their copy here so it follows them.
+    /// Device wording with the sync switch (and, on the Mac, the Claude switch and the updater) applied ("Saved to your
+    /// voices and synced with iCloud", "Delete from all your devices?"). Shared views read their copy here so it follows
+    /// them.
     var copy: DeviceCopy {
-        DeviceCopy(syncOn: sync != nil && settings.syncEnabled, cloudCopyKept: sync?.keepsCloudCopy ?? false, claudeOn: claudeAccessOn)
+        DeviceCopy(syncOn: sync != nil && settings.syncEnabled, cloudCopyKept: sync?.keepsCloudCopy ?? false, claudeOn: claudeAccessOn,
+                   updatesAvailable: updatesAvailable)
     }
 }
 

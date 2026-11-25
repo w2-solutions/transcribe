@@ -1,0 +1,35 @@
+# Fixture for scripts/tests/release-scripts-test.sh: the shape of project.yml that the release scripts read.
+# @IPHONE@, @MAC@ and @KEY@ are replaced per test case. The helper and the scheme carry decoys.
+name: Transcribe
+packages:
+  TranscribeKit:
+    path: TranscribeKit
+targets:
+  Transcribe:
+    type: application
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe
+        MARKETING_VERSION: "@IPHONE@"
+        CURRENT_PROJECT_VERSION: "1"
+  TranscribeMac:
+    type: application
+    settings:
+      base:
+        PRODUCT_NAME: Transcribe
+        MARKETING_VERSION: "@MAC@"
+        CURRENT_PROJECT_VERSION: "1"
+        TRANSCRIBE_FEED_URL: https://w2solutions.ai/transcribe/appcast.xml
+        # Public half of the Sparkle update key.
+        TRANSCRIBE_ED_PUBLIC_KEY: "@KEY@"
+  TranscribeMCPHelper:
+    type: tool
+    settings:
+      base:
+        MARKETING_VERSION: "9.9.8"
+        TRANSCRIBE_ED_PUBLIC_KEY: "decoy"
+schemes:
+  TranscribeMac:
+    build:
+      targets:
+        TranscribeMac: all

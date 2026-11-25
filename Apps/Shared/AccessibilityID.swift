@@ -259,6 +259,14 @@ enum AX {
         static let alertDeny = "claude.pairingAlert.deny"
     }
 
+    /// Software updates (Mac only): Settings → Updates.
+    enum Updates {
+        static let section = "settings.updates.section"
+        static let automatic = "settings.updates.automatic"
+        static let checkNow = "settings.updates.checkNow"
+        static let note = "settings.updates.note"
+    }
+
     enum ModelSettings {
         static let screen = "modelSettings.screen"
         static let speechRow = "modelSettings.speechRow"

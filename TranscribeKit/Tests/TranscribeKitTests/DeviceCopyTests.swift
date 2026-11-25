@@ -221,3 +221,97 @@ extension DeviceCopyTests {
         }
     }
 }
+
+/// In-app updates (Mac, §2 "Privacy wording"): with the updater on, every privacy explanation says the app contacts
+/// w2solutions.ai, before the branch's closing absolute; the iPhone and builds without the updater are unchanged.
+@Suite struct DeviceCopyUpdatesTests {
+    static let updateLine = " Transcribe contacts w2solutions.ai only to check for updates and download them, and sends no recordings, transcripts or names."
+    static let states: [(sync: Bool, kept: Bool, claude: Bool)] = [
+        (false, false, false), (false, false, true), (true, false, false), (true, false, true), (false, true, false), (false, true, true),
+    ]
+
+    @Test func everyMacPrivacyBranchCarriesTheUpdateLineBeforeItsClosingAbsolute() throws {
+        let absolutes = ["nothing else", "Nothing is shared", "never shared", "never synced or shared"]
+        for s in Self.states {
+            let c = DeviceCopy(platform: .mac, syncOn: s.sync, cloudCopyKept: s.kept, claudeOn: s.claude, updatesAvailable: true)
+            let detail = c.privacyDetail
+            let range = try #require(detail.range(of: Self.updateLine), "sync \(s.sync) kept \(s.kept) claude \(s.claude): \(detail)")
+            let after = String(detail[range.upperBound...])
+            let before = String(detail[..<range.lowerBound])
+            for phrase in absolutes {
+                #expect(!before.contains(phrase), "“\(phrase)” comes before the update line: \(detail)")
+            }
+            // The same text without the updater, with the update line taken out.
+            let off = DeviceCopy(platform: .mac, syncOn: s.sync, cloudCopyKept: s.kept, claudeOn: s.claude)
+            #expect(before + after == off.privacyDetail, "sync \(s.sync) kept \(s.kept) claude \(s.claude)")
+        }
+    }
+
+    @Test func exactMacPrivacyWithUpdates() {
+        #expect(DeviceCopy(platform: .mac, updatesAvailable: true).privacyDetail
+                == "Audio, transcripts and voice profiles are stored only on this Mac." + Self.updateLine
+                    + " Voice profiles are never synced or shared.")
+        let base = "Audio stays on this Mac. Transcripts, speaker labels, folders and voice profiles sync through your private iCloud. Speech is processed on each device."
+        #expect(DeviceCopy(platform: .mac, syncOn: true, updatesAvailable: true).privacyDetail
+                == base + Self.updateLine + " Nothing is shared with anyone else.")
+        #expect(DeviceCopy(platform: .mac, syncOn: true, claudeOn: true, updatesAvailable: true).privacyDetail
+                == base + DeviceCopyClaudeTests.claudeLine + Self.updateLine + " Transcribe shares nothing else.")
+        #expect(DeviceCopy(platform: .mac, cloudCopyKept: true, updatesAvailable: true).privacyDetail
+                == DeviceCopy(platform: .mac, cloudCopyKept: true).privacyDetail + Self.updateLine)
+        #expect(DeviceCopy(platform: .mac, claudeOn: true, updatesAvailable: true).privacyDetail
+                == "Audio, transcripts and voice profiles are stored only on this Mac." + DeviceCopyClaudeTests.claudeLine
+                    + Self.updateLine + " Audio and voice samples are never shared.")
+    }
+
+    @Test func iPhoneIgnoresUpdates() {
+        for platform in [DevicePlatform.iPhone, .iPad] {
+            for s in Self.states {
+                let off = DeviceCopy(platform: platform, syncOn: s.sync, cloudCopyKept: s.kept, claudeOn: s.claude)
+                let on = DeviceCopy(platform: platform, syncOn: s.sync, cloudCopyKept: s.kept, claudeOn: s.claude, updatesAvailable: true)
+                #expect(on.privacyDetail == off.privacyDetail)
+                #expect(on.modelsIntro == off.modelsIntro)
+                #expect(!on.privacyDetail.contains("w2solutions.ai"))
+            }
+        }
+    }
+
+    @Test func modelsIntroSaysUpdatesBringTheModelsOnTheMacOnly() {
+        let plain = "These come with Transcribe. Speech and speakers are processed on this Mac, even offline. Nothing is downloaded."
+        #expect(DeviceCopy(platform: .mac).modelsIntro == plain)
+        #expect(DeviceCopy(platform: .iPhone).modelsIntro
+                == "These come with Transcribe. Speech and speakers are processed on this iPhone, even offline. Nothing is downloaded.")
+        let mac = DeviceCopy(platform: .mac, updatesAvailable: true).modelsIntro
+        #expect(mac == "These come with Transcribe. Speech and speakers are processed on this Mac, even offline. They are never downloaded on their own; they change only with an app update.")
+        #expect(mac.contains("never downloaded on their own"))
+        #expect(!mac.contains("Nothing is downloaded"))
+    }
+
+    /// An update check uploads no user data, so the short absolutes stay; every other string is the same with the
+    /// updater on.
+    @Test func otherStringsAreUnchanged() {
+        for s in Self.states {
+            let off = DeviceCopy(platform: .mac, syncOn: s.sync, cloudCopyKept: s.kept, claudeOn: s.claude)
+            let on = DeviceCopy(platform: .mac, syncOn: s.sync, cloudCopyKept: s.kept, claudeOn: s.claude, updatesAvailable: true)
+            #expect(on.sidebarFooter == off.sidebarFooter)
+            #expect(on.nothingLeaves == off.nothingLeaves)
+            #expect(on.privacyValue == off.privacyValue)
+            #expect(on.voicesFooter == off.voicesFooter && on.voicesIntro == off.voicesIntro)
+            #expect(on.modelsReady == off.modelsReady && on.micDeniedBody == off.micDeniedBody)
+        }
+        #expect(DeviceCopy(platform: .mac, updatesAvailable: true).sidebarFooter == "On-device. Nothing is uploaded.")
+        #expect(DeviceCopy(platform: .mac) == DeviceCopy(platform: .mac, updatesAvailable: false))
+    }
+
+    /// The Claude rule still holds with the updater on: no string claims that nothing is shared.
+    @Test func claudeForbiddenPhrasesWithUpdates() {
+        let forbidden = ["nothing is shared", "Nothing is shared", "Nothing is uploaded", "Nothing leaves", "never synced or shared"]
+        for (sync, kept) in [(false, false), (true, false), (false, true)] {
+            let c = DeviceCopy(platform: .mac, syncOn: sync, cloudCopyKept: kept, claudeOn: true, updatesAvailable: true)
+            for text in [c.sidebarFooter, c.privacyValue, c.privacyDetail, c.nothingLeaves] {
+                for phrase in forbidden {
+                    #expect(!text.contains(phrase), "sync \(sync) kept \(kept): “\(text)” says “\(phrase)”")
+                }
+            }
+        }
+    }
+}

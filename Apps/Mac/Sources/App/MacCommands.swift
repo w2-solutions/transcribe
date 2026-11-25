@@ -9,14 +9,15 @@ extension FocusedValues {
     @Entry var macTranscriptID: UUID?
 }
 
-/// The Mac menu commands (§5): New Recording ⌘N, Stop Recording ⌘., Import Audio… ⌘O, Copy Transcript ⇧⌘C,
-/// Find ⌘F and Play/Pause. Space plays and pauses from the transcript itself (`onKeyPress` in `MacRootView`), so
-/// typing a space in a text field never toggles playback. Delete (⌫) is the recording list's `onDeleteCommand`;
-/// Settings (⌘,) is the system's.
+/// The Mac menu commands (§5): Check for Updates… (app menu, after About), New Recording ⌘N, Stop Recording ⌘.,
+/// Import Audio… ⌘O, Copy Transcript ⇧⌘C, Find ⌘F and Play/Pause. Space plays and pauses from the transcript itself
+/// (`onKeyPress` in `MacRootView`), so typing a space in a text field never toggles playback. Delete (⌫) is the
+/// recording list's `onDeleteCommand`; Settings (⌘,) is the system's.
 struct MacCommands: Commands {
     let env: AppEnvironment
     let router: Router
     let selection: MacSelection
+    let updater: AppUpdater
     @Environment(\.openWindow) private var openWindow
     @FocusedValue(\.macTranscriptID) private var focusedTranscript
 
@@ -24,6 +25,11 @@ struct MacCommands: Commands {
     private var transcriptID: UUID? { focusedTranscript }
 
     var body: some Commands {
+        // Always present; disabled while updates are off (Debug, test runs) or a check is already running.
+        CommandGroup(after: .appInfo) {
+            Button("Check for Updates…") { updater.checkForUpdates() }
+                .disabled(!updater.controlsEnabled)
+        }
         CommandGroup(replacing: .newItem) {
             Button("New Recording") { newRecording() }
                 .keyboardShortcut("n")
