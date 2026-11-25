@@ -27,10 +27,13 @@ public final class AppEnvironment {
     /// The launch's sync start (fetch, scan, send). It runs beside the rest of the launch, so a slow network never
     /// delays the library or the models.
     public private(set) var syncLaunch: Task<Void, Never>?
+    /// Mac only: "Let Claude read transcripts" is on (set by the Mac app's ClaudeAccess). Always false on iPhone.
+    public var claudeAccessOn = false
     public private(set) var isLaunched = false
     public private(set) var launchError: String?
 
     @ObservationIgnored private let seeder: Seeder?
+    @ObservationIgnored private var launchRun: Task<Void, Never>?
 
     public init(config: LaunchConfig, engine: any SpeechEngine, background: any BackgroundTaskBridge,
                 deviceIdentity: any DeviceIdentity, seeder: Seeder?, syncTransport: (any SyncTransport)? = nil) throws {
@@ -80,8 +83,16 @@ public final class AppEnvironment {
     /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.stampCaptureChannels →
     /// store.sweepOrphanAudio → models.refresh →
     /// coordinator.recoverOnLaunch → sync.start (its own task, when the switch is on) → models.prepareIfInstalled (detached)
-    /// → isLaunched = true.
+    /// → isLaunched = true. Runs once: a second caller (the Mac app's DEBUG Claude session start, beside the window's
+    /// task) waits for the same run instead of starting another.
     public func onLaunch() async {
+        if let launchRun { return await launchRun.value }
+        let run = Task { await launch() }
+        launchRun = run
+        await run.value
+    }
+
+    private func launch() async {
         guard !isLaunched else { return }
         do { try paths.prepare() } catch { launchError = "Couldn't prepare storage: \(error.localizedDescription)" }
         // Builds before bundling downloaded ~704 MB of models into Models/; they now ship in the app.

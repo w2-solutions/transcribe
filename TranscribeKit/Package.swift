@@ -12,6 +12,8 @@ let package = Package(
         .library(name: "TranscribeFluid", targets: ["TranscribeFluid"]),
         .library(name: "TranscribeFakes", targets: ["TranscribeFakes"]),
         .library(name: "TranscribeCloudKit", targets: ["TranscribeCloudKit"]),
+        .library(name: "TranscribeMCP", targets: ["TranscribeMCP"]),
+        .library(name: "TranscribeMCPHost", targets: ["TranscribeMCPHost"]),
     ],
     dependencies: [
         .package(url: "https://github.com/FluidInference/FluidAudio.git", exact: "0.18.4", traits: ["Diarizer"]),
@@ -28,9 +30,16 @@ let package = Package(
         // account observer. Everything else in sync is tested over the fake in TranscribeKitTests.
         .target(name: "TranscribeCloudKit", dependencies: ["TranscribeKit"],
                 linkerSettings: [.linkedFramework("CloudKit")]),
+        // Pure MCP: JSON-RPC, tool text, HMAC, the loopback HTTP server and the stdio bridge. Foundation, Network and
+        // CryptoKit only; linked by the Mac app and the transcribe-mcp helper. Never imports SwiftData or UI.
+        .target(name: "TranscribeMCP", dependencies: ["TranscribeCore"], linkerSettings: [.linkedFramework("Network")]),
+        // The Mac app's side: reads the SwiftData library into TranscribeMCP's DTOs and owns the switch, key and port.
+        .target(name: "TranscribeMCPHost", dependencies: ["TranscribeKit", "TranscribeMCP"]),
         .testTarget(name: "TranscribeCoreTests", dependencies: ["TranscribeCore"]),
         .testTarget(name: "TranscribeKitTests", dependencies: ["TranscribeKit", "TranscribeFakes"], resources: [.copy("Fixtures")]),
         .testTarget(name: "TranscribeCloudKitTests", dependencies: ["TranscribeCloudKit", "TranscribeKit", "TranscribeFakes"]),
+        .testTarget(name: "TranscribeMCPTests", dependencies: ["TranscribeMCP"]),
+        .testTarget(name: "TranscribeMCPHostTests", dependencies: ["TranscribeMCPHost", "TranscribeMCP", "TranscribeKit", "TranscribeFakes"]),
         .testTarget(name: "TranscribeFluidTests", dependencies: ["TranscribeFluid"], resources: [.copy("Fixtures")]),
     ],
     swiftLanguageModes: [.v6]   // NO .defaultIsolation(MainActor.self): toolchain pitfall 2

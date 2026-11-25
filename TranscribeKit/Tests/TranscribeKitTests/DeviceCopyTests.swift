@@ -132,3 +132,92 @@ extension DeviceCopyTests {
         #expect(DeviceCopy(platform: .mac, syncOn: true, cloudCopyKept: true) == DeviceCopy(platform: .mac, syncOn: true))
     }
 }
+
+/// "Let Claude read transcripts" (Mac, D20, §2.2): with the switch on, no privacy line may say that nothing is shared.
+@Suite struct DeviceCopyClaudeTests {
+    static let claudeLine = " Claude on this Mac can read your transcripts and speaker names, and what it reads is sent to Anthropic."
+
+    @Test func claudeOnSidebarFooterAllRows() {
+        let rows: [(sync: Bool, kept: Bool, claude: Bool, text: String)] = [
+            (true, false, true, "On-device · synced with iCloud · Claude can read"),
+            (true, false, false, "Transcribed on-device · synced with iCloud"),
+            (false, true, true, "Not syncing · a copy remains in iCloud · Claude can read"),
+            (false, true, false, "Not syncing. A copy remains in your iCloud."),
+            (false, false, true, "On-device. Claude can read transcripts."),
+            (false, false, false, "On-device. Nothing is uploaded."),
+        ]
+        for row in rows {
+            let c = DeviceCopy(platform: .mac, syncOn: row.sync, cloudCopyKept: row.kept, claudeOn: row.claude)
+            #expect(c.sidebarFooter == row.text, "sync \(row.sync) kept \(row.kept) claude \(row.claude)")
+        }
+        // The kept flag means nothing while sync is on, with or without Claude.
+        #expect(DeviceCopy(platform: .mac, syncOn: true, cloudCopyKept: true, claudeOn: true).sidebarFooter
+                == "On-device · synced with iCloud · Claude can read")
+    }
+
+    @Test func claudeOnPrivacyValue() {
+        #expect(DeviceCopy(platform: .mac, claudeOn: true).privacyValue == "Audio on this Mac only")
+        #expect(DeviceCopy(platform: .mac, syncOn: true, claudeOn: true).privacyValue == "Audio on this Mac only")
+        #expect(DeviceCopy(platform: .mac, cloudCopyKept: true, claudeOn: true).privacyValue == "Audio on this Mac only")
+        #expect(DeviceCopy(platform: .mac).privacyValue == "On this Mac only")
+    }
+
+    @Test func claudeOnPrivacyDetailEachBranch() {
+        let base = "Audio stays on this Mac. Transcripts, speaker labels, folders and voice profiles sync through your private iCloud. Speech is processed on each device."
+        #expect(DeviceCopy(platform: .mac, syncOn: true, claudeOn: true).privacyDetail
+                == base + Self.claudeLine + " Transcribe shares nothing else.")
+        #expect(DeviceCopy(platform: .mac, syncOn: true).privacyDetail == base + " Nothing is shared with anyone else.")
+        let kept = DeviceCopy(platform: .mac, cloudCopyKept: true)
+        #expect(DeviceCopy(platform: .mac, cloudCopyKept: true, claudeOn: true).privacyDetail == kept.privacyDetail + Self.claudeLine)
+        #expect(DeviceCopy(platform: .mac, claudeOn: true).privacyDetail
+                == "Audio, transcripts and voice profiles are stored only on this Mac." + Self.claudeLine
+                    + " Audio and voice samples are never shared.")
+    }
+
+    @Test func claudeOnNothingLeaves() {
+        #expect(DeviceCopy(platform: .mac, claudeOn: true).nothingLeaves == "Processed on this Mac")
+        #expect(DeviceCopy(platform: .mac, syncOn: true, claudeOn: true).nothingLeaves == "Processed on this Mac")
+        #expect(DeviceCopy(platform: .mac).nothingLeaves == "Nothing leaves this Mac")
+    }
+
+    /// With the switch off, every string is what it was before Claude access; the strings Claude does not touch stay
+    /// the same with it on.
+    @Test func claudeOffUnchanged() {
+        let mac = DeviceCopy(platform: .mac)
+        #expect(mac.sidebarFooter == "On-device. Nothing is uploaded.")
+        #expect(mac.privacyValue == "On this Mac only")
+        #expect(mac.privacyDetail == "Audio, transcripts and voice profiles are stored only on this Mac. Voice profiles are never synced or shared.")
+        #expect(mac.nothingLeaves == "Nothing leaves this Mac")
+        #expect(DeviceCopy(platform: .mac, syncOn: true).privacyDetail.hasSuffix(" Nothing is shared with anyone else."))
+        #expect(DeviceCopy(platform: .mac, claudeOn: false) == mac)
+        for platform in DevicePlatform.allCases {
+            for (sync, kept) in [(false, false), (true, false), (false, true)] {
+                let off = DeviceCopy(platform: platform, syncOn: sync, cloudCopyKept: kept)
+                let on = DeviceCopy(platform: platform, syncOn: sync, cloudCopyKept: kept, claudeOn: true)
+                #expect(on.voicesFooter == off.voicesFooter && on.voicesIntro == off.voicesIntro)
+                #expect(on.modelsIntro == off.modelsIntro && on.modelsReady == off.modelsReady)
+                #expect(on.micDeniedBody == off.micDeniedBody)
+            }
+        }
+    }
+
+    @Test func iPhoneSyncOnMentionsClaudeOnMacAndNotNothingShared() {
+        let c = DeviceCopy(platform: .iPhone, syncOn: true)
+        #expect(c.privacyDetail.hasSuffix(" If you let Claude read transcripts on your Mac, synced transcripts can be read there too."))
+        #expect(!c.privacyDetail.lowercased().contains("nothing is shared"))
+    }
+
+    @Test func noClaudeOnStringClaimsNothingShared() {
+        let forbidden = ["nothing is shared", "Nothing is shared", "Nothing is uploaded", "Nothing leaves", "never synced or shared"]
+        for platform in DevicePlatform.allCases {
+            for (sync, kept) in [(false, false), (true, false), (false, true), (true, true)] {
+                let c = DeviceCopy(platform: platform, syncOn: sync, cloudCopyKept: kept, claudeOn: true)
+                for text in [c.sidebarFooter, c.privacyValue, c.privacyDetail, c.nothingLeaves] {
+                    for phrase in forbidden {
+                        #expect(!text.contains(phrase), "\(platform) sync \(sync) kept \(kept): “\(text)” says “\(phrase)”")
+                    }
+                }
+            }
+        }
+    }
+}

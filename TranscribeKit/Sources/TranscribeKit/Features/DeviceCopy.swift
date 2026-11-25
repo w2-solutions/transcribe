@@ -42,11 +42,14 @@ public struct DeviceCopy: Sendable, Equatable {
     /// Sync is off but an iCloud copy was kept ("Keep the iCloud Copy"): transcripts and voices synced earlier are still
     /// in iCloud and on the other devices. Ignored while sync is on.
     public var cloudCopyKept: Bool
+    /// Mac only: "Let Claude read transcripts" is on, so no privacy line may claim that nothing is shared (D20).
+    public var claudeOn: Bool
 
-    public init(platform: DevicePlatform = .current, syncOn: Bool = false, cloudCopyKept: Bool = false) {
+    public init(platform: DevicePlatform = .current, syncOn: Bool = false, cloudCopyKept: Bool = false, claudeOn: Bool = false) {
         self.platform = platform
         self.syncOn = syncOn
         self.cloudCopyKept = cloudCopyKept && !syncOn
+        self.claudeOn = claudeOn
     }
 
     private var noun: String { platform.noun }
@@ -91,8 +94,11 @@ public struct DeviceCopy: Sendable, Equatable {
 
     /// The Mac sidebar's footer.
     public var sidebarFooter: String {
-        syncOn ? "Transcribed on-device · synced with iCloud"
-            : cloudCopyKept ? "Not syncing. A copy remains in your iCloud." : "On-device. Nothing is uploaded."
+        if syncOn { return claudeOn ? "On-device · synced with iCloud · Claude can read" : "Transcribed on-device · synced with iCloud" }
+        if cloudCopyKept {
+            return claudeOn ? "Not syncing · a copy remains in iCloud · Claude can read" : "Not syncing. A copy remains in your iCloud."
+        }
+        return claudeOn ? "On-device. Claude can read transcripts." : "On-device. Nothing is uploaded."
     }
 
     /// Asking about a voice that was named on another device.
@@ -119,15 +125,24 @@ public struct DeviceCopy: Sendable, Equatable {
     public var attributionsIntro: String { "Transcribe runs these models and libraries on your \(noun)." }
 
     /// Settings → Privacy row value.
-    public var privacyValue: String { syncOn || cloudCopyKept ? "Audio on this \(noun) only" : "On this \(noun) only" }
+    public var privacyValue: String { syncOn || cloudCopyKept || claudeOn ? "Audio on this \(noun) only" : "On this \(noun) only" }
 
     /// Settings → Privacy explanation.
     public var privacyDetail: String {
+        let claudeLine = " Claude on this Mac can read your transcripts and speaker names, and what it reads is sent to Anthropic."
         if syncOn {
-            return "Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles sync through your private iCloud. Speech is processed on each device; nothing is shared with anyone else."
+            let base = "Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles sync through your private iCloud. Speech is processed on each device."
+            if claudeOn { return base + claudeLine + " Transcribe shares nothing else." }
+            if isMac { return base + " Nothing is shared with anyone else." }
+            // The iPhone cannot see the Mac's switch, and synced transcripts can be read there.
+            return base + " If you let Claude read transcripts on your Mac, synced transcripts can be read there too."
         }
         if cloudCopyKept {
             return "Sync is off. Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles synced earlier remain in your private iCloud and on your other devices until you remove them."
+                + (claudeOn ? claudeLine : "")
+        }
+        if claudeOn {
+            return "Audio, transcripts and voice profiles are stored only on this \(noun)." + claudeLine + " Audio and voice samples are never shared."
         }
         return "Audio, transcripts and voice profiles are stored only on this \(noun). Voice profiles are never synced or shared."
     }
@@ -151,7 +166,7 @@ public struct DeviceCopy: Sendable, Equatable {
     public var lowStorageStop: String { "Recording stopped — \(noun) storage is almost full" }
 
     /// Processing panel footnote.
-    public var nothingLeaves: String { syncOn ? "Processed on this \(noun)" : "Nothing leaves this \(noun)" }
+    public var nothingLeaves: String { syncOn || claudeOn ? "Processed on this \(noun)" : "Nothing leaves this \(noun)" }
 
     /// Microphone denied sheet.
     public var micDeniedBody: String { "Transcribe needs the microphone to record. Audio stays on this \(noun)." }
