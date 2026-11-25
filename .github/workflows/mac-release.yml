@@ -9,6 +9,10 @@
 #   dry-run   a manual run with publish off: a TEST build signed with a throwaway key made for the run; uploads
 #             nothing; keeps only latest.json, appcast.xml and the notary log as artefacts. Needs a version above
 #             0.2.0 with its notes: dispatch it from the version-bump branch
+# Delta updates: a release (and a dry run) also makes a Sparkle delta from the published version
+# (fetch-published-mac.sh, checked against the committed key, then make-mac-delta.sh, which applies it and compares),
+# so copies on that version download a few MB instead of the whole DMG. If that fails the release goes ahead without
+# a delta (a warning): every copy then downloads the DMG, as before.
 # A published version is never rebuilt: a fix ships as a higher version. Re-run a failed release with
 #   gh workflow run mac-release.yml --ref main -f publish=true
 # not "Re-run failed jobs", which reuses the old decision (the release job decides again and stops if it changed).
@@ -149,15 +153,23 @@ jobs:
           RELEASE_PROVISIONING_AUTH=api ASC_KEY_PATH="$RUNNER_TEMP/asc/AuthKey.p8" DERIVED="$RUNNER_TEMP/mac-release" \
             FROM="$MODELS" TRANSCRIBE_ED_PUBLIC_KEY="$TEST_PUB" ./scripts/release-mac.sh "${ARGS[@]}"
 
+      - name: Delta from the published release
+        run: ./scripts/ci-mac-delta.sh "dist/Transcribe-$V-TEST.dmg" "$RUNNER_TEMP/previous" "$RUNNER_TEMP/mac-release"
+
       - name: EdDSA-sign with the throwaway key
-        run: SPARKLE_ED_PRIVATE_KEY="$(cat "$RUNNER_TEMP/dry/seed")" ./scripts/sign-mac-release.sh --test "dist/Transcribe-$V-TEST.dmg"
+        run: |
+          ARGS=()
+          for d in dist/Transcribe-*-"$V".delta; do [ -f "$d" ] && ARGS+=(--delta "$d"); done
+          SPARKLE_ED_PRIVATE_KEY="$(cat "$RUNNER_TEMP/dry/seed")" ./scripts/sign-mac-release.sh --test ${ARGS[@]+"${ARGS[@]}"} "dist/Transcribe-$V-TEST.dmg"
 
       - name: Write the pointers to a local folder
         env:
           TEST_PUB: ${{ steps.seed.outputs.pub }}
         run: |
+          ARGS=()
+          for d in dist/Transcribe-*-"$V".delta; do [ -f "$d" ] && ARGS+=(--delta "$d"); done
           ./scripts/publish-mac.sh --release "dist/Transcribe-$V-TEST.latest.json" --dmg "dist/Transcribe-$V-TEST.dmg" \
-            --appcast "dist/Transcribe-$V-TEST.appcast.xml" --dest "dir:$RUNNER_TEMP/dry-bucket" --public-key "$TEST_PUB"
+            ${ARGS[@]+"${ARGS[@]}"} --appcast "dist/Transcribe-$V-TEST.appcast.xml" --dest "dir:$RUNNER_TEMP/dry-bucket" --public-key "$TEST_PUB"
 
       # Never a DMG (a public repo's artefacts are downloadable) and never the seed.
       - name: Keep the pointers and the notary log
@@ -174,8 +186,8 @@ jobs:
       - name: Delete the key, the DMGs and the build
         if: always()
         run: |
-          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/dry" "$RUNNER_TEMP/dry-bucket" "$RUNNER_TEMP/mac-release"
-          rm -f dist/*.dmg dist/*.latest.json dist/*.appcast.xml
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/dry" "$RUNNER_TEMP/dry-bucket" "$RUNNER_TEMP/mac-release" "$RUNNER_TEMP/previous"
+          rm -f dist/*.dmg dist/*.delta dist/*.latest.json dist/*.appcast.xml
 
   release:
     needs: gate
@@ -290,11 +302,19 @@ jobs:
           RELEASE_PROVISIONING_AUTH=api ASC_KEY_PATH="$RUNNER_TEMP/asc/AuthKey.p8" DERIVED="$RUNNER_TEMP/mac-release" \
             FROM="$MODELS" ./scripts/release-mac.sh
 
+      # No key and no token: the published DMG comes through the site and is checked against the committed key.
+      - name: Delta from the published release
+        if: env.MODE == 'release'
+        run: ./scripts/ci-mac-delta.sh "dist/Transcribe-$V.dmg" "$RUNNER_TEMP/previous" "$RUNNER_TEMP/mac-release"
+
       - name: EdDSA-sign
         if: env.MODE == 'release'
         env:
           SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
-        run: ./scripts/sign-mac-release.sh "dist/Transcribe-$V.dmg"
+        run: |
+          ARGS=()
+          for d in dist/Transcribe-*-"$V".delta; do [ -f "$d" ] && ARGS+=(--delta "$d"); done
+          ./scripts/sign-mac-release.sh ${ARGS[@]+"${ARGS[@]}"} "dist/Transcribe-$V.dmg"
 
       - name: Publish
         if: env.MODE == 'release'
@@ -304,8 +324,10 @@ jobs:
           R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
           R2_BUCKET: ${{ vars.R2_BUCKET }}
         run: |
+          ARGS=()
+          for d in dist/Transcribe-*-"$V".delta; do [ -f "$d" ] && ARGS+=(--delta "$d"); done
           ./scripts/publish-mac.sh --release "dist/Transcribe-$V.latest.json" --dmg "dist/Transcribe-$V.dmg" \
-            --appcast "dist/Transcribe-$V.appcast.xml"
+            ${ARGS[@]+"${ARGS[@]}"} --appcast "dist/Transcribe-$V.appcast.xml"
 
       # Resume: the bucket's latest.json is the record. It is read from the bucket (never through the site), must be
       # project.yml's version, and its DMG must verify against the committed key, before the update key signs a feed
@@ -349,5 +371,5 @@ jobs:
       - name: Delete the API key and the build
         if: always()
         run: |
-          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/mac-release"
-          rm -f dist/*.dmg dist/*.latest.json dist/*.appcast.xml
+          rm -rf "$RUNNER_TEMP/asc" "$RUNNER_TEMP/mac-release" "$RUNNER_TEMP/previous"
+          rm -f dist/*.dmg dist/*.delta dist/*.latest.json dist/*.appcast.xml

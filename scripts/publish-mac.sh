@@ -3,17 +3,20 @@
 # reader consistent: upload and verify the DMG; switch the page (latest.json) and check it through the public site;
 # switch the update feed (appcast.xml) and check it; then delete older DMGs. Needs no private key.
 #
-#   publish-mac.sh --release <latest.json> --dmg <dmg> --appcast <appcast.xml> [--dest s3|dir:<path>] [--public-key KEY]
+#   publish-mac.sh --release <latest.json> --dmg <dmg> [--delta <file>]... --appcast <appcast.xml> [--dest s3|dir:<path>]
+#                  [--public-key KEY]
 #   publish-mac.sh --resume <latest.json> --appcast <appcast.xml> [--dest s3|dir:<path>] [--public-key KEY]
 #   publish-mac.sh --resume-check <out.json> [--dest s3|dir:<path>] [--public-key KEY]
 #
-# --release publishes a new version: its build must be higher than the published one (and than 0.2.0's 200).
+# --release publishes a new version: its build must be higher than the published one (and than 0.2.0's 200). Every
+# delta update latest.json lists ("deltas", from sign-mac-release.sh --delta) is given with --delta, uploaded and
+# verified after the DMG and, with s3, checked through the site before latest.json changes.
 # --resume repairs a release that stopped part-way: <latest.json> must equal the bucket's byte for byte and be
 # project.yml's version; the feed is written only if the bucket's is missing, badly signed or for another release;
 # older DMGs are deleted.
 # --resume-check runs before a resume signs a feed, and changes nothing: the bucket's latest.json (read from the
 # bucket, never through the site) must be valid and project.yml's version, and its DMG must have that size, sha256
-# and signature. Writes that latest.json to <out.json>, the only file sign-mac-release.sh --feed-from may sign.
+# and signature, and so must every delta it lists. Writes that latest.json to <out.json>, the only file sign-mac-release.sh --feed-from may sign.
 #
 # Destinations: s3 (default) is the R2 bucket through its S3 API, with public checks through the site. dir:<path>
 # keeps objects in a local folder (<path>/<key>, metadata in <path>/<key>.meta.json) and makes no network call; it is
@@ -23,7 +26,8 @@
 # Env (s3): R2_ACCESS_KEY_ID R2_SECRET_ACCESS_KEY R2_ACCOUNT_ID R2_BUCKET; BASE_URL (default https://w2solutions.ai)
 # Env (tests only): PROJECT (the project.yml to read; default the repo's), TRANSCRIBE_TEST_AWS_CLI (a stand-in for
 # /usr/local/bin/aws)
-# Rule: a DMG that latest.json or the appcast refers to is never overwritten.
+# Rule: a DMG or delta that latest.json or the appcast refers to is never overwritten. The bucket keeps only the
+# current DMG and its deltas (from the version before).
 # Exit: 0 published (or nothing to do); 1 failed (nothing public changed, or the pointer was put back); 2 usage;
 #       4 refused
 # Runs on macOS /bin/bash 3.2; needs Xcode (xcrun swift), jq, xmllint, curl and (s3) /usr/local/bin/aws.
@@ -42,7 +46,7 @@ APPCAST_KEY=transcribe/appcast.xml
 RERUN="gh workflow run mac-release.yml --ref main -f publish=true"
 
 usage() {
-  sed -n '2,30s/^# \{0,1\}//p' "$SELF" >&2
+  sed -n '2,35s/^# \{0,1\}//p' "$SELF" >&2
   exit 2
 }
 fail() {
@@ -61,6 +65,7 @@ DMG=""
 APPCAST=""
 DEST=s3
 PUBKEY=""
+DELTAS=()
 while [ $# -gt 0 ]; do
   [ $# -ge 2 ] || usage
   case "$1" in
@@ -70,6 +75,7 @@ while [ $# -gt 0 ]; do
       RELEASE="$2"
       ;;
     --dmg) DMG="$2" ;;
+    --delta) DELTAS+=("$2") ;;
     --appcast) APPCAST="$2" ;;
     --dest) DEST="$2" ;;
     --public-key) PUBKEY="$2" ;;
@@ -79,7 +85,7 @@ while [ $# -gt 0 ]; do
 done
 [ -n "$MODE" ] && [ -n "$RELEASE" ] || usage
 if [ "$MODE" = resume-check ]; then [ -z "$APPCAST" ] || usage; else [ -n "$APPCAST" ] || usage; fi
-if [ "$MODE" = release ]; then [ -n "$DMG" ] || usage; else [ -z "$DMG" ] || usage; fi
+if [ "$MODE" = release ]; then [ -n "$DMG" ] || usage; else [ -z "$DMG" ] && [ ${#DELTAS[@]} -eq 0 ] || usage; fi
 case "$DEST" in
   s3) [ -z "$PUBKEY" ] || { echo "error: --public-key is only for dir: destinations" >&2; exit 2; } ;;
   dir:?*) DIR="${DEST#dir:}" ;;
@@ -223,8 +229,21 @@ valid_release() {
     and (.build | type == "number" and . > 0 and . == floor)
     and ((.version | split(".") | map(tonumber)) as [$a, $b, $c] | $b < 100 and $c < 100 and .build == $a * 10000 + $b * 100 + $c)
     and (.edSignature | type == "string" and test("^[A-Za-z0-9+/]{86}==$"))
+    and ((has("deltas") | not) or (.version as $v | .build as $b | .deltas | type == "array" and length > 0
+      and (([.[].fromBuild] | unique | length) == length)
+      and all(.[];
+        (.from | type == "string" and test("^[0-9]{1,4}\\.[0-9]{1,4}\\.[0-9]{1,4}$"))
+        and (.fromBuild | type == "number" and . > 0 and . == floor and . < $b)
+        and ((.from | split(".") | map(tonumber)) as [$x, $y, $z] | $y < 100 and $z < 100 and .fromBuild == $x * 10000 + $y * 100 + $z)
+        and (.file == "Transcribe-" + .from + "-" + $v + ".delta") and (.key == "transcribe/" + .file)
+        and (.bytes | type == "number" and . > 0 and . == floor and . <= 9007199254740991)
+        and (.sha256 | type == "string" and test("^[0-9a-f]{64}$"))
+        and (.edSignature | type == "string" and test("^[A-Za-z0-9+/]{86}==$")))))
   ' "$1" >/dev/null 2>&1
 }
+
+# delta_lines RELEASE_JSON: one line per delta: "<key> <file> <bytes> <sha256> <edSignature> <fromBuild> <from>".
+delta_lines() { jq -r '.deltas // [] | .[] | "\(.key) \(.file) \(.bytes) \(.sha256) \(.edSignature) \(.fromBuild) \(.from)"' "$1"; }
 
 # appcast_agrees APPCAST RELEASE_JSON: a single item whose version, build, length, signature and enclosure URL are
 # the release's (the enclosure is $BASE_URL/transcribe/download/<file> with s3; it ends in /<file> with dir:).
@@ -242,10 +261,30 @@ appcast_agrees() {
   [ "$(xp "string(//*[local-name()='enclosure']/@*[local-name()='edSignature'])")" = "$(jq -r .edSignature "$json")" ] ||
     { echo "edSignature differs"; return 1; }
   url="$(xp "string(//*[local-name()='enclosure']/@url)")"
+  url_ok "$url" "$(jq -r .file "$json")" || { echo "enclosure URL is $url"; return 1; }
+  # The deltas: exactly the release's, each under <sparkle:deltas> with its build, length, signature and URL.
+  [ "$(xp "count(//*[local-name()='enclosure'])")" = "$((1 + $(jq '.deltas // [] | length' "$json")))" ] ||
+    { echo "the number of enclosures is not 1 + the deltas"; return 1; }
+  [ "$(xp "count(//*[local-name()='item']/*[local-name()='deltas']/*[local-name()='enclosure'])")" = "$(jq '.deltas // [] | length' "$json")" ] ||
+    { echo "the deltas are not all under <sparkle:deltas>"; return 1; }
+  local key file bytes sha sig fbuild from e
+  while read -r key file bytes sha sig fbuild from; do
+    [ -n "$key" ] || continue
+    e="//*[local-name()='deltas']/*[local-name()='enclosure'][@*[local-name()='deltaFrom']='$fbuild']"
+    [ "$(xp "count($e)")" = 1 ] || { echo "no single delta from build $fbuild"; return 1; }
+    [ "$(xp "string($e/@length)")" = "$bytes" ] || { echo "the delta from $from: length differs"; return 1; }
+    [ "$(xp "string($e/@*[local-name()='edSignature'])")" = "$sig" ] || { echo "the delta from $from: edSignature differs"; return 1; }
+    url="$(xp "string($e/@url)")"
+    url_ok "$url" "$file" || { echo "the delta from $from: enclosure URL is $url"; return 1; }
+  done < <(delta_lines "$json")
+}
+
+# url_ok URL FILE: the enclosure URL of FILE ($BASE_URL/transcribe/download/<file> with s3; ending in /<file> with dir:).
+url_ok() {
   if [ "$DEST" = s3 ]; then
-    [ "$url" = "$BASE_URL/transcribe/download/$(jq -r .file "$json")" ] || { echo "enclosure URL is $url"; return 1; }
+    [ "$1" = "$BASE_URL/transcribe/download/$2" ]
   else
-    case "$url" in */"$(jq -r .file "$json")") ;; *) echo "enclosure URL is $url"; return 1 ;; esac
+    case "$1" in */"$2") ;; *) return 1 ;; esac
   fi
 }
 
@@ -256,20 +295,40 @@ check_feed() {
   why="$(appcast_agrees "$1" "$2")" || fail "$3 does not match the release: $why"
 }
 
-# verify_stored_dmg KEY RELEASE_JSON: head (size, metadata) and a full read-back (sha256, Ed25519).
-verify_stored_dmg() {
-  local head bytes sha
+# verify_stored KEY BYTES SHA256 EDSIGNATURE: head (size, metadata) and a full read-back (sha256, Ed25519).
+verify_stored() {
+  local head
   head="$(store_head "$1")" || fail "$1 is not in the bucket"
-  bytes="$(jq -r .bytes "$2")"
-  sha="$(jq -r .sha256 "$2")"
-  [ "${head%% *}" = "$bytes" ] || fail "$1 is ${head%% *} bytes in the bucket, expected $bytes"
-  [ "${head#* }" = "$sha" ] || fail "$1 has metadata sha256 '${head#* }', expected $sha"
-  store_get "$1" "$WORK/readback.dmg" || fail "could not read back $1"
-  [ "$(shasum -a 256 "$WORK/readback.dmg" | cut -d ' ' -f 1)" = "$sha" ] || fail "the read-back of $1 has the wrong sha256"
-  ed verify "$PUBKEY" "$(jq -r .edSignature "$2")" "$WORK/readback.dmg" ||
-    fail "the read-back of $1 does not verify against $PUBKEY"
-  rm -f "$WORK/readback.dmg"
-  echo "    $1: $bytes bytes, sha256 $sha, EdDSA verified on the read-back"
+  [ "${head%% *}" = "$2" ] || fail "$1 is ${head%% *} bytes in the bucket, expected $2"
+  [ "${head#* }" = "$3" ] || fail "$1 has metadata sha256 '${head#* }', expected $3"
+  store_get "$1" "$WORK/readback" || fail "could not read back $1"
+  [ "$(shasum -a 256 "$WORK/readback" | cut -d ' ' -f 1)" = "$3" ] || fail "the read-back of $1 has the wrong sha256"
+  ed verify "$PUBKEY" "$4" "$WORK/readback" || fail "the read-back of $1 does not verify against $PUBKEY"
+  rm -f "$WORK/readback"
+  echo "    $1: $2 bytes, sha256 $3, EdDSA verified on the read-back"
+}
+
+# verify_stored_dmg KEY RELEASE_JSON: the release's DMG.
+verify_stored_dmg() { verify_stored "$1" "$(jq -r .bytes "$2")" "$(jq -r .sha256 "$2")" "$(jq -r .edSignature "$2")"; }
+
+# verify_stored_deltas RELEASE_JSON: every delta the release lists.
+verify_stored_deltas() {
+  local key file bytes sha sig fbuild from
+  while read -r key file bytes sha sig fbuild from; do
+    [ -n "$key" ] || continue
+    verify_stored "$key" "$bytes" "$sha" "$sig"
+  done < <(delta_lines "$1")
+}
+
+# public_deltas_ok RELEASE_JSON: through the site, every delta's bytes hash right. s3 only.
+public_deltas_ok() {
+  local key file bytes sha sig fbuild from
+  while read -r key file bytes sha sig fbuild from; do
+    [ -n "$key" ] || continue
+    [ "$(curl --retry 3 -fsS "$BASE_URL/transcribe/download/$file" | shasum -a 256 | cut -d ' ' -f 1)" = "$sha" ] ||
+      { echo "the public $file is missing or has the wrong sha256"; return 1; }
+    echo "    public: $file, sha256"
+  done < <(delta_lines "$1")
 }
 
 # public_page_ok RELEASE_JSON: through the site, latest.json is these bytes, the page shows the version, and
@@ -327,36 +386,39 @@ write_feed() {
   fi
 }
 
-# clean_up: P8. Deletes every older DMG, then asserts the final set.
+# clean_up RELEASE_JSON: P8. Deletes every DMG and delta the release does not refer to, then asserts the final set.
 clean_up() {
-  local current="$1" key left="" others=""
-  step "Delete older DMGs"
+  local current key left="" others="" keep
+  current="$(jq -r .key "$1")"
+  keep=" $current $(jq -r '[.deltas // [] | .[].key] | join(" ")' "$1") "
+  step "Delete older DMGs and deltas"
   store_list "${PREFIX}Transcribe-" >"$WORK/list" || fail "could not list the bucket"
   while IFS= read -r key; do
+    case "$keep" in *" $key "*) continue ;; esac
     case "$key" in
-      "$current") ;;
-      transcribe/Transcribe-*.dmg)
+      transcribe/Transcribe-*.dmg | transcribe/Transcribe-*.delta)
         if store_delete "$key"; then echo "    deleted $key"; else left="$left $key"; fi
         ;;
     esac
   done <"$WORK/list"
   store_list "$PREFIX" >"$WORK/list" || fail "could not list the bucket"
   while IFS= read -r key; do
+    case "$keep" in *" $key "*) continue ;; esac
     case "$key" in
-      "$current" | "$LATEST_KEY" | "$APPCAST_KEY") ;;
-      transcribe/Transcribe-*.dmg) left="$left $key" ;;
+      "$LATEST_KEY" | "$APPCAST_KEY") ;;
+      transcribe/Transcribe-*.dmg | transcribe/Transcribe-*.delta) left="$left $key" ;;
       *) others="$others $key" ;;
     esac
   done <"$WORK/list"
   [ -z "$others" ] || echo "warning: other keys under $PREFIX left alone:$others" >&2
-  for key in "$current" "$LATEST_KEY" "$APPCAST_KEY"; do
+  for key in $keep "$LATEST_KEY" "$APPCAST_KEY"; do
     store_head "$key" >/dev/null || left="$left (missing $key)"
   done
   if [ -n "$left" ]; then
-    echo "::error::Old DMG(s) left in the bucket:$left. Re-run: $RERUN"
+    echo "::error::Old DMG(s) or deltas left in the bucket:$left. Re-run: $RERUN"
     exit 1
   fi
-  echo "    the bucket holds $current, $LATEST_KEY and $APPCAST_KEY"
+  echo "    the bucket holds$keep$LATEST_KEY and $APPCAST_KEY"
 }
 
 # --- Resume check: what a resume may sign, read from the bucket itself and verified. Writes only <out.json>. -----
@@ -371,6 +433,7 @@ if [ "$MODE" = resume-check ]; then
     fail "the bucket's $LATEST_KEY is $VERSION ($BUILD), not the version in project.yml; nothing to resume"
   echo "    Transcribe $VERSION (build $BUILD), key $PUBKEY"
   verify_stored_dmg "$(jq -r .key "$WORK/bucket.json")" "$WORK/bucket.json"
+  verify_stored_deltas "$WORK/bucket.json"
   mkdir -p "$(dirname "$RELEASE")"
   cp "$WORK/bucket.json" "$RELEASE"
   step "Checked: $RELEASE"
@@ -395,10 +458,13 @@ if [ "$MODE" = resume ]; then
   store_get "$LATEST_KEY" "$WORK/bucket.json" || fail "the bucket has no $LATEST_KEY to resume"
   cmp -s "$WORK/bucket.json" "$RELEASE" || fail "$RELEASE is not the bucket's $LATEST_KEY"
   verify_stored_dmg "$KEY" "$RELEASE"
+  verify_stored_deltas "$RELEASE"
   if [ "$DEST" = s3 ]; then
     step "Public check of the page"
     why="$(public_page_ok "$RELEASE")" || fail "public check of the page failed: $why"
     echo "$why"
+    why="$(public_deltas_ok "$RELEASE")" || fail "public check of the deltas failed: $why"
+    [ -z "$why" ] || echo "$why"
   fi
   step "The bucket's feed"
   if store_get "$APPCAST_KEY" "$WORK/prev.appcast.xml" && ed verify-feed "$PUBKEY" "$WORK/prev.appcast.xml" &&
@@ -408,7 +474,7 @@ if [ "$MODE" = resume ]; then
     check_feed "$APPCAST" "$RELEASE" "$APPCAST"
     write_feed
   fi
-  clean_up "$KEY"
+  clean_up "$RELEASE"
   step "Done: $VERSION is published"
   exit 0
 fi
@@ -417,6 +483,22 @@ fi
 [ "$(stat -f %z "$DMG")" = "$(jq -r .bytes "$RELEASE")" ] || fail "$DMG is not the size in $RELEASE"
 [ "$(shasum -a 256 "$DMG" | cut -d ' ' -f 1)" = "$(jq -r .sha256 "$RELEASE")" ] || fail "$DMG does not have the sha256 in $RELEASE"
 ed verify "$PUBKEY" "$(jq -r .edSignature "$RELEASE")" "$DMG" || fail "$DMG does not verify against $PUBKEY"
+# The deltas given must be exactly the ones latest.json lists, each with its size, sha256 and signature.
+: >"$WORK/delta-files"
+for d in ${DELTAS[@]+"${DELTAS[@]}"}; do
+  [ -f "$d" ] || fail "no such delta: $d"
+  printf '%s %s\n' "$(basename "$d")" "$d" >>"$WORK/delta-files"
+done
+[ "$(cut -d ' ' -f 1 "$WORK/delta-files" | LC_ALL=C sort)" = "$(jq -r '.deltas // [] | .[].file' "$RELEASE" | LC_ALL=C sort)" ] ||
+  fail "the --delta files are not the deltas $RELEASE lists"
+while read -r dkey dfile dbytes dsha dsig dfbuild dfrom; do
+  [ -n "$dkey" ] || continue
+  d="$(awk -v f="$dfile" '$1 == f { print substr($0, length(f) + 2); exit }' "$WORK/delta-files")"
+  [ "$(stat -f %z "$d")" = "$dbytes" ] || fail "$d is not the size in $RELEASE"
+  [ "$(shasum -a 256 "$d" | cut -d ' ' -f 1)" = "$dsha" ] || fail "$d does not have the sha256 in $RELEASE"
+  ed verify "$PUBKEY" "$dsig" "$d" || fail "$d does not verify against $PUBKEY"
+  echo "    delta from $dfrom (build $dfbuild): size, sha256 and EdDSA signature"
+done < <(delta_lines "$RELEASE")
 check_feed "$APPCAST" "$RELEASE" "$APPCAST"
 echo "    DMG size, sha256 and EdDSA signature; feed signature and contents"
 
@@ -443,6 +525,21 @@ META="$(jq -cn --arg sha256 "$(jq -r .sha256 "$RELEASE")" --arg version "$VERSIO
 store_put "$DMG" "$KEY" application/x-apple-diskimage "$META" || fail "the upload of $KEY failed (nothing public changed)"
 step "Verify $KEY"
 verify_stored_dmg "$KEY" "$RELEASE"
+while read -r dkey dfile dbytes dsha dsig dfbuild dfrom; do
+  [ -n "$dkey" ] || continue
+  d="$(awk -v f="$dfile" '$1 == f { print substr($0, length(f) + 2); exit }' "$WORK/delta-files")"
+  step "Upload $dkey"
+  DMETA="$(jq -cn --arg sha256 "$dsha" --arg version "$VERSION" --arg build "$BUILD" --arg from "$dfrom" \
+    --arg edsignature "$dsig" '{sha256: $sha256, version: $version, build: $build, from: $from, edsignature: $edsignature}')"
+  store_put "$d" "$dkey" application/octet-stream "$DMETA" || fail "the upload of $dkey failed (nothing public changed)"
+  verify_stored "$dkey" "$dbytes" "$dsha" "$dsig"
+done < <(delta_lines "$RELEASE")
+# Through the site before any pointer changes: a Worker without the delta route would make every delta fail.
+if [ "$DEST" = s3 ] && [ "$(jq '.deltas // [] | length' "$RELEASE")" -gt 0 ]; then
+  step "Public check of the deltas"
+  why="$(public_deltas_ok "$RELEASE")" || fail "public check of the deltas failed (nothing public changed): $why"
+  echo "$why"
+fi
 
 # --- P5, P6: the page pointer, then the public check (put back on failure). -------------------------------------
 step "Write $LATEST_KEY"
@@ -468,5 +565,5 @@ fi
 
 # --- P7, P8. -----------------------------------------------------------------------------------------------------
 write_feed
-clean_up "$KEY"
+clean_up "$RELEASE"
 step "Done: $VERSION (build $BUILD) is published"

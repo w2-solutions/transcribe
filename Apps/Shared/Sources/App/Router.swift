@@ -1,6 +1,7 @@
 import Foundation
 import Observation
 import TranscribeCore
+import TranscribeKit
 
 enum Route: Hashable {
     case transcript(UUID)
@@ -42,4 +43,19 @@ final class Router {
     func showTranscript(_ id: UUID, replacingPath: Bool = false) { if replacingPath { path = [.transcript(id)] } else { path.append(.transcript(id)) } }
     func popToLibrary() { path.removeAll() }
     func nameSpeaker(_ ctx: NameSpeakerContext) { sheet = .nameSpeaker(ctx) }
+
+    /// Recordings or voices deleted while on screen (by sync from another device, or elsewhere on this one): their
+    /// transcript or voice screen pops back to the screen before it, and a name sheet for such a recording closes.
+    func dropGone(recordings: Set<UUID>, profiles: Set<UUID>) {
+        guard !recordings.isEmpty || !profiles.isEmpty else { return }
+        let pruned = GoneModels.prune(path) { route in
+            switch route {
+            case .transcript(let id): recordings.contains(id)
+            case .voice(let id): profiles.contains(id)
+            default: false
+            }
+        }
+        if pruned != path { path = pruned }
+        if case .nameSpeaker(let ctx)? = sheet, recordings.contains(ctx.recordingID) { sheet = nil }
+    }
 }
