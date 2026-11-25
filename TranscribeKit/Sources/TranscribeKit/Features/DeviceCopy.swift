@@ -60,10 +60,59 @@ public struct DeviceCopy: Sendable, Equatable {
     }
 
     /// Processing panel, while the speech models are not ready.
-    public var processingModels: String { "Processing starts once the speech models are ready on this \(noun)." }
+    public var processingModels: String {
+        "Transcribe is getting ready on this \(noun). This recording is processed as soon as setup finishes."
+    }
 
-    /// Library card and Speech models screen, while the models are being prepared.
-    public var preparingModels: String { "Preparing for this \(noun)… (after installing or updating, about a minute)" }
+    /// Processing panel, when setup failed while this recording waits for it (the panel shows Try again).
+    public var processingModelsFailed: String {
+        "Transcribe couldn't get ready on this \(noun), so this recording is still waiting. \(isMac ? "Click" : "Tap") Try again to finish setup."
+    }
+
+    /// Processing panel's leave button. On iPhone it goes back to the list, and a recording waiting for setup is not
+    /// processed in the background (setup itself carries on only for a short while there), so it says where it goes
+    /// rather than promising background work. On the Mac it folds the panel away and processing carries on.
+    public func processingLeaveButton(waitingForSetup: Bool) -> String {
+        waitingForSetup && !isMac ? "Back to Recordings" : "Continue in background"
+    }
+
+    // MARK: Setup (the speech models getting ready after an install or update)
+
+    /// Setup card and Speech models screen: the headline while setting up.
+    public var setupHeadline: String { "Getting ready on this \(noun)" }
+
+    /// The headline once setup has finished (shown briefly before the card goes).
+    public var setupReadyHeadline: String { "Ready on this \(noun)" }
+
+    /// Why setup is happening.
+    public var setupOnce: String { "This happens once after installing or updating." }
+
+    /// What the user can do meanwhile.
+    public var setupRecordNow: String { "You can record now. Recordings are processed when setup finishes." }
+
+    /// Under the bar on a first install, when this device has no times of its own yet (never a time left). No
+    /// number: an iPhone 15 takes about 20 s, other iPhones and the Mac have not been measured.
+    public var setupTypicalTime: String { "This can take a little while." }
+
+    /// While setup runs on the iPhone. True with and without Background Inference (`TranscribeBackgroundInference`):
+    /// with it, setup carries on for iOS's short allowance (about 27 s) after the user leaves and finishes the rest on
+    /// return; without it, it pauses once the step running then ends. Either way it may pause, and it finishes when
+    /// the app is opened again. Nil on the Mac, which never pauses it.
+    public var setupKeepOpen: String? {
+        isMac ? nil : "If you leave Transcribe, setup may pause after a short while. It finishes when you come back."
+    }
+
+    /// Recordings made during setup wait for it.
+    public func setupWaiting(count: Int) -> String {
+        count == 1 ? "1 recording will be processed when setup finishes."
+            : "\(count) recordings will be processed when setup finishes."
+    }
+
+    /// Setup paused while the app is in the background (iPhone).
+    public var setupPaused: String { "Paused while Transcribe is in the background. It carries on when you open it." }
+
+    /// Back after leaving the app mid-setup.
+    public var setupResumed: String { "Carrying on where it left off." }
 
     /// Name sheet: the help under "Remember this voice".
     public func rememberHelp(who: String) -> String {

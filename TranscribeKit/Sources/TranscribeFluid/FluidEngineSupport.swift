@@ -32,7 +32,7 @@ enum FluidErrorMapping {
     /// Maps FluidAudio / system errors onto the engine contract.
     static func engineError(_ error: any Error) -> EngineError {
         if let e = error as? EngineError { return e }
-        if error is CancellationError { return .cancelled }
+        if error is CancellationError || error is PrepareInterruption { return .cancelled }
         if let e = error as? URLError, e.code == .cancelled { return .cancelled }
         if let e = error as? ASRError {
             switch e {
@@ -67,7 +67,14 @@ enum FluidErrorMapping {
             case .cancelled: return "Cancelled"
             }
         }
+        if let pause = error as? PrepareInterruption { return "Paused (\(pause.reason.rawValue))" }
         if let localized = (error as? LocalizedError)?.errorDescription, !localized.isEmpty { return localized }
         return (error as NSError).localizedDescription
     }
+}
+
+/// A prepare stopped because the app went to the background (`PreparePauseReason`). Not a failure: it maps to
+/// `EngineError.cancelled`, sets no load failure, and the next prepare (on return to the front) carries on.
+struct PrepareInterruption: Error, Sendable, Equatable {
+    let reason: PreparePauseReason
 }

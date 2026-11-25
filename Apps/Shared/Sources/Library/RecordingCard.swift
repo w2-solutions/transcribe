@@ -21,7 +21,8 @@ struct RecordingCard: View {
     var body: some View {
         let status = LibraryCardStatus.make(stage: recording.stage, queueReason: recording.queueReason,
                                             hasUnseenResult: recording.hasUnseenResult, duration: recording.duration,
-                                            snapshot: env.monitor.snapshot(for: recording.id))
+                                            snapshot: env.monitor.snapshot(for: recording.id),
+                                            setupFailed: env.models.hasFailed)
         VStack(alignment: .leading, spacing: 10) {
             topRow(status)
             chipRow
@@ -144,7 +145,10 @@ struct RecordingCard: View {
 
     private var preview: some View {
         let preview = LibraryCardPreview.make(previewText: recording.previewText, stage: recording.stage,
-                                              noSpeech: recording.noSpeech)
+                                              noSpeech: recording.noSpeech,
+                                              queueReason: ProcessingViewState.queueReason(
+                                                  snapshot: env.monitor.snapshot(for: recording.id),
+                                                  stored: recording.queueReason))
         return Text(preview.text)
             .font(DS.Typo.cardBody)
             .lineSpacing(3.3)   // 16 pt text on a 23 pt line

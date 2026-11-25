@@ -78,13 +78,13 @@ struct ModelManagerTests {
         let m = manager(fakeEngine(models: "installed"), counter: counter)
         await m.refresh()
         #expect(m.status == .installed)
-        #expect(m.settingsValue == "Preparing…")
-        #expect(m.phaseText == ModelManager.Copy.preparing)
+        #expect(m.settingsValue == "Getting ready…")
+        #expect(m.isSettingUp)
         await m.prepareIfInstalled()
         #expect(m.status == .ready)
         #expect(m.isReady)
         #expect(m.settingsValue == "Parakeet")
-        #expect(m.phaseText == nil)
+        #expect(!m.isSettingUp)
         #expect(counter.count == 1)
         // Already ready: nothing happens, onReady is not called again.
         await m.prepareIfInstalled()
@@ -110,7 +110,7 @@ struct ModelManagerTests {
         #expect(m.status == .failed("ANE compile failed"))
         #expect(m.failureText == "ANE compile failed")
         #expect(m.settingsValue == "Not ready")
-        #expect(m.phaseText == nil)
+        #expect(!m.isSettingUp)
         #expect(counter.count == 0)
         // A foreground does not retry a failed prepare on its own (no repeated Neural Engine compiles).
         await m.prepareIfInstalled()
@@ -175,8 +175,8 @@ struct ModelManagerTests {
 
     @Test(arguments: [
         (ModelStatus.ready, "Parakeet"),
-        (.installed, "Preparing…"),
-        (.preparing, "Preparing…"),
+        (.installed, "Getting ready…"),
+        (.preparing, "Getting ready…"),
         (.failed("x"), "Not ready"),
     ])
     func settingsRowValue(_ status: ModelStatus, _ expected: String) {

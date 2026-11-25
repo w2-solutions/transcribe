@@ -14,7 +14,7 @@ public final class RecorderController {
     public private(set) var elapsed: TimeInterval = 0
     public private(set) var levels: [Float] = []          // last 56 levels (bars on screen 2)
     public private(set) var liveText = LiveText()
-    public private(set) var liveTextNote: String?         // e.g. "Live text appears once speech models are ready"
+    public private(set) var liveTextNote: String?         // e.g. "Live text starts when setup finishes."
     public private(set) var marks: [TimeInterval] = []
     public private(set) var lastMarkAt: TimeInterval?     // drives the "Moment marked 0:14" toast
     /// Set when the system ended capture (`.endedBySystem`). The recorder then stops and saves on its own,
@@ -35,7 +35,14 @@ public final class RecorderController {
     public var isActive: Bool { state != .idle }
 
     public static let levelHistory = 56
-    public static let modelsNotReadyNote = "Live text appears once speech models are ready"
+    public static let modelsNotReadyNote = "Live text starts when setup finishes."
+    /// Setup failed: no live text until "Try again" in Recordings gets it ready.
+    public static let modelsFailedNote = "Live text is off because setup couldn't finish. Recording still works."
+
+    /// The note for a recording without live text because the models are not ready.
+    public static func noteWithoutModels(setupFailed: Bool) -> String {
+        setupFailed ? modelsFailedNote : modelsNotReadyNote
+    }
 
     @ObservationIgnored private let engine: any SpeechEngine
     @ObservationIgnored private let store: any LibraryStoring
@@ -46,6 +53,8 @@ public final class RecorderController {
     @ObservationIgnored private let clock: AppClock
     @ObservationIgnored private var session: (any LiveRecording)?
     @ObservationIgnored private var eventsTask: Task<Void, Never>?
+    /// The running recording started before the speech models were ready, so it has no live text yet.
+    @ObservationIgnored private var liveTextWaitsForModels = false
 
     public init(engine: any SpeechEngine, store: any LibraryStoring, coordinator: ProcessingCoordinator,
                 models: ModelManager, paths: AppPaths, settings: AppSettings, clock: AppClock) {
@@ -90,7 +99,8 @@ public final class RecorderController {
             startedAt = now
             elapsed = 0; levels = []; liveText = LiveText(); marks = []; lastMarkAt = nil
             systemEndReason = nil; systemStop = nil
-            liveTextNote = live ? nil : Self.modelsNotReadyNote
+            liveTextNote = live ? nil : Self.noteWithoutModels(setupFailed: models.hasFailed)
+            liveTextWaitsForModels = !live
             state = .recording
             // 6. Events are consumed on the main actor from here on.
             consume(session)
@@ -183,6 +193,15 @@ public final class RecorderController {
 
     private var isPaused: Bool { if case .paused = state { true } else { false } }
 
+    /// The speech models became ready (`ModelManager.onReady`, which fires only with the app in front): a recording
+    /// that started without live text gets it now (the session turns it on mid-recording).
+    public func modelsBecameReady() async {
+        guard let session, state == .recording || isPaused, liveTextWaitsForModels else { return }
+        liveTextWaitsForModels = false
+        if liveText.isEmpty { liveTextNote = nil }
+        await session.setLiveTextEnabled(true)
+    }
+
     /// setLiveTextEnabled(false)
     public func appDidEnterBackground() async {
         await session?.setLiveTextEnabled(false)
@@ -220,7 +239,7 @@ public final class RecorderController {
             liveTextNote = nil
         case .liveTextUnavailable(let reason):
             switch reason {
-            case .modelsNotReady: if liveText.isEmpty { liveTextNote = Self.modelsNotReadyNote }
+            case .modelsNotReady: if liveText.isEmpty { liveTextNote = Self.noteWithoutModels(setupFailed: models.hasFailed) }
             case .pausedInBackground: break   // the text so far stays; it resumes in the foreground
             case .failed(let message): if liveText.isEmpty { liveTextNote = message }
             }
@@ -239,6 +258,7 @@ public final class RecorderController {
     /// stay until the next `start()` so a dismissing cover doesn't flash empty.
     private func reset() {
         session = nil
+        liveTextWaitsForModels = false
         eventsTask = nil
         recordingID = nil
         startedAt = nil

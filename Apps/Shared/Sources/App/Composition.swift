@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 import TranscribeCore
 import TranscribeKit
 import TranscribeFluid
@@ -11,11 +12,16 @@ import TranscribeFakes
     static func makeEnvironment() -> AppEnvironment {
         let config = LaunchConfig.current
         let paths = AppPaths(config: config)
-        var engine: any SpeechEngine = FluidSpeechEngine(modelsRoot: Self.modelsRoot())
+        let activity = Self.appActivity()
+        // The prepare log is the real library's: never for UI tests or the fake engine.
+        let prepareLog = config.uiTesting || config.useFakeEngine ? nil : paths.prepareLogURL
+        var engine: any SpeechEngine = FluidSpeechEngine(modelsRoot: Self.modelsRoot(), prepareLog: prepareLog,
+                                                         activity: activity)
         var seeder: AppEnvironment.Seeder? = nil
         #if DEBUG
         if config.useFakeEngine {
-            engine = FakeSpeechEngine(config: config, paths: paths)
+            // The same start rule as the real engine, so leaving the app mid-setup pauses it here too.
+            engine = FakeSpeechEngine(config: config, paths: paths, activity: activity)
             seeder = { seed, context, paths, clock in try Seeds.apply(seed, context: context, paths: paths, clock: clock) }
         }
         #endif
@@ -28,7 +34,10 @@ import TranscribeFakes
         let transport = Self.syncTransport(config: config)
         #endif
         let env = try! AppEnvironment(config: config, engine: engine, background: background, deviceIdentity: identity, seeder: seeder,
-                                      syncTransport: transport)
+                                      syncTransport: transport, activity: activity,
+                                      activityPhase: PlatformServices.activityPhase)
+        // VoiceOver hears "Transcribe is ready." once, when a shown setup card turns to ready.
+        env.models.announce = { AccessibilityNotification.Announcement($0).post() }
         #if DEBUG
         // UI tests only (§8.6): the scenario's sync bookkeeping goes into the in-memory store, and `fake:*` scenarios
         // other than `fresh` start with the switch on, in this run's own defaults suite. Seeding never touches sync
@@ -63,5 +72,31 @@ import TranscribeFakes
         }
         #endif
         return FluidModelPaths.bundledRoot()
+    }
+
+    /// Whether the speech-model prepare may use the Neural Engine in the background (`AppActivity`). Only a build
+    /// signed with the Background Inference entitlement may: there is no public runtime check for it on iOS, so the
+    /// build setting `TRANSCRIBE_BACKGROUND_INFERENCE` is mirrored into Info.plist (`TranscribeBackgroundInference`;
+    /// a missing or other value means no). It is YES only where Transcribe.entitlements carries the key, which a
+    /// provisioning profile without it refuses to sign (`BackgroundInferenceConfigTests` pins the pairing). Never in
+    /// the simulator, and never on the Mac, whose Info.plist has no such key. DEBUG only, for device measurements:
+    /// `-assumeNoBackgroundInference` forces no (one build tries both gates), and `-startStagesInBackground` lets
+    /// stages start in the background anyway (with a build without the entitlement: what does a background load do?).
+    static func appActivity() -> AppActivity {
+        let flag = (Bundle.main.object(forInfoDictionaryKey: "TranscribeBackgroundInference") as? String) == "YES"
+        #if DEBUG
+        let arguments = ProcessInfo.processInfo.arguments
+        let assumeNo = arguments.contains("-assumeNoBackgroundInference")
+        let ignoresStartRule = arguments.contains("-startStagesInBackground")
+        #else
+        let assumeNo = false
+        let ignoresStartRule = false
+        #endif
+        #if targetEnvironment(simulator)
+        let entitled = false
+        #else
+        let entitled = flag && !assumeNo
+        #endif
+        return AppActivity(backgroundInference: entitled, ignoresStartRule: ignoresStartRule)
     }
 }

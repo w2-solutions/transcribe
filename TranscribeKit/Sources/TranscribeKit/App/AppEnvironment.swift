@@ -30,11 +30,21 @@ public final class AppEnvironment {
     public private(set) var isLaunched = false
     public private(set) var launchError: String?
 
+    /// Whether the app is in front, shared with the engine and `ModelManager` (§ background prepare). Only the iPhone
+    /// app moves it (`activityPhase`); on the Mac it always reads as in front.
+    @ObservationIgnored public let activity: AppActivity
     @ObservationIgnored private let seeder: Seeder?
+    /// iPhone only: the app's state now (`UIApplication.applicationState`). When set, `activity` follows the scene
+    /// phase and is seeded from this at launch (a launch for an iCloud push starts in the background, and SwiftUI
+    /// reports no phase change for the starting state).
+    @ObservationIgnored private let activityPhase: (@MainActor () -> AppPhase)?
 
     public init(config: LaunchConfig, engine: any SpeechEngine, background: any BackgroundTaskBridge,
-                deviceIdentity: any DeviceIdentity, seeder: Seeder?, syncTransport: (any SyncTransport)? = nil) throws {
+                deviceIdentity: any DeviceIdentity, seeder: Seeder?, syncTransport: (any SyncTransport)? = nil,
+                activity: AppActivity = AppActivity(), activityPhase: (@MainActor () -> AppPhase)? = nil) throws {
         self.config = config
+        self.activity = activity
+        self.activityPhase = activityPhase
         self.clock = config.clock
         let paths = AppPaths(config: config)
         self.paths = paths
@@ -59,10 +69,17 @@ public final class AppEnvironment {
         let coordinator = ProcessingCoordinator(engine: engine, store: store, monitor: monitor, settings: settings,
                                                 paths: paths, background: background)
         self.coordinator = coordinator
-        let models = ModelManager(engine: engine, onReady: { Task { await coordinator.modelsBecameReady() } })
+        // The recorder is made after the models (it reads them), so onReady reaches it through this box.
+        let readyRecorder = RecorderBox()
+        let models = ModelManager(engine: engine, background: background, activity: activity, onReady: {
+            Task { await coordinator.modelsBecameReady() }
+            // A recording started during setup gets its live text now.
+            if let recorder = readyRecorder.recorder { Task { await recorder.modelsBecameReady() } }
+        })
         self.models = models
         let recorder = RecorderController(engine: engine, store: store, coordinator: coordinator, models: models,
                                           paths: paths, settings: settings, clock: config.clock)
+        readyRecorder.recorder = recorder
         self.recorder = recorder
         let player = PlaybackController()
         player.isCaptureActive = { [weak recorder] in recorder?.isActive ?? false }
@@ -77,12 +94,13 @@ public final class AppEnvironment {
         }
     }
 
-    /// Order: paths.prepare (+ detached removal of the old downloaded models) → seed (if config.seed) → store.stampCaptureChannels →
-    /// store.sweepOrphanAudio → models.refresh →
-    /// coordinator.recoverOnLaunch → sync.start (its own task, when the switch is on) → models.prepareIfInstalled (detached)
-    /// → isLaunched = true.
+    /// Order: activity seeded (iPhone) → paths.prepare (+ detached removal of the old downloaded models) → seed (if
+    /// config.seed) → store.stampCaptureChannels → store.sweepOrphanAudio → models.refresh →
+    /// coordinator.recoverOnLaunch → sync.start (its own task, when the switch is on) → models.prepareIfInstalled (detached;
+    /// it waits for the front when the app launched in the background) → isLaunched = true.
     public func onLaunch() async {
         guard !isLaunched else { return }
+        if activityPhase?() == .background { activity.enterBackground() }
         do { try paths.prepare() } catch { launchError = "Couldn't prepare storage: \(error.localizedDescription)" }
         // Builds before bundling downloaded ~704 MB of models into Models/; they now ship in the app.
         let paths = self.paths
@@ -104,13 +122,18 @@ public final class AppEnvironment {
     /// background: sync leaves the front, recorder.appDidEnterBackground; active: sync comes to the front (it fetches
     /// now and then every couple of minutes, in case an iCloud push was missed), models.prepareIfInstalled + recorder
     /// foreground. The Mac also follows the app becoming and resigning active (`syncForeground`).
+    /// On the iPhone (`activityPhase` set) `activity` follows first (`followActivity`), before anything else and
+    /// before the launch check, so a trip to the background during launch is never missed; a prepare still running
+    /// on return gets a new short background task.
     public func onPhase(_ phase: AppPhase) async {
+        followActivity(phase)
         switch phase {
         case .background:
             sync?.setForeground(false)
             await recorder.appDidEnterBackground()
         case .active:
             if !config.uiTesting { sync?.setForeground(true) }
+            if activityPhase != nil { await models.appBecameActive() }
             guard isLaunched else { return }
             await models.prepareIfInstalled()
             await recorder.appWillEnterForeground()
@@ -119,9 +142,26 @@ public final class AppEnvironment {
         }
     }
 
+    /// iPhone only (`activityPhase` set): moves `activity` to `phase` now. The app calls it synchronously in its
+    /// scene-phase handler, before the `onPhase` task it spawns, so a prepare stage that ends in that gap is judged
+    /// by the new state. Repeating it (`onPhase` calls it again) changes nothing. Does nothing on the Mac.
+    public func followActivity(_ phase: AppPhase) {
+        guard activityPhase != nil else { return }
+        switch phase {
+        case .background: activity.enterBackground()
+        case .active: activity.becomeActive()
+        case .inactive: break
+        }
+    }
+
     /// The Mac app became (true) or resigned (false) active: sync fetches in front only.
     public func syncForeground(_ active: Bool) {
         guard !config.uiTesting else { return }
         sync?.setForeground(active)
     }
+}
+
+/// Lets `ModelManager.onReady` reach the recorder, which is made after it.
+@MainActor private final class RecorderBox {
+    weak var recorder: RecorderController?
 }
