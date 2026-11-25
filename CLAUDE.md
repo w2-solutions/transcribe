@@ -242,6 +242,7 @@ The public download is https://w2solutions.ai/transcribe and the update feed htt
 
 - Sync has run between the real iPhone and Mac in the Development environment only. Production (TestFlight plus the Developer ID Mac app) had not been tested when this was written.
 - Pushes to the Mac were unreliable in Development (none, or one after 99 s), although the iPhone got them at once. Whether Production is better is the open question.
+- A recording or voice that sync deletes while it is on screen (investigated 2026-11-25): no crash in `swift test` on macOS 27 (a held model reads its last values and has no context; `GoneModelsTests`), so the reported crash is not reproduced; iOS on a device is untested. The stale screens, sheets and prompts it left are now closed (`GoneModelObserver`, `Router.dropGone`, `GoneModels.isGone` in the views), but that has not been watched in a running app: check it with the two-device checklist.
 - The manual two-device checklist has only been partly run: recordings and a speaker's name reach the other device. Not yet checked: deletes reaching the other device, turning sync off with Keep, signing out.
 - Speaker separation with Nemotron 3 on the CPU on the iPhone: its time on a real recording, its battery cost, and whether its speaker labels match the Neural Engine's on real speech. (On an M4 Max it separates 22.7 s of audio in about 0.45 s.)
 - The app's own setup on a Mac. A cold prepare on an M4 Max in the gated tests (fresh model path) took diarizer 0.66 s, Nemotron 0.51 s, Parakeet 13.4 s; slower Macs are unmeasured.
