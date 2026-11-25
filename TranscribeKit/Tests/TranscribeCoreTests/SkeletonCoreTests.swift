@@ -139,6 +139,22 @@ struct LaunchConfigTests {
         #expect(LaunchConfig(arguments: ["-useFakeEngine"], environment: ["TRANSCRIBE_MCP_AUTO_ALLOW": " ON "]).mcpAutoAllow)
     }
 
+    /// The Mac's "Update available" reminder for UI tests (D23): read only with the fake engine or `-uiTesting`, and
+    /// only a version made of digits and dots.
+    @Test func updateAvailableReadOnlyWithFakeOrUITesting() {
+        let env = ["TRANSCRIBE_UPDATE_AVAILABLE": "9.9.9"]
+        #expect(LaunchConfig(arguments: [], environment: env).updateAvailable == nil)
+        for args in [["-useFakeEngine"], ["-uiTesting"]] {
+            #expect(LaunchConfig(arguments: args, environment: env).updateAvailable == "9.9.9", "\(args)")
+        }
+        #expect(LaunchConfig(arguments: ["-uiTesting"], environment: [:]).updateAvailable == nil)
+        #expect(LaunchConfig(arguments: ["-uiTesting"], environment: ["TRANSCRIBE_UPDATE_AVAILABLE": " 0.3.1 "]).updateAvailable == "0.3.1")
+        for bad in ["", "on", "1.0-beta", ".1", "1.", "v1.0", "1 0", "١.٢"] {
+            #expect(LaunchConfig(arguments: ["-uiTesting"], environment: ["TRANSCRIBE_UPDATE_AVAILABLE": bad]).updateAvailable == nil,
+                    "\(bad)")
+        }
+    }
+
     @Test func mcpTestPortValidated() {
         func config(port: String? = nil) -> LaunchConfig {
             var env: [String: String] = [:]

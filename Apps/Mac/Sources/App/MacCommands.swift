@@ -9,7 +9,7 @@ extension FocusedValues {
     @Entry var macTranscriptID: UUID?
 }
 
-/// The Mac menu commands (§5): Check for Updates… (app menu, after About), New Recording ⌘N, Stop Recording ⌘.,
+/// The Mac menu commands (§5): Check for Updates… or Update Available… (app menu, after About), New Recording ⌘N, Stop Recording ⌘.,
 /// Import Audio… ⌘O, Copy Transcript ⇧⌘C, Find ⌘F and Play/Pause. Space plays and pauses from the transcript itself
 /// (`onKeyPress` in `MacRootView`), so typing a space in a text field never toggles playback. Delete (⌫) is the
 /// recording list's `onDeleteCommand`; Settings (⌘,) is the system's.
@@ -25,9 +25,10 @@ struct MacCommands: Commands {
     private var transcriptID: UUID? { focusedTranscript }
 
     var body: some Commands {
-        // Always present; disabled while updates are off (Debug, test runs) or a check is already running.
+        // Always present; disabled while updates are off (Debug, test runs) or a check is already running. "Update
+        // Available…" while an update waits (D23): it brings up Sparkle's window for that update.
         CommandGroup(after: .appInfo) {
-            Button("Check for Updates…") { updater.checkForUpdates() }
+            Button(UpdateCopy.checkTitle(pendingVersion: updater.pendingVersion)) { updater.checkForUpdates() }
                 .disabled(!updater.controlsEnabled)
         }
         CommandGroup(replacing: .newItem) {

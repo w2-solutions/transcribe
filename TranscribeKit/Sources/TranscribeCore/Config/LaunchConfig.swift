@@ -55,6 +55,7 @@ public struct LaunchConfig: Sendable, Equatable {
     public static let envMCP = "TRANSCRIBE_MCP"                    // on (fake engine and UI tests only)
     public static let envMCPAutoAllow = "TRANSCRIBE_MCP_AUTO_ALLOW" // on (fake engine and UI tests only)
     public static let envMCPTestPort = "TRANSCRIBE_MCP_TEST_PORT"  // 1–65535
+    public static let envUpdateAvailable = "TRANSCRIBE_UPDATE_AVAILABLE" // a version, e.g. 9.9.9 (fake engine and UI tests only)
 
     public var useFakeEngine: Bool
     public var uiTesting: Bool
@@ -77,6 +78,10 @@ public struct LaunchConfig: Sendable, Equatable {
     public var mcpOn: Bool
     public var mcpAutoAllow: Bool
     public var mcpTestPort: UInt16?
+    /// The Mac's "Update available" reminder for this session only, as if a scheduled check had found this version
+    /// (`TRANSCRIBE_UPDATE_AVAILABLE=9.9.9`, digits and dots). Read only with the fake engine or `-uiTesting`, like
+    /// `channel`; the Mac app honours it only in DEBUG builds, never starts Sparkle for it and never saves it.
+    public var updateAvailable: String?
 
     public init(arguments: [String], environment: [String: String]) {
         useFakeEngine = arguments.contains(Self.argUseFakeEngine) || environment["TRANSCRIBE_ENGINE"] == "fake"
@@ -95,6 +100,14 @@ public struct LaunchConfig: Sendable, Equatable {
         mcpOn = testRun && Self.isOn(environment[Self.envMCP])
         mcpAutoAllow = testRun && Self.isOn(environment[Self.envMCPAutoAllow])
         mcpTestPort = testRun ? environment[Self.envMCPTestPort].flatMap { UInt16($0) }.flatMap { $0 == 0 ? nil : $0 } : nil
+        updateAvailable = testRun ? Self.parseVersion(environment[Self.envUpdateAvailable]) : nil
+    }
+    /// "1.2.3": digits and dots, starting and ending with a digit; anything else → nil.
+    private static func parseVersion(_ raw: String?) -> String? {
+        guard let v = raw?.trimmingCharacters(in: .whitespaces), let first = v.first, let last = v.last,
+              first.isASCII, first.isNumber, last.isASCII, last.isNumber,
+              v.allSatisfy({ $0 == "." || ($0.isASCII && $0.isNumber) }) else { return nil }
+        return v
     }
     /// "on", in any case, with spaces around allowed.
     private static func isOn(_ raw: String?) -> Bool { raw?.trimmingCharacters(in: .whitespaces).lowercased() == "on" }

@@ -13,8 +13,9 @@ import TranscribeMCPHost
     @State private var claude: ClaudeAccess
     /// In-app updates (Sparkle): created here, started the first time the app is active with the main window, or from
     /// Settings or Check for Updates…. A background launch by the Claude helper opens the main window behind other
-    /// apps but does not start it. Off in Debug, fake-engine and UI-test runs. It follows the recorder itself, so a scheduled
-    /// update held back during a recording shows when the recording stops, whichever windows are open (D23).
+    /// apps but does not start it. Off in Debug, fake-engine and UI-test runs. A scheduled update never opens a window:
+    /// it shows as a quiet reminder (sidebar, app menu, Settings), hidden during a recording; the updater follows the
+    /// recorder itself, whichever windows are open (D23).
     @State private var updater: AppUpdater
     @State private var router = Router()
     @State private var selection = MacSelection()
@@ -54,6 +55,11 @@ import TranscribeMCPHost
             feedURL: Bundle.main.infoDictionary?["SUFeedURL"] as? String,
             publicKey: Bundle.main.infoDictionary?["SUPublicEDKey"] as? String)
         let updater = AppUpdater(availability: availability, isBusy: { [env] in env.recorder.isActive })
+        #if DEBUG
+        // Session-only: UI tests show the "Update available" reminder with TRANSCRIBE_UPDATE_AVAILABLE=<version>
+        // (fake engine and UI tests only). Never starts Sparkle or touches the network; Release builds ignore it.
+        if let version = env.config.updateAvailable { updater.showReminderForTesting(version: version) }
+        #endif
         env.updatesAvailable = availability == .on
         _env = State(initialValue: env)
         _claude = State(initialValue: claude)

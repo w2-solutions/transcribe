@@ -1,8 +1,9 @@
 #!/bin/bash
 # End-to-end test of the Mac app's in-app updates (Sparkle). A Release build of version 0.2.9 (209) updates itself
-# to 0.3.0 (300) from a feed on 127.0.0.1, through the same signing and publishing scripts as a real release; then
-# three negative tests, each from a fresh 0.2.9 install: a DMG with one byte changed, a feed with one character
-# changed, and an unsigned feed. 15 to 30 minutes. Not run in CI.
+# to 0.3.0 (300) from a feed on 127.0.0.1, through the same signing and publishing scripts as a real release: the
+# scheduled check after Check Automatically shows only the quiet reminder (no update window); Update Available… brings
+# up the update, stays after Remind Me Later, and installs it. Then three negatives through Check for Updates…,
+# each from a fresh 0.2.9: a tampered DMG, a tampered feed and an unsigned feed. 15 to 30 minutes. Not run in CI.
 #
 #   tools/update-e2e/run.sh                  the local test (unlocked screen; it clicks through Sparkle's windows)
 #   tools/update-e2e/run.sh --developer-id   prepares the owner's Developer ID update test for a second macOS user
@@ -47,7 +48,7 @@ LSREGISTER=/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchSe
 CONTAINER="$HOME/Library/Containers/$BID"
 
 usage() {
-  sed -n '2,29s/^# \{0,1\}//p' "$SELF" >&2
+  sed -n '2,30s/^# \{0,1\}//p' "$SELF" >&2
   exit 2
 }
 step() { printf '\n==> %s\n' "$*"; }
@@ -172,7 +173,7 @@ LOG="$E2E/requests.log"
 SHOTS="$E2E/shots"
 SERVER_PID=""
 
-if ioreg -n Root -d1 | grep -q '"IOConsoleLocked" = Yes'; then not_ready "the screen is locked"; fi
+if ioreg -n Root -d1 | grep -q '"IOConsoleLocked" = Yes'; then not_ready "the screen is locked (keep it unlocked for the whole run)"; fi
 osascript -e 'tell application "System Events" to count processes' >/dev/null 2>&1 ||
   not_ready "osascript cannot use System Events (allow the terminal in Privacy & Security → Accessibility)"
 
@@ -266,6 +267,10 @@ has_button() { [ "$(ax 'if p is missing value then return false
     end repeat
     return false' "$1")" = true ]; }
 has_text() { texts | grep -qF "$1"; }
+# has_menu_item NAME: the app menu holds an item so named.
+has_menu_item() { [ "$(ax 'if p is missing value then return false
+    return exists menu item (item 1 of argv) of menu 1 of menu bar item 2 of menu bar 1 of p' "$1")" = true ]; }
+feed_requests() { grep -c 'appcast.xml' "$LOG" || true; }
 exe_running() { pgrep -f "^$EXE" >/dev/null; }
 installed_build() { /usr/libexec/PlistBuddy -c 'Print :CFBundleVersion' "$INSTALLED/Contents/Info.plist" 2>/dev/null || true; }
 is_build() { [ "$(installed_build)" = "$1" ]; }
@@ -283,9 +288,15 @@ shot() {
   fi
 }
 
+screen_locked() { ioreg -n Root -d1 | grep -q '"IOConsoleLocked" = Yes'; }
+
 launch() {
   open "$INSTALLED" || fatal "could not open $INSTALLED"
-  wait_for 120 has_window || fatal "no window within 2 minutes of launching"
+  if ! wait_for 120 has_window; then
+    # System Events lists no windows while the screen is locked (it can lock by itself when the Mac sits idle).
+    screen_locked && fatal "the screen locked during the test (System Events sees no windows then): unlock it and run again"
+    fatal "no window within 2 minutes of launching"
+  fi
 }
 
 quit_app() {
@@ -450,6 +461,7 @@ sleep 10
 check "no permission prompt on the first launch" eval '! has_button "Check Automatically"'
 quit_app
 check "the app quit" eval '! app_running'
+check "nothing requested on the first launch" test ! -s "$LOG"
 
 step "Second launch: Sparkle's permission prompt"
 open "$INSTALLED"
@@ -458,17 +470,49 @@ if wait_for 90 has_button "Check Automatically"; then
   shot permission-prompt
   texts | grep . | sed 's/^/    text: /'
   check "the prompt offers Don’t Check" has_button "Don’t Check"
-  [ "$(click_button "Don’t Check")" = ok ] || fatal "could not click Don’t Check"
+  [ "$(click_button "Check Automatically")" = ok ] || fatal "could not click Check Automatically"
 else
   printf '    FAIL: %s\n' "no permission prompt within 90 s of the second launch"
   FAILS=$((FAILS + 1))
 fi
 wait_for 60 has_window || fatal "no window on the second launch"
 
-# 7-8. Check for Updates…, Install Update, Install and Relaunch.
-step "Update $OLD_V → $NEW_V through the app menu"
-menu "Check for Updates…"
+# 7. Allowing automatic checks starts a scheduled check at once, "in immediate focus" (just after launch), where
+# Sparkle would show its update window by itself. The app shows only its quiet reminder instead (D23).
+step "Scheduled check: the reminder, no update window"
+wait_for 90 grep -q 'appcast.xml' "$LOG" || fatal "no scheduled check within 90 s of Check Automatically"
+note "the scheduled check fetched the feed"
+if wait_for 60 has_menu_item "Update Available…"; then
+  printf '    PASS: %s\n' "the app menu reads Update Available…"
+else
+  printf '    FAIL: %s\n' "no Update Available… in the app menu within 60 s of the scheduled check"
+  FAILS=$((FAILS + 1))
+fi
+sleep 10
+check "no update window opened by itself" eval '! has_button "Install Update"'
+check "Check for Updates… is replaced while the update waits" eval '! has_menu_item "Check for Updates…"'
+shot update-reminder
+
+# 8. Update Available… brings up Sparkle's window for the waiting update; Remind Me Later keeps the reminder.
+# The sidebar chip calls the same AppUpdater.checkForUpdates(); its presence, label and identifier are covered by
+# MacUpdatesTests (XCUITest). This test drives the reminder through the app menu because System Events cannot read the
+# SwiftUI sidebar (the chip shows in shots/update-reminder.png, but System Events reports no identifier or label).
+step "Update Available…; Remind Me Later keeps it"
+menu "Update Available…"
 wait_for 90 has_button "Install Update" || { texts >&2; fatal "no update offered within 90 s"; }
+check "the reminder showed the waiting update without checking again" test "$(feed_requests)" = 1
+shot remind-later-alert
+check "the alert offers Remind Me Later (automatic checks are on)" has_button "Remind Me Later"
+[ "$(click_button "Remind Me Later")" = ok ] || fatal "could not click Remind Me Later"
+check "the update window closed" wait_for 30 eval '! has_button "Install Update"'
+sleep 3
+check "after Remind Me Later the app menu still reads Update Available…" has_menu_item "Update Available…"
+
+# 9. Chosen again, it checks again (Sparkle ended the session at Remind Me Later): Install Update, Install and Relaunch.
+step "Update $OLD_V → $NEW_V through Update Available…"
+menu "Update Available…"
+wait_for 90 has_button "Install Update" || { texts >&2; fatal "no update offered within 90 s"; }
+check "chosen after Remind Me Later, the reminder checked the feed again" test "$(feed_requests)" = 2
 shot update-alert
 check "the alert offers $NEW_V to $OLD_V" has_text "Transcribe $NEW_V is now available—you have $OLD_V."
 click_button "Install Update" >/dev/null
