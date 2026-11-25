@@ -5,12 +5,14 @@ import TranscribeDesign
 import TranscribeKit
 
 /// The Mac sidebar (§5): Library (All Recordings, Favourites, Unnamed, Folders) and People (Voices, with a dashed
-/// badge counting voices waiting for a name), then the privacy footer and a glass New Recording pill.
+/// badge counting voices waiting for a name), then the update reminder (only while an update waits), the privacy footer
+/// and a glass New Recording pill.
 struct MacSidebar: View {
     let onRecord: () -> Void
 
     @Environment(AppEnvironment.self) private var env
     @Environment(MacSelection.self) private var selection
+    @Environment(AppUpdater.self) private var updater
     @Environment(\.openSettings) private var openSettings
     @Query(sort: \Folder.createdAt) private var folders: [Folder]
     @Query private var profiles: [VoiceProfile]
@@ -98,6 +100,7 @@ struct MacSidebar: View {
 
     private var footer: some View {
         VStack(alignment: .leading, spacing: 12) {
+            if let version = updater.pendingVersion { updateReminder(version) }
             syncFooter
             Button(action: onRecord) {
                 HStack(spacing: 10) {
@@ -120,6 +123,36 @@ struct MacSidebar: View {
         .padding(.horizontal, 12)
         .padding(.bottom, 12)
         .padding(.top, 8)
+    }
+
+    /// The quiet update reminder (D23): an accent pill on the plain sidebar, shown instead of Sparkle's window opening by
+    /// itself. Clicking it brings up Sparkle's window for that update (release notes, Install Update, Skip This
+    /// Version, Remind Me Later). The same metrics as `StatusPill(style: .accent)`, but a long title truncates in the
+    /// middle, so the version stays visible (the tooltip and the label keep the full text). Disabled while Sparkle
+    /// cannot act on it (a later check is fetching the feed); the Debug hook's updater never starts, so it stays enabled.
+    private func updateReminder(_ version: String) -> some View {
+        Button { updater.checkForUpdates() } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "arrow.down").font(.system(size: 10, weight: .bold))
+                Text(UpdateCopy.reminderTitle(version: version))
+                    .font(.system(size: 12, weight: .semibold))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            .foregroundStyle(DS.Colour.accentText)
+            .padding(.horizontal, 9)
+            .frame(height: 24)
+            .background(Capsule(style: .continuous).fill(DS.Colour.accentFill))
+            .frame(minHeight: DS.Space.hit)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(updater.isStarted && !updater.canCheckForUpdates)
+        .padding(.horizontal, 6)
+        .help(UpdateCopy.reminderHelp(version: version))
+        .accessibilityLabel(UpdateCopy.reminderAccessibilityLabel(version: version))
+        .accessibilityHint(UpdateCopy.reminderAccessibilityHint)
+        .accessibilityIdentifier(AX.Mac.sidebarUpdate)
     }
 
     /// The privacy line, or the iCloud status while sync is on (§8.6). Clicking it opens Settings.

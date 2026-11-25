@@ -310,6 +310,8 @@ enum AX {
         static let sidebarVoicesBadge = "mac.sidebar.voicesBadge"
         static let sidebarNewRecording = "mac.sidebar.newRecording"
         static let sidebarFooter = "mac.sidebar.footer"
+        /// "Update available · 0.3.1" above the footer while an update waits (D23).
+        static let sidebarUpdate = "mac.sidebar.update"
         static let recordingList = "mac.list.recordings"
         static let voiceList = "mac.list.voices"
         static let detailEmpty = "mac.detail.empty"
