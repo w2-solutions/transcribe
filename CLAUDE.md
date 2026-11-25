@@ -2,7 +2,7 @@
 
 On-device conversation transcription for iPhone (iPhone 15 is the target device) and Mac. After a recording ends, the app separates the speakers. A voice shows as "Speaker 1 / Speaker 2" until it is named once; the app then saves a voice profile and auto-labels that person in later recordings.
 
-Status: iPhone and Mac apps in development (fake and FluidAudio engines). Optional iCloud sync of transcripts and voice profiles is built and tested against a fake iCloud only; it has never run against real CloudKit (see "Not yet verified"). The Mac app ships outside the App Store as a Developer ID–signed, notarised DMG; the only one made so far (2026-11-24) is of the build before sync. Read-only Claude access (MCP) on the Mac is built and tested with the fake engine and a Debug build only; no release has it yet, and no real Claude client has used its pairing (see "Not yet verified").
+Status: iPhone and Mac apps in development (fake and FluidAudio engines). Optional iCloud sync of transcripts and voice profiles is built and tested against a fake iCloud only; it has never run against real CloudKit (see "Not yet verified"). The Mac app ships outside the App Store as a Developer ID–signed, notarised DMG; the public download is version 0.2.0 (2026-11-25), the first with read-only Claude access (MCP). Claude access was tested with the fake engine and Debug builds, including a real Claude Code client going through pairing; nobody has yet used it with the Developer ID build, a real library or Claude Desktop (see "Not yet verified").
 
 ## Design references
 
@@ -179,9 +179,27 @@ Rules:
 When Liam says "ship it", merge the work to `main`: commit, push the branch, open a pull request, and merge it once the checks pass. `main` is what gets released:
 
 - iPhone: the merge uploads a TestFlight build through CI (see below). Watch the run; if the runner is offline, say so.
-- Mac: not automatic. Only when the Mac app changed and Liam wants a new public download: `make release-mac`, upload the DMG to the R2 bucket `w2-downloads` under a new key, and update `TRANSCRIBE` in the `w2-website` repo's `src/index.js`.
+- Mac: not automatic. Only when the Mac app changed and Liam wants a new public download: `make release-mac`, then the steps in "Uploading the Mac download to Cloudflare R2".
 
 Run `swift test` before merging. A merge that changes the store schema or CloudKit record types needs the checks in "Building and installing on the iPhone" and the Production schema deploy first.
+
+## Uploading the Mac download to Cloudflare R2
+
+The public download is https://w2solutions.ai/transcribe. The page and `/transcribe/download` come from the `w2-website` Worker, which streams the DMG from the R2 bucket `w2-downloads` (Cloudflare account `0c48b1025075e124b4d401a3c926e26b`) at the key `transcribe/Transcribe-<version>.dmg`. Wrangler is signed in on this Mac (`wrangler whoami`).
+
+- **The bucket keeps only the latest DMG** (Liam, 2026-11-25). Do it in this order, so the page never points at a missing or mismatched file:
+  1. Upload the new DMG under its own versioned key.
+  2. In `w2-website`, update `TRANSCRIBE` in `src/index.js` (version, file, key, size, sha256) through a pull request. Merging to that repo's `main` deploys the site.
+  3. Check the live download: `curl -sL https://w2solutions.ai/transcribe/download | shasum -a 256` must equal the DMG's sha256.
+  4. Delete the previous key: `wrangler r2 object delete w2-downloads/transcribe/Transcribe-<old version>.dmg --remote`.
+- Do not overwrite one fixed key instead: the page shows the version and checksum, so the file would not match the page until the site deploys.
+- After step 4 the bucket has no older copy. Rolling back means uploading the older DMG again (rebuild it from its tag if `dist/` no longer has it) and reverting the website change.
+- `wrangler r2 object put` refuses files over 300 MiB and the DMG is about 625 MiB. `wrangler dev --remote` and remote bindings did not work on this account on 2026-11-25 ("Could not create remote preview session"). What works is a temporary Worker that does an R2 multipart upload, in `tools/r2-uploader/` (kept outside `scripts/` so changing it does not start a TestFlight build):
+  1. `openssl rand -hex 24 > "$T/token"` (`$T` is any folder outside the repo).
+  2. `wrangler deploy --config tools/r2-uploader/wrangler.toml --var "TOKEN:$(cat "$T/token")"`. It deploys `w2-tmp-uploader` on workers.dev and prints its URL.
+  3. `tools/r2-uploader/upload.sh dist/Transcribe-<version>.dmg transcribe/Transcribe-<version>.dmg <that URL> "$T/token"`. It sends 50 MiB parts, refuses a key that already exists, and prints the stored size. About 10 minutes on this connection.
+  4. Check the stored bytes: `curl -s -H "x-token: $(cat "$T/token")" "<that URL>/get?key=transcribe/Transcribe-<version>.dmg" | shasum -a 256`.
+  5. `wrangler delete --name w2-tmp-uploader --force`, and delete the token file. Never leave the uploader deployed: it can read and write the bucket.
 
 ## Releasing the iPhone app to TestFlight
 
