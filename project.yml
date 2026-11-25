@@ -196,12 +196,12 @@ targets:
         # target alone (overriding PRODUCT_BUNDLE_IDENTIFIER there would rename the helper too).
         PRODUCT_BUNDLE_IDENTIFIER: $(TRANSCRIBE_MAC_BUNDLE_ID)
         TRANSCRIBE_MAC_BUNDLE_ID: ai.w2solutions.transcribe.mac
-        MARKETING_VERSION: "0.2.0"
+        MARKETING_VERSION: "0.3.0"
         # Debug builds stay "1"; release-mac.sh sets the real build number (major*10000 + minor*100 + patch).
         CURRENT_PROJECT_VERSION: "1"
         TRANSCRIBE_FEED_URL: https://w2solutions.ai/transcribe/appcast.xml
         # Public half of the Sparkle update key (generate_keys -p). Not secret. Empty: updates off, and release-mac.sh refuses a non-test release.
-        TRANSCRIBE_ED_PUBLIC_KEY: ""
+        TRANSCRIBE_ED_PUBLIC_KEY: "1Z/8MDXT937QvITrcGg8IsKL41bITaOcSiDGfBd2CQE="
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
