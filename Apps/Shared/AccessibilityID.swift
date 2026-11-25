@@ -230,6 +230,45 @@ enum AX {
         }
     }
 
+    /// "Let Claude read transcripts" (Mac only): Settings → Claude.
+    enum Claude {
+        static let section = "settings.claude.section"
+        static let master = "settings.claude.master"
+        static let explanation = "settings.claude.explanation"
+        static let allowNote = "settings.claude.allowNote"
+        static let status = "settings.claude.status"
+        static let addCode = "settings.claude.addCode"
+        static let addDesktop = "settings.claude.addDesktop"
+        static let copyDesktopConfig = "settings.claude.copyDesktopConfig"
+        static let copiedToast = "settings.claude.copiedToast"
+        static let desktopHelp = "settings.claude.desktopHelp"
+        static let problem = "settings.claude.problem"
+        static let moveWarning = "settings.claude.moveWarning"
+        static let removeHelp = "settings.claude.removeHelp"
+        /// The Allowed apps card, and its line when no app is allowed yet.
+        static let allowedApps = "settings.claude.allowedApps"
+        static let noAllowedApps = "settings.claude.noAllowedApps"
+        static let removeConfirm = "settings.claude.removeConfirm"
+        /// One allowed app (by client id) and its Remove button.
+        static func allowedApp(_ clientID: String) -> String { "settings.claude.allowed.\(clientID)" }
+        static func removeApp(_ clientID: String) -> String { "settings.claude.allowed.\(clientID).remove" }
+        /// A request waiting in Settings (by client id): the row (its text holds the code), Allow and Don't Allow.
+        static func request(_ clientID: String) -> String { "settings.claude.request.\(clientID)" }
+        static func requestAllow(_ clientID: String) -> String { "settings.claude.request.\(clientID).allow" }
+        static func requestDeny(_ clientID: String) -> String { "settings.claude.request.\(clientID).deny" }
+        /// The same request as an alert on the main window.
+        static let alertAllow = "claude.pairingAlert.allow"
+        static let alertDeny = "claude.pairingAlert.deny"
+    }
+
+    /// Software updates (Mac only): Settings → Updates.
+    enum Updates {
+        static let section = "settings.updates.section"
+        static let automatic = "settings.updates.automatic"
+        static let checkNow = "settings.updates.checkNow"
+        static let note = "settings.updates.note"
+    }
+
     enum ModelSettings {
         static let screen = "modelSettings.screen"
         static let speechRow = "modelSettings.speechRow"

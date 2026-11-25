@@ -119,6 +119,38 @@ struct LaunchConfigTests {
     func badRoutes(_ raw: String) {
         #expect(LaunchRoute(raw) == nil)
     }
+
+    /// Claude access for the session (D19): read only with the fake engine or `-uiTesting`, so a stray environment
+    /// variable can never turn it on for the real library.
+    @Test func mcpLaunchKeysReadOnlyWithFakeOrUITesting() {
+        let env = ["TRANSCRIBE_MCP": "on", "TRANSCRIBE_MCP_AUTO_ALLOW": "on", "TRANSCRIBE_MCP_TEST_PORT": "39123"]
+        let real = LaunchConfig(arguments: [], environment: env)
+        #expect(!real.mcpOn && !real.mcpAutoAllow && real.mcpTestPort == nil)
+        for args in [["-useFakeEngine"], ["-uiTesting"]] {
+            let c = LaunchConfig(arguments: args, environment: env)
+            #expect(c.mcpOn && c.mcpAutoAllow && c.mcpTestPort == 39_123, "\(args)")
+        }
+        let fake = LaunchConfig(arguments: [], environment: env.merging(["TRANSCRIBE_ENGINE": "fake"]) { $1 })
+        #expect(fake.mcpOn && fake.mcpAutoAllow)
+        let defaults = LaunchConfig(arguments: ["-useFakeEngine"], environment: [:])
+        #expect(!defaults.mcpOn && !defaults.mcpAutoAllow && defaults.mcpTestPort == nil)
+        #expect(!LaunchConfig(arguments: ["-useFakeEngine"], environment: ["TRANSCRIBE_MCP": "yes"]).mcpOn)
+        #expect(!LaunchConfig(arguments: ["-useFakeEngine"], environment: ["TRANSCRIBE_MCP_AUTO_ALLOW": "1"]).mcpAutoAllow)
+        #expect(LaunchConfig(arguments: ["-useFakeEngine"], environment: ["TRANSCRIBE_MCP_AUTO_ALLOW": " ON "]).mcpAutoAllow)
+    }
+
+    @Test func mcpTestPortValidated() {
+        func config(port: String? = nil) -> LaunchConfig {
+            var env: [String: String] = [:]
+            env["TRANSCRIBE_MCP_TEST_PORT"] = port
+            return LaunchConfig(arguments: ["-useFakeEngine"], environment: env)
+        }
+        #expect(config(port: "1").mcpTestPort == 1)
+        #expect(config(port: "65535").mcpTestPort == 65_535)
+        for bad in ["0", "65536", "-1", "abc", "", " 40000"] {
+            #expect(config(port: bad).mcpTestPort == nil, "\(bad)")
+        }
+    }
 }
 
 @Suite("WAVFileWriter")

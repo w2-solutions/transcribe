@@ -27,6 +27,11 @@ public final class AppEnvironment {
     /// The launch's sync start (fetch, scan, send). It runs beside the rest of the launch, so a slow network never
     /// delays the library or the models.
     public private(set) var syncLaunch: Task<Void, Never>?
+    /// Mac only: "Let Claude read transcripts" is on (set by the Mac app's ClaudeAccess). Always false on iPhone.
+    public var claudeAccessOn = false
+    /// Mac only: the Sparkle updater runs in this build (set by the Mac app from `UpdateAvailability`). Always false on
+    /// iPhone.
+    public var updatesAvailable = false
     public private(set) var isLaunched = false
     public private(set) var launchError: String?
 
@@ -38,6 +43,7 @@ public final class AppEnvironment {
     /// phase and is seeded from this at launch (a launch for an iCloud push starts in the background, and SwiftUI
     /// reports no phase change for the starting state).
     @ObservationIgnored private let activityPhase: (@MainActor () -> AppPhase)?
+    @ObservationIgnored private var launchRun: Task<Void, Never>?
 
     public init(config: LaunchConfig, engine: any SpeechEngine, background: any BackgroundTaskBridge,
                 deviceIdentity: any DeviceIdentity, seeder: Seeder?, syncTransport: (any SyncTransport)? = nil,
@@ -97,8 +103,17 @@ public final class AppEnvironment {
     /// Order: activity seeded (iPhone) → paths.prepare (+ detached removal of the old downloaded models) → seed (if
     /// config.seed) → store.stampCaptureChannels → store.sweepOrphanAudio → models.refresh →
     /// coordinator.recoverOnLaunch → sync.start (its own task, when the switch is on) → models.prepareIfInstalled (detached;
-    /// it waits for the front when the app launched in the background) → isLaunched = true.
+    /// it waits for the front when the app launched in the background) → isLaunched = true. Runs once: a second caller
+    /// (the Mac app's DEBUG Claude session start, beside the window's task) waits for the same run instead of starting
+    /// another.
     public func onLaunch() async {
+        if let launchRun { return await launchRun.value }
+        let run = Task { await launch() }
+        launchRun = run
+        await run.value
+    }
+
+    private func launch() async {
         guard !isLaunched else { return }
         if activityPhase?() == .background { activity.enterBackground() }
         do { try paths.prepare() } catch { launchError = "Couldn't prepare storage: \(error.localizedDescription)" }

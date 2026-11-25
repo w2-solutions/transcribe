@@ -14,8 +14,7 @@
 #                       image). Set this to a self-hosted Mac's label, or to the hosted image once one
 #                       has Xcode 27. Unset, the job runs on macos-latest and fails fast at "Select Xcode 27".
 #
-# The Mac app is not released from CI: it is signed with Developer ID and notarised from a Mac that
-# holds the certificate (make release-mac).
+# The Mac app is released by mac-release.yml when the TranscribeMac MARKETING_VERSION changes.
 
 name: TestFlight
 
@@ -26,7 +25,11 @@ on:
       - Apps/**
       - TranscribeKit/**
       - project.yml
-      - scripts/**
+      - scripts/testflight.sh
+      - scripts/fetch-models.sh
+      - scripts/check-models.sh
+      - scripts/models.lock
+      - scripts/ExportOptions-TestFlight.plist
       - .github/workflows/testflight.yml
   workflow_dispatch:
 
@@ -42,15 +45,17 @@ jobs:
     runs-on: ${{ vars.TESTFLIGHT_RUNNER || 'macos-latest' }}
     timeout-minutes: 60
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
 
       # The app needs the iOS 27 SDK. Fail with a clear message if the runner image has no Xcode 27.
       - name: Select Xcode 27
         run: |
           if xcodebuild -version 2>/dev/null | grep -q '^Xcode 27'; then xcodebuild -version; exit 0; fi   # a self-hosted Mac
-          XCODE=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          XCODE=$(find /Applications -maxdepth 1 -name 'Xcode_27*.app' | sort -V | tail -1)
           if [ -z "$XCODE" ]; then
-            echo "::error::This runner has no Xcode 27. Installed: $(ls /Applications | grep -i xcode | tr '\n' ' ')"
+            echo "::error::This runner has no Xcode 27. Installed: $(find /Applications -maxdepth 1 -iname '*xcode*' | tr '\n' ' ')"
             exit 1
           fi
           sudo xcode-select -s "$XCODE"
@@ -62,7 +67,7 @@ jobs:
       # ~700 MB from Hugging Face, pinned and checked by scripts/models.lock.
       - name: Cache the speech models
         if: runner.environment == 'github-hosted'   # a self-hosted Mac keeps them on disk
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: BundledModels
           key: models-${{ hashFiles('scripts/models.lock') }}
@@ -96,7 +101,7 @@ jobs:
 
       - name: Keep the build logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: testflight-logs
           path: ${{ runner.temp }}/testflight/*.log

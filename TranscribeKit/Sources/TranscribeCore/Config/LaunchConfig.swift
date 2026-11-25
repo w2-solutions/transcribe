@@ -52,6 +52,9 @@ public struct LaunchConfig: Sendable, Equatable {
     public static let envMic = "TRANSCRIBE_MIC"        // granted | denied | undetermined
     public static let envChannel = "TRANSCRIBE_CHANNEL" // iphone | ipad | mac (fake engine and UI tests only)
     public static let envSync = "TRANSCRIBE_SYNC"       // off | fake:<FakeSyncScenario> (fake engine and UI tests only)
+    public static let envMCP = "TRANSCRIBE_MCP"                    // on (fake engine and UI tests only)
+    public static let envMCPAutoAllow = "TRANSCRIBE_MCP_AUTO_ALLOW" // on (fake engine and UI tests only)
+    public static let envMCPTestPort = "TRANSCRIBE_MCP_TEST_PORT"  // 1–65535
 
     public var useFakeEngine: Bool
     public var uiTesting: Bool
@@ -68,6 +71,12 @@ public struct LaunchConfig: Sendable, Equatable {
     /// The fake sync scenario (`TRANSCRIBE_SYNC=fake:<scenario>`); nil = off. Read only with the fake engine or
     /// `-uiTesting`, like `channel`.
     public var sync: FakeSyncScenario?
+    /// Claude access for this session only (`TRANSCRIBE_MCP=on`, with a throwaway port, and optionally every pairing
+    /// request allowed at once, for the smoke script, UI tests and the helper's fake launch). Read only with the fake
+    /// engine or `-uiTesting`, like `channel`, and never saved. The Mac app honours these only in DEBUG builds.
+    public var mcpOn: Bool
+    public var mcpAutoAllow: Bool
+    public var mcpTestPort: UInt16?
 
     public init(arguments: [String], environment: [String: String]) {
         useFakeEngine = arguments.contains(Self.argUseFakeEngine) || environment["TRANSCRIBE_ENGINE"] == "fake"
@@ -82,7 +91,13 @@ public struct LaunchConfig: Sendable, Equatable {
         let rawChannel = environment[Self.envChannel]?.trimmingCharacters(in: .whitespaces).lowercased()
         channel = (useFakeEngine || uiTesting) && rawChannel?.isEmpty == false ? rawChannel : nil
         sync = (useFakeEngine || uiTesting) ? Self.parseSync(environment[Self.envSync]) : nil
+        let testRun = useFakeEngine || uiTesting
+        mcpOn = testRun && Self.isOn(environment[Self.envMCP])
+        mcpAutoAllow = testRun && Self.isOn(environment[Self.envMCPAutoAllow])
+        mcpTestPort = testRun ? environment[Self.envMCPTestPort].flatMap { UInt16($0) }.flatMap { $0 == 0 ? nil : $0 } : nil
     }
+    /// "on", in any case, with spaces around allowed.
+    private static func isOn(_ raw: String?) -> Bool { raw?.trimmingCharacters(in: .whitespaces).lowercased() == "on" }
     public static var current: LaunchConfig {
         LaunchConfig(arguments: ProcessInfo.processInfo.arguments, environment: ProcessInfo.processInfo.environment)
     }

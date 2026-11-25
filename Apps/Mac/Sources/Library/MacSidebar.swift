@@ -125,7 +125,9 @@ struct MacSidebar: View {
     /// The privacy line, or the iCloud status while sync is on (§8.6). Clicking it opens Settings.
     private var syncFooter: some View {
         let status = env.sync.map { env.settings.syncEnabled ? $0.status : .off } ?? .off
-        let text = SyncCopy.footer(status, copy: DeviceCopy(platform: .mac, syncOn: env.copy.syncOn, cloudCopyKept: env.copy.cloudCopyKept))
+        let copy = env.copy
+        let text = SyncCopy.footer(status, copy: DeviceCopy(platform: .mac, syncOn: copy.syncOn, cloudCopyKept: copy.cloudCopyKept,
+                                                            claudeOn: copy.claudeOn))
         let symbol = status == .off ? "lock" : SyncSettingsSection.symbol(status)
         return Button { openSettings() } label: {
             Label(text, systemImage: symbol)

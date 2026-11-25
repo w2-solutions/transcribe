@@ -1,0 +1,39 @@
+# Checks the Mac release scripts and workflows on every pull request: actionlint, shellcheck, bash -n, the
+# --print-version rule and the release gate (scripts/tests/release-scripts-test.sh; its Ed25519, signing and
+# publishing parts need macOS and run locally with make test-release-scripts).
+#
+# GitHub-hosted Linux only, no secrets and read-only: never the self-hosted Mac, which a fork's pull request must not
+# reach.
+
+name: Release checks
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scripts:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+
+      - name: Install actionlint (pinned, checksum verified)
+        run: |
+          V=1.7.12
+          SHA=8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8
+          F="actionlint_${V}_linux_amd64.tar.gz"
+          curl --retry 3 -fsSLo "$RUNNER_TEMP/$F" "https://github.com/rhysd/actionlint/releases/download/v$V/$F"
+          echo "$SHA  $RUNNER_TEMP/$F" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$F" -C "$RUNNER_TEMP/bin" actionlint
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+
+      - name: Release script tests
+        run: |
+          shellcheck --version | head -2
+          ./scripts/tests/release-scripts-test.sh

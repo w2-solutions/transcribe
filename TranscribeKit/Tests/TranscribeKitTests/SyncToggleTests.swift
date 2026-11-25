@@ -121,6 +121,27 @@ extension SyncSuites {
             #expect(app.sync == nil)
         }
 
+        /// The Mac app's DEBUG Claude session calls onLaunch from App.init while the window's task may call it too: the
+        /// launch (and its seed) runs once, and both callers return only once it is done.
+        @Test func concurrentOnLaunchRunsOnce() async throws {
+            let config = LaunchConfig(arguments: [LaunchConfig.argUseFakeEngine, LaunchConfig.argUITesting],
+                                      environment: [LaunchConfig.envSeed: SeedName.library.rawValue])
+            var seeded = 0
+            let app = try AppEnvironment(config: config, engine: FakeSpeechEngine(config: config, script: FakeScript.named(config.script)),
+                                         background: NoopBackgroundTaskBridge(), deviceIdentity: FixedDeviceIdentity("ui-test"),
+                                         seeder: { seed, context, paths, clock in
+                                             seeded += 1
+                                             try Seeds.apply(seed, context: context, paths: paths, clock: clock)
+                                         })
+            defer { try? FileManager.default.removeItem(at: app.paths.root) }
+            async let first: Void = app.onLaunch()
+            async let second: Void = app.onLaunch()
+            _ = await (first, second)
+            #expect(seeded == 1 && app.isLaunched && app.launchError == nil)
+            await app.onLaunch()
+            #expect(seeded == 1)
+        }
+
         @Test func launchConfigParsesTheFakeSyncScenario() {
             let fake = [LaunchConfig.argUseFakeEngine]
             #expect(LaunchConfig(arguments: fake, environment: [LaunchConfig.envSync: "fake:remoteLibrary"]).sync == .remoteLibrary)

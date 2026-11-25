@@ -6,6 +6,9 @@ options:
     macOS: "27.0"
   xcodeVersion: "27.0"
   createIntermediateGroups: true
+  # Seed the generated project's own Package.resolved from TranscribeKit's, so Xcode writes its Sparkle pin into the
+  # (ignored) project and never into TranscribeKit/Package.resolved, which SwiftPM would change back.
+  postGenCommand: mkdir -p Transcribe.xcodeproj/project.xcworkspace/xcshareddata/swiftpm && cp TranscribeKit/Package.resolved Transcribe.xcodeproj/project.xcworkspace/xcshareddata/swiftpm/Package.resolved
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -17,6 +20,11 @@ settings:
 packages:
   TranscribeKit:
     path: TranscribeKit
+  # In-app updates for the Mac app only (TranscribeKit also builds for iOS). Pinned by revision, not tag: a tag can
+  # move, and the revision also fixes the prebuilt framework and tools through the checksum in its Package.swift.
+  Sparkle:
+    url: https://github.com/sparkle-project/Sparkle
+    revision: ab7d71291238df6e0492143b120c9b696a35f603  # 2.10.1. A bump changes this, the 2.10.1/2065 checks in release-mac.sh, Attributions and CLAUDE.md together.
 targets:
   Transcribe:
     type: application
@@ -73,7 +81,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe
         # TestFlight needs a build number higher than the last upload for this version.
-        MARKETING_VERSION: "0.1.1"
+        MARKETING_VERSION: "0.2.0"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         TARGETED_DEVICE_FAMILY: "1"
@@ -137,6 +145,32 @@ targets:
         product: TranscribeFakes
       - package: TranscribeKit
         product: TranscribeCloudKit
+      - package: TranscribeKit
+        product: TranscribeMCP
+      - package: TranscribeKit
+        product: TranscribeMCPHost
+      - package: Sparkle
+      # The Claude helper (transcribe-mcp), signed on copy into Transcribe.app/Contents/Helpers.
+      - target: TranscribeMCPHelper
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Helpers
+    # Sparkle's Downloader service is unused (the app has network.client and SUEnableDownloaderService is NO), so it is
+    # removed from archived apps, leaving no unsandboxed fetcher in the bundle. release-mac.sh checks it is gone.
+    # Xcode signed the framework on copy with the service inside, so the phase re-seals it exactly as Xcode signed it
+    # (the app itself is signed after this phase; the Developer ID export re-signs everything again).
+    postBuildScripts:
+      - name: Remove Sparkle Downloader (archive only)
+        basedOnDependencyAnalysis: false
+        showEnvVars: false
+        script: |
+          [ "$ACTION" = "install" ] || exit 0
+          FW="${TARGET_BUILD_DIR}/${WRAPPER_NAME}/Contents/Frameworks/Sparkle.framework/Versions/B"
+          rm -rf "$FW/XPCServices/Downloader.xpc"
+          [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] || exit 0
+          /usr/bin/codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" $OTHER_CODE_SIGN_FLAGS -o runtime --preserve-metadata=identifier,entitlements,flags --generate-entitlement-der "$FW"
     info:
       path: Apps/Mac/Info.plist
       properties:
@@ -149,12 +183,33 @@ targets:
         NSMicrophoneUsageDescription: "Transcribe records conversations on this Mac to turn them into text. Speech is processed on this Mac."
         NSHumanReadableCopyright: "© 2026 W2 Solutions"
         ITSAppUsesNonExemptEncryption: false
+        # Sparkle (in-app updates). The app turns the updater on only when it is not a Debug, fake-engine or UI-test
+        # run and both values below are valid (UpdateAvailability). Sparkle asks once, on the second launch, whether
+        # to check automatically (SUEnableAutomaticChecks is left out on purpose). No system profile, no automatic
+        # install. Only a feed signed with this key is accepted, with no grace period for a bad signature.
+        SUFeedURL: $(TRANSCRIBE_FEED_URL)
+        SUPublicEDKey: $(TRANSCRIBE_ED_PUBLIC_KEY)
+        SUEnableInstallerLauncherService: true
+        SUEnableDownloaderService: false
+        SURequireSignedFeed: true
+        SUSignedFeedFailureExpirationInterval: 0
+        SUVerifyUpdateBeforeExtraction: true
+        SUAllowsAutomaticUpdates: false
+        SUEnableSystemProfiling: false
+        SUScheduledCheckInterval: 86400
     settings:
       base:
         PRODUCT_NAME: Transcribe
-        PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.mac
-        MARKETING_VERSION: "0.1.1"
+        # The update end-to-end test overrides TRANSCRIBE_MAC_BUNDLE_ID on the xcodebuild line, which renames this
+        # target alone (overriding PRODUCT_BUNDLE_IDENTIFIER there would rename the helper too).
+        PRODUCT_BUNDLE_IDENTIFIER: $(TRANSCRIBE_MAC_BUNDLE_ID)
+        TRANSCRIBE_MAC_BUNDLE_ID: ai.w2solutions.transcribe.mac
+        MARKETING_VERSION: "0.3.0"
+        # Debug builds stay "1"; release-mac.sh sets the real build number (major*10000 + minor*100 + patch).
         CURRENT_PROJECT_VERSION: "1"
+        TRANSCRIBE_FEED_URL: https://w2solutions.ai/transcribe/appcast.xml
+        # Public half of the Sparkle update key (generate_keys -p). Not secret. Empty: updates off, and release-mac.sh refuses a non-test release.
+        TRANSCRIBE_ED_PUBLIC_KEY: "1Z/8MDXT937QvITrcGg8IsKL41bITaOcSiDGfBd2CQE="
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         GENERATE_INFOPLIST_FILE: NO
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -175,10 +230,38 @@ targets:
         # the command line Xcode signs with Apple Development instead. Release always needs the team.
         Debug:
           OTHER_CODE_SIGN_FLAGS: ""
+          TRANSCRIBE_FEED_URL: ""
         # aps-environment stays "development" (as for the iPhone): the archive is signed with a development profile,
         # and the Developer ID export sets "production" from its profile (release-mac.sh checks the result).
         Release:
           TRANSCRIBE_ICLOUD_ENV: Production
+  # transcribe-mcp, the stdio MCP server Claude Code and Claude Desktop run. Unsandboxed on purpose: it has no
+  # entitlements file, so it carries none (release-mac.sh checks), and it reaches the app over loopback only.
+  TranscribeMCPHelper:
+    type: tool
+    platform: macOS
+    sources: [Apps/MacHelper/Sources]
+    dependencies:
+      - package: TranscribeKit
+        product: TranscribeMCP
+    settings:
+      base:
+        PRODUCT_NAME: transcribe-mcp
+        PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe.mac.mcp
+        ENABLE_HARDENED_RUNTIME: YES
+        GENERATE_INFOPLIST_FILE: YES
+        CREATE_INFOPLIST_SECTION_IN_BINARY: YES
+        SKIP_INSTALL: YES
+        # Signed with no entitlements at all, in every configuration. Without these, Xcode adds
+        # com.apple.application-identifier, and get-task-allow in Debug.
+        ENTITLEMENTS_REQUIRED: NO
+        CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
+        OTHER_CODE_SIGN_FLAGS: --timestamp
+      configs:
+        # Signing to run locally (no team) leaves out the hardened runtime that ENABLE_HARDENED_RUNTIME asks for, so
+        # Debug asks codesign for it directly; code-sign-on-copy into the app keeps the flag.
+        Debug:
+          OTHER_CODE_SIGN_FLAGS: --options=runtime
   TranscribeUITests:
     type: bundle.ui-testing
     platform: iOS

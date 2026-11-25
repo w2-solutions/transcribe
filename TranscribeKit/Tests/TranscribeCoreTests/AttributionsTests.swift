@@ -27,7 +27,31 @@ struct AttributionsTests {
             let link = Attributions.licenceURL(for: entry.licence)
             #expect(link.flatMap(URL.init(string:))?.scheme == "https", "\(entry.id)")
         }
-        #expect(Attributions.licenceURL(for: "MIT") == nil)
+        #expect(Attributions.licenceURL(for: "BSD-3-Clause") == nil)
+    }
+
+    /// The Mac app embeds Sparkle (MIT), whose notice must ship with it; the iPhone app does not.
+    @Test func sparkleIsCreditedOnTheMacOnly() throws {
+        #if os(macOS)
+        #expect(Attributions.requiredIDs.contains("sparkle"))
+        let sparkle = try #require(Attributions.all.first { $0.id == "sparkle" })
+        #expect(sparkle.licence == "MIT")
+        #expect(sparkle.url == "https://sparkle-project.org")
+        #expect(sparkle.notes.contains("version 2.10.1"))
+        #expect(Attributions.fullTextLicences.contains("MIT"))
+        #expect(Attributions.licenceURL(for: "MIT") == "https://github.com/sparkle-project/Sparkle/blob/2.10.1/LICENSE")
+        let text = try #require(sparkle.licenceText)
+        #expect(!text.isEmpty)
+        #expect(text.hasPrefix("Copyright (c) 2006-2013 Andy Matuschak."))
+        #expect(text.contains("Permission is hereby granted, free of charge"))
+        for external in ["EXTERNAL LICENSES", "bsdiff", "sais-lite", "Ed25519", "SUSignatureVerifier.m"] {
+            #expect(text.contains(external), "keeps the external licence for \(external)")
+        }
+        // Libraries come after the models, and Sparkle (Mac only) last.
+        #expect(Attributions.all.last?.id == "sparkle")
+        #else
+        #expect(!Attributions.all.contains { $0.id == "sparkle" })
+        #endif
     }
 
     @Test func modelSourcesMatchTheBrief() throws {

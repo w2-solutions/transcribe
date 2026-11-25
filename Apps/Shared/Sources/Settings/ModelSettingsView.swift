@@ -16,7 +16,8 @@ struct ModelSettingsView: View {
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
-                Text(DeviceCopy().modelsIntro)
+                // From env.copy: on a Mac that updates itself the intro must not say "Nothing is downloaded".
+                Text(env.copy.modelsIntro)
                     .font(DS.Typo.subheadline)
                     .lineSpacing(3)
                     .foregroundStyle(DS.Colour.secondary)
