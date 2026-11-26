@@ -15,7 +15,8 @@ struct CKRecordCodecTests {
     let outgoing = FileManager.default.temporaryDirectory.appendingPathComponent("ckcodec-\(UUID().uuidString)", isDirectory: true)
     var codec: CKRecordCodec { CKRecordCodec(outgoingDirectory: outgoing) }
 
-    /// The seeded library plus a folder, a negative, odd floats and empty lists: every record type and field kind.
+    /// The seeded library plus a folder, a negative, a group label, odd floats and empty lists: every record type and
+    /// field kind.
     func library() throws -> (ModelContainer, [SyncRecord]) {
         let container = try ModelContainerFactory.make(inMemory: true, url: nil)
         let context = container.mainContext
@@ -34,6 +35,12 @@ struct CKRecordCodecTests {
         negative.profile = profile
         negative.captureChannel = CaptureChannel.mac
         context.insert(negative)
+        let anchor = try #require(VoiceVector(raw: [0.6, -0.8, 0.333_333_34]))
+        let label = VoiceGroupLabel(text: "Speakerphone ✓", createdAt: Date(timeIntervalSince1970: 1_763_500_002.000_4),
+                                    embeddingModelKey: "k", captureChannel: CaptureChannel.mac, anchors: [anchor, anchor])
+        context.insert(label)
+        label.editedAt = Date(timeIntervalSince1970: 1_763_500_062.999_6)
+        label.profile = profile
         let speakers = try context.fetch(FetchDescriptor<RecordingSpeaker>())
         speakers.first?.rejectedProfileIDs = [UUID(), UUID()]
         speakers.last?.rejectedProfileIDs = []                 // an empty list of strings

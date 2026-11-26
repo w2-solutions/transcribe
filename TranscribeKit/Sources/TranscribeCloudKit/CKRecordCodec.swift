@@ -73,6 +73,9 @@ public struct CKRecordCodec: Sendable {
                  "captureChannel": .string, "captureInput": .string]
         case .folder:
             k = ["name": .string, "createdAt": .dateMillis]
+        case .groupLabel:
+            k = ["profileID": .string, "text": .string, "createdAt": .dateMillis, "editedAt": .dateMillis,
+                 "embeddingModelKey": .string, "captureChannel": .string, "anchor": .bytes, "anchorDimension": .int]
         }
         k[SyncSchema.versionField] = .int
         return k
