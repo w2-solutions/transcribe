@@ -94,6 +94,9 @@ struct SettingsView: View {
                 SyncSettingsSection()
 
                 #if os(macOS)
+                // SHORTCUTS (Mac only): the global shortcuts for recording and dictation, and their permissions.
+                ShortcutsSettingsSection()
+
                 // CLAUDE (Mac only): off by default. Its toasts use this screen's overlay, so they show wherever the
                 // list is scrolled.
                 ClaudeSettingsSection { showToast($0, systemImage: $1, id: AX.Claude.copiedToast) }

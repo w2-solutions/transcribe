@@ -60,6 +60,14 @@ public struct FakeScript: Sendable {
         }
     }
 
+    /// What the fake engine transcribes for a dictation file (`DictationFiles.prefix`), whatever the script: one
+    /// sentence, 7 words over 0.2–2.4 s.
+    public static let dictationSentence = "Let's move the stand-up to ten tomorrow."
+    public static let dictationWords: [TimedWord] = dictationSentence.split(separator: " ").enumerated().map { i, word in
+        let start = 0.2 + Double(i) * 0.32
+        return TimedWord(text: String(word), range: TimeRange(start: start, end: start + 0.28))
+    }
+
     /// Seconds between live text updates, as with the real engine's live windows.
     public static let liveStep: TimeInterval = 2.0
 
