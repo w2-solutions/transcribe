@@ -34,6 +34,15 @@ public enum Seeds {
         }
         /// The seeded "Close" label on Tom's first group.
         public static let closeLabel = UUID(uuidString: "D0000000-0000-4000-8000-000000000001")!
+        // `voiceGroupsCalls`
+        /// A Teams call on this device recorded with the microphone and Mac audio: Liam in the room, Tom on the call.
+        public static let recordingT3 = UUID(uuidString: "A0000000-0000-4000-8000-000000000013")!
+        /// Tom's two samples from the call, heard through Mac audio.
+        public static let tomCallSamples: [UUID] = ["A", "B"].map {
+            UUID(uuidString: "C0000000-0000-4000-8000-00000000000\($0)")!
+        }
+        /// The seeded "Teams" label on Tom's call group.
+        public static let teamsLabel = UUID(uuidString: "D0000000-0000-4000-8000-000000000002")!
     }
 
     // MARK: Dates (Calendar.current, device time zone)
@@ -60,6 +69,8 @@ public enum Seeds {
         /// Tom named: 17 Nov 12:00; his sample k is added at 12:0k, the "Close" label saved at 12:30. All before the
         /// UI-test clock (18 Nov 14:31).
         public static var tomNamed: Date { date(17, 12, 0) }
+        /// T3 (the Teams call): Tue 17 Nov 13:00; Tom's call samples at 13:01 and 13:02, the "Teams" label at 13:30.
+        public static var t3: Date { date(17, 13, 0) }
 
         static func date(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
             Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute))!
@@ -77,6 +88,7 @@ public enum Seeds {
         case .processingHeld: (1, 2, 5)
         case .failedProcessing: (1, 0, 0)
         case .voiceGroups: (5, 3, 15)
+        case .voiceGroupsCalls: (6, 3, 17)
         }
     }
 
@@ -108,6 +120,10 @@ public enum Seeds {
         case .voiceGroups:
             try s.library()
             try s.tomGroups()
+        case .voiceGroupsCalls:
+            try s.library()
+            try s.tomGroups()
+            try s.tomCallGroup()
         }
         s.linkSamplesToSpeakers()
         try context.save()
@@ -343,6 +359,50 @@ struct SeedBuilder {
                                     anchors: close.compactMap(\.vector))
         context.insert(label)
         label.profile = p
+    }
+
+    /// `voiceGroupsCalls`: on top of `voiceGroups`, a Teams call (T3) recorded on this device with the microphone and
+    /// Mac audio. Liam (S1) was in the room and Tom (S2) on the call, so Tom's speaker is `system` and his two samples
+    /// from it carry `captureInput` systemAudio. They sound alike (setting axis 60, 0.85 to each other) and unlike
+    /// his room groups (0.36), so on this device Tom has four groups: Close, Far, On speaker and the call, which has the
+    /// saved label "Teams". Like the "Close" label, the recording, the samples and the label get this device's channel
+    /// at the launch stamp (decision D2: Mac audio is not a channel of its own).
+    mutating func tomCallGroup() throws {
+        guard let tom else { return }
+        let r = try makeRecording(id: Seeds.ID.recordingT3, createdAt: Seeds.Dates.t3, turns: SeedContent.conversationB,
+                                  duration: SeedContent.conversationBDuration, stage: .ready, speakers: true,
+                                  persons: ["S1": .liam, "S2": .stranger])
+        r.title = "Teams call"
+        r.captureDetailJSON = CaptureDetail(hardwareModel: "Mac15,3", input: CaptureDetail.Input.micAndSystem,
+                                            sources: CaptureDetail.Sources.both,
+                                            outputRoute: CaptureDetail.OutputRoute.headphones).json()
+        let liamSpeaker = addSpeaker(r, key: "S1", ordinal: 1, slot: 0, clean: 11.0, total: 11.4,
+                                     vector: SyntheticVoices.vector(near: .liam, cosine: 0.90, variant: 1),
+                                     label: .named, profile: liam)
+        liamSpeaker.captureSource = SpeakerSource.mic.rawValue
+        let tomSpeaker = addSpeaker(r, key: "S2", ordinal: 2, slot: 2, clean: 11.5, total: 13.0,
+                                    vector: SyntheticVoices.mix([(.stranger, 0.6)], setting: (60, 0.7), variant: 65),
+                                    label: .named, profile: tom)
+        tomSpeaker.captureSource = SpeakerSource.system.rawValue
+        finish(r)
+
+        let quotes = ["You're on mute, I think.", "Can everyone see my screen?"]
+        let clips = [TimeRange(start: 7.05, end: 10.8), TimeRange(start: 10.6, end: 14.4)]
+        var samples: [VoiceSample] = []
+        for k in 0..<2 {
+            let sample = addSample(to: tom, id: Seeds.ID.tomCallSamples[k],
+                                   vector: SyntheticVoices.mix([(.stranger, 0.6)], setting: (60, 0.7), variant: 53 + k),
+                                   origin: k == 0 ? .named : .confirmed, added: Seeds.Dates.date(17, 13, k + 1),
+                                   seconds: k == 0 ? 11.3 : 10.7, recording: Seeds.ID.recordingT3, key: "S2",
+                                   clip: clips[k], quote: quotes[k])
+            sample.captureInput = CaptureDetail.Input.systemAudio
+            samples.append(sample)
+        }
+        let anchors = samples.sorted { $0.id.uuidString < $1.id.uuidString }.compactMap(\.vector)
+        let label = VoiceGroupLabel(id: Seeds.ID.teamsLabel, text: "Teams", createdAt: Seeds.Dates.date(17, 13, 30),
+                                    embeddingModelKey: Self.modelKey, captureChannel: "", anchors: anchors)
+        context.insert(label)
+        label.profile = tom
     }
 
     /// A recording of Liam (S1) and Tom (S2, a stranger's voice), both named, on B's content.

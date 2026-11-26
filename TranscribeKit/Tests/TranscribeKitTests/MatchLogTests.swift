@@ -33,7 +33,7 @@ struct MatchLogTests {
         }
 
         let decoded = try MatchLog.decoder().decode(MatchLog.self, from: Data(log.utf8))
-        #expect(decoded.version == 2 && decoded.profiles.count == 2)
+        #expect(decoded.version == 3 && decoded.profiles.count == 2)
         #expect(decoded.policy.autoLabelMin == MatchPolicy.default.autoLabelMin && decoded.policy.maxSamplesPerProfile == 12)
         let karan = try #require(decoded.profiles.first { $0.id == Seeds.ID.karan })
         #expect(karan.samples == MatchLog.SampleCounts(trusted: 1, short: 1, automatic: 0) && karan.negatives == 1)
@@ -49,7 +49,7 @@ struct MatchLogTests {
     }
 
     /// Voice sample group labels are the user's own words about a voice: the log never carries their text, ids or
-    /// anchors, and stays at version 2 (it gains no group fields).
+    /// anchors. Version 3 adds group sizes per channel (counts only, never a group's samples, key or label).
     @Test func logNeverContainsGroupLabels() throws {
         let h = try WP3Harness()
         defer { h.cleanup() }
@@ -72,10 +72,16 @@ struct MatchLogTests {
         for word in forbidden { #expect(!log.contains(word), "log contains \(word)") }
 
         let decoded = try MatchLog.decoder().decode(MatchLog.self, from: Data(log.utf8))
-        #expect(decoded.version == 2)
+        #expect(decoded.version == 3)
         // Tom is in the log (the check is not vacuous), with his ten samples counted as before.
         let logged = try #require(decoded.profiles.first { $0.id == Seeds.ID.tom })
         #expect(logged.samples.trusted + logged.samples.short + logged.samples.automatic == 10)
+        // His sound groups as sizes only: Close, Far and On speaker on this device (one label moved nothing), and the
+        // iPad's two samples in one group.
+        let groups = try #require(logged.groupSizesByChannel)
+        #expect(groups.values.flatMap { $0 }.reduce(0, +) == 10)
+        #expect(groups[CaptureChannel.ipad] == [2])
+        #expect(groups.filter { $0.key != CaptureChannel.ipad }.values.first == [3, 3, 2])
     }
 
     @Test func logListsAtMostFiftyRecordings() throws {

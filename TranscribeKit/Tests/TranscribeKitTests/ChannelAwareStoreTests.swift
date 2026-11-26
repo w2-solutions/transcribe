@@ -305,7 +305,7 @@ struct ChannelAwareStoreTests {
         let text = try h.store.matchingLog()
         #expect(!text.contains("Desk Mic"))   // the input's device name is never exported
         let log = try MatchLog.decoder().decode(MatchLog.self, from: Data(text.utf8))
-        #expect(log.version == 2 && MatchLog.currentVersion == 2)
+        #expect(log.version == 3 && MatchLog.currentVersion == 3)   // v3 (Mac audio, groups) keeps every v2 key
         let karan = try #require(log.profiles.first { $0.id == Seeds.ID.karan })
         #expect(karan.samplesByChannel == [Self.phone: 2] && karan.trustedByChannel == [Self.phone: 1])
         let liam = try #require(log.profiles.first { $0.id == Seeds.ID.liam })

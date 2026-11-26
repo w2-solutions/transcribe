@@ -5,10 +5,12 @@ public enum SeedName: String, Sendable, CaseIterable {
     case shortKaran        // library + G: an unnamed 6.2 s voice that is Karan in another setting
     case karanFromIPhone   // library, with Karan's samples and his source recordings heard on an iPhone (§7)
     case voiceGroups       // library + Tom: three sound groups on this device, one on an iPad, a saved label
+    case voiceGroupsCalls  // voiceGroups + a Teams call recorded with Mac audio: Tom's call group, labelled "Teams"
 }
 public enum FakeScriptName: String, Sendable, CaseIterable {
     case newVoices, knownVoices, askKaran, noSpeech, failSeparation, holdAtSeparating
     case longTalk          // 90 s of unbroken speech: fills the live transcript on the recording screen
+    case callVoices        // a call: Liam on the microphone, Karan through Mac audio, and a voice heard on both
 }
 /// A fake sync scenario for UI tests (`TRANSCRIBE_SYNC=fake:<scenario>`, §8.6). UI tests never touch CloudKit.
 public enum FakeSyncScenario: String, Sendable, CaseIterable {

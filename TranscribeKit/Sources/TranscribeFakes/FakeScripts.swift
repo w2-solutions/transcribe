@@ -16,6 +16,27 @@ public struct FakeScript: Sendable {
     public var behaviour: Behaviour
     /// Per-span overrides for `embedVoice`: the first entry whose range contains a span's midpoint wins.
     public var spanVectors: [(range: TimeRange, vector: VoiceVector)] = []
+    /// Which stream each speaker is heard on when the script is recorded with the microphone and Mac audio (Both):
+    /// `.system` speakers are on the system stem only, `.mixed` ones on the microphone and, for the first half of each
+    /// of their segments, on the system stem too, everyone else on the microphone only. Empty for every script but
+    /// `callVoices`. `systemStemSegments` and `SyntheticAudio.writeStems` turn this into stems, so the real
+    /// attribution (`SourceAttribution`) runs on them.
+    public var speakerSources: [SpeakerKey: SpeakerSource] = [:]
+
+    /// The segments that sound on one stem of a Both recording, with the person speaking each.
+    public func stemSegments(_ stream: CaptureStream) -> [(TimeRange, SyntheticPerson)] {
+        segments.compactMap { segment in
+            let person = persons[segment.speakerKey] ?? .stranger
+            switch (stream, speakerSources[segment.speakerKey] ?? .mic) {
+            case (.mic, .system): return nil
+            case (.mic, _): return (segment.range, person)
+            case (.system, .mic): return nil
+            case (.system, .system): return (segment.range, person)
+            case (.system, .mixed):
+                return (TimeRange(start: segment.range.start, end: segment.range.start + segment.range.duration / 2), person)
+            }
+        }
+    }
 
     /// Segments with the synthetic person speaking each one (for SyntheticAudio).
     public var audioSegments: [(TimeRange, SyntheticPerson)] {
@@ -36,6 +57,22 @@ public struct FakeScript: Sendable {
             "S2": SyntheticVoices.vector(near: .karan, cosine: 0.90, variant: 2),
         ]
         switch name {
+        case .callVoices:
+            // Liam in the room, Karan through Mac audio, and S3 heard on both: a blend of the two (never learned).
+            var script = FakeScript(name: name, duration: SeedContent.callConversationDuration,
+                                    turns: SeedContent.callConversation,
+                                    words: SeedContent.allWords(SeedContent.callConversation),
+                                    segments: SeedContent.segments(SeedContent.callConversation), vectors: [
+                                        "S1": SyntheticVoices.vector(near: .liam, cosine: 0.90, variant: 28),
+                                        "S2": SyntheticVoices.vector(near: .karan, cosine: 0.90, variant: 29),
+                                        "S3": SyntheticVoices.mix([(.liam, 0.6), (.karan, 0.6)], variant: 64),
+                                    ],
+                                    persons: ["S1": .liam, "S2": .karan, "S3": .stranger],
+                                    liveTimeline: liveTimeline(for: SeedContent.callConversation,
+                                                               duration: SeedContent.callConversationDuration),
+                                    behaviour: .normal)
+            script.speakerSources = ["S1": .mic, "S2": .system, "S3": .mixed]
+            return script
         case .newVoices:
             return make(b, SeedContent.conversationBDuration, newVoicesVectors, .normal)
         case .knownVoices:

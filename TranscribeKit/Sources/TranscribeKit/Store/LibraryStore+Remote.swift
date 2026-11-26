@@ -107,6 +107,7 @@ extension LibraryStore {
         case (.speaker(let s), G.stats):
             s.turnCount = Int(v["turnCount"]?.intValue ?? 0)
             s.totalSeconds = v["totalSeconds"]?.doubleValue ?? 0
+            s.captureSource = v["captureSource"]?.stringValue   // V5; absent from records of older builds: the microphone
         case (.speaker(let s), G.label):
             if let l = v["label"]?.stringValue { s.labelRaw = l }
             s.profile = resolve("profileID", v, &unresolved) { id in try? self.profile(id) }

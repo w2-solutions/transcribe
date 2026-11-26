@@ -84,6 +84,24 @@ public enum SeedContent {
         return turns
     }()
 
+    /// A call recorded with the microphone and Mac audio (`callVoices`): S1 in the room, S2 the far side of the call
+    /// (heard through Mac audio), S3 heard on both (a voice the room speaker played into the microphone).
+    public static let callConversation: [ScriptTurn] = [
+        ScriptTurn(key: "S1", segment: TimeRange(start: 0.50, end: 8.00),
+                   text: "Hi Karan, thanks for jumping on. Can you hear me alright? I'll keep this short today."),
+        ScriptTurn(key: "S2", segment: TimeRange(start: 8.10, end: 16.50),
+                   text: "Yes, loud and clear. I've got the site photos open, and the supplier quotes came back on Friday."),
+        ScriptTurn(key: "S3", segment: TimeRange(start: 16.60, end: 24.00),
+                   text: "Sorry, I'm on the speaker in the meeting room. Could you both say that again a bit slower?"),
+        ScriptTurn(key: "S1", segment: TimeRange(start: 24.10, end: 29.00),
+                   text: "Sure. The quotes are in, so the budget sheet just needs the new rates."),
+        ScriptTurn(key: "S2", segment: TimeRange(start: 29.10, end: 34.00),
+                   text: "I'll chase finance today and send the report tomorrow."),
+        ScriptTurn(key: "S3", segment: TimeRange(start: 34.10, end: 39.50),
+                   text: "Great, that works for me. Let's keep the review to thirty minutes."),
+    ]
+    public static let callConversationDuration: TimeInterval = 40.0
+
     // MARK: Builders
 
     /// Words timed evenly from segment start + 0.1 to segment end − 0.1.
