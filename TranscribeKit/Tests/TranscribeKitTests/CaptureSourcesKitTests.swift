@@ -39,7 +39,7 @@ struct CaptureSourcesKitTests {
     let rigs = RecorderControllerTests()
 
     @Test func macAudioIsRefusedWhenTheEngineCannotRecordIt() async throws {
-        let rig = try rigs.makeRig()
+        let rig = try rigs.makeRig(macAudio: .unavailable)   // as on an iPhone
         defer { rig.cleanUp() }
         #expect(!rig.engine.systemAudioAvailable)
         for sources in [CaptureSources.both, .macAudio] {

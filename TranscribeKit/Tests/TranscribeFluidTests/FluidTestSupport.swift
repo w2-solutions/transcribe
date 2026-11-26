@@ -2,6 +2,7 @@
 import Darwin
 import FluidAudio
 import Foundation
+import Synchronization
 import TranscribeCore
 @testable import TranscribeFluid
 
@@ -372,5 +373,69 @@ enum FakeModelTree {
             }
         }
         return root
+    }
+}
+
+/// One stream of a Both recording, driven by the test: it records its calls, stamps what the test sends with the
+/// host time the test gives, and (like the real sources) delivers nothing while paused or after `stop()`.
+actor StampedScriptedSource: StampedCaptureSource {
+    private(set) var calls: [String] = []
+    private var deliver: (@Sendable (StampedInput) -> Void)?
+    private var paused = false
+    private let failStart: Bool
+    private var failResume: Bool
+    private let detail: CaptureDetail?
+
+    init(failStart: Bool = false, failResume: Bool = false, detail: CaptureDetail? = nil) {
+        self.failStart = failStart; self.failResume = failResume; self.detail = detail
+    }
+
+    func startStamped(_ deliver: @escaping @Sendable (StampedInput) -> Void) async throws {
+        calls.append("start")
+        if failStart { throw EngineError.failed("Could not start") }
+        self.deliver = deliver
+    }
+
+    func pause() async { calls.append("pause"); paused = true }
+    func resume() async throws {
+        calls.append("resume")
+        if failResume { throw EngineError.failed("Could not resume") }
+        paused = false
+    }
+    func stop() async { calls.append("stop"); deliver = nil }
+    func captureDetail() async -> CaptureDetail? { detail }
+
+    /// Delivers a chunk stamped `host` unless paused or stopped. Returns whether it was delivered.
+    @discardableResult
+    func send(_ samples: [Float], host: Double?) -> Bool {
+        guard !paused, let deliver else { return false }
+        deliver(.audio(samples, hostSeconds: host))
+        return true
+    }
+
+    func send(event: CaptureSourceEvent) { deliver?(.event(event)) }
+
+    /// Sends `seconds` of a constant `value` in 100 ms chunks stamped from `host` on.
+    func sendConstant(_ value: Float, seconds: Double, from host: Double) {
+        let chunks = Int((seconds * 10).rounded())
+        for k in 0..<chunks { send([Float](repeating: value, count: 1_600), host: host + 0.1 * Double(k)) }
+    }
+}
+
+/// Everything a capture source delivered, in order (filled synchronously from the delivering thread).
+final class DeliveryLog: Sendable {
+    private struct State { var audio: [Float] = []; var events: [CaptureSourceEvent] = [] }
+    private let state = Mutex(State())
+    var audio: [Float] { state.withLock { $0.audio } }
+    var events: [CaptureSourceEvent] { state.withLock { $0.events } }
+    func sink() -> @Sendable (CaptureInput) -> Void {
+        { input in
+            self.state.withLock { s in
+                switch input {
+                case .audio(let samples): s.audio += samples
+                case .event(let event): s.events.append(event)
+                }
+            }
+        }
     }
 }

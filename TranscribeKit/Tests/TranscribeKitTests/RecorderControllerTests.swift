@@ -81,12 +81,14 @@ struct RecorderControllerTests {
     }
 
     /// Speed `instant` (`-uiTesting`): a tick every 50 ms; models missing so no pipeline work starts on its own.
-    func makeRig(mic: MicPermission = .granted, models: FakeModelState = .missing, script: FakeScriptName = .newVoices) throws -> Rig {
+    func makeRig(mic: MicPermission = .granted, models: FakeModelState = .missing, script: FakeScriptName = .newVoices,
+                 speed: FakeSpeed = .instant, macAudio: FakeMacAudio = .granted) throws -> Rig {
         let env = [
             LaunchConfig.envMic: mic.rawValue,
             LaunchConfig.envModels: models.rawValue,
             LaunchConfig.envScript: script.rawValue,
-            LaunchConfig.envSpeed: FakeSpeed.instant.rawValue,
+            LaunchConfig.envSpeed: speed.rawValue,
+            LaunchConfig.envMacAudio: macAudio.rawValue,
         ]
         let config = LaunchConfig(arguments: [LaunchConfig.argUseFakeEngine, LaunchConfig.argUITesting], environment: env)
         let paths = AppPaths(root: FileManager.default.temporaryDirectory

@@ -6,6 +6,7 @@
 #   ./scripts/release-mac.sh                    everything (= make release-mac)
 #   ./scripts/release-mac.sh --skip-notarize    stop after the signed, un-notarised DMG (exit 0)
 #   ./scripts/release-mac.sh --print-version    print "<version> <build>" for the Mac app and exit (runs on Linux)
+#   ./scripts/release-mac.sh --check-info-plist F   check the privacy strings in an app's Info.plist F and exit
 #
 # Version and build: the version is TranscribeMac's MARKETING_VERSION in project.yml (major.minor.patch, minor and
 # patch below 100); the build number (CFBundleVersion, what Sparkle compares) is major*10000 + minor*100 + patch,
@@ -45,16 +46,22 @@ SPARKLE_VERSION=2.10.1
 SPARKLE_BUILD=2065
 
 usage() {
-  sed -n '2,33s/^# \{0,1\}//p' "$SELF" >&2
+  sed -n '2,34s/^# \{0,1\}//p' "$SELF" >&2
   exit "${1:-2}"
 }
 
 SKIP_NOTARIZE=0
 PRINT_VERSION=0
+CHECK_PLIST=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --skip-notarize) SKIP_NOTARIZE=1 ;;
     --print-version) PRINT_VERSION=1 ;;
+    --check-info-plist)
+      [ $# -ge 2 ] || { echo "error: --check-info-plist needs a file" >&2; usage; }
+      CHECK_PLIST="$2"
+      shift
+      ;;
     -h | --help) usage 0 ;;
     *)
       echo "error: unknown argument: $1" >&2
@@ -70,6 +77,36 @@ fail() {
   echo "error: $*" >&2
   exit 1
 }
+
+# plist_value FILE KEY: the value, or nothing when the key is absent (PlistBuddy keys may contain dots).
+plist_value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null || true; }
+
+# plist_typed FILE KEY: "<type>:<value>" (for example "bool:true", "integer:0"), or nothing when the key is absent.
+plist_typed() {
+  local type
+  type="$(plutil -type "$2" "$1" 2>/dev/null)" || return 0
+  printf '%s:%s\n' "$type" "$(plutil -extract "$2" raw -o - "$1")"
+}
+
+# check_privacy_strings PLIST: the strings macOS shows when it asks for access: the microphone, and Mac audio. Mac
+# audio is a Core Audio process tap, which needs no entitlement, but macOS cannot ask for it (and records only
+# silence) without NSAudioCaptureUsageDescription.
+check_privacy_strings() {
+  local key
+  for key in NSMicrophoneUsageDescription NSAudioCaptureUsageDescription; do
+    case "$(plist_typed "$1" "$key")" in
+      string:?*) ;;
+      *) fail "Info.plist: $key is missing or empty" ;;
+    esac
+  done
+}
+
+if [ -n "$CHECK_PLIST" ]; then
+  [ -f "$CHECK_PLIST" ] || fail "no such Info.plist: $CHECK_PLIST"
+  check_privacy_strings "$CHECK_PLIST"
+  echo "ok: privacy strings for the microphone and Mac audio"
+  exit 0
+fi
 
 PROJECT_FILE="$ROOT/project.yml"
 if [ "$PRINT_VERSION" = 1 ] && [ -n "${PROJECT:-}" ]; then PROJECT_FILE="$PROJECT"; fi
@@ -244,16 +281,6 @@ xcodebuild -exportArchive -archivePath "$ARCHIVE" -exportPath "$EXPORT" \
   -exportOptionsPlist "$ROOT/scripts/ExportOptions-DeveloperID.plist" "${PROVISIONING_AUTH[@]}"
 [ -d "$APP" ] || fail "the export has no Transcribe.app: $EXPORT"
 
-# plist_value FILE KEY: the value, or nothing when the key is absent (PlistBuddy keys may contain dots).
-plist_value() { /usr/libexec/PlistBuddy -c "Print :$2" "$1" 2>/dev/null || true; }
-
-# plist_typed FILE KEY: "<type>:<value>" (for example "bool:true", "integer:0"), or nothing when the key is absent.
-plist_typed() {
-  local type
-  type="$(plutil -type "$2" "$1" 2>/dev/null)" || return 0
-  printf '%s:%s\n' "$type" "$(plutil -extract "$2" raw -o - "$1")"
-}
-
 # check_signed_code PATH WHAT: Developer ID authority, our team, a secure timestamp; executables also need the
 # hardened runtime. Prints one line per file.
 check_signed_code() {
@@ -316,6 +343,8 @@ for key in SUEnableDownloaderService SUEnableSystemProfiling; do
 done
 [ -z "$(plist_typed "$PLIST" SUEnableAutomaticChecks)" ] || fail "Info.plist: SUEnableAutomaticChecks must be absent"
 ok "Sparkle settings: feed $FEED_URL, key $PUBKEY, signed feed, no automatic install, daily checks"
+check_privacy_strings "$PLIST"
+ok "privacy strings for the microphone and Mac audio"
 
 SPARKLE="$APP/Contents/Frameworks/Sparkle.framework/Versions/B"
 [ "$(plist_value "$SPARKLE/Resources/Info.plist" CFBundleShortVersionString)" = "$SPARKLE_VERSION" ] &&
