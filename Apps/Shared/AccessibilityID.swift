@@ -89,7 +89,9 @@ enum AX {
         static let askYes = "transcript.askBanner.yes"
         static let askNo = "transcript.askBanner.no"
         static let askDetail = "transcript.askBanner.detail"   // "Speaker 2 sounds like Karan." or the other-device copy
-        static let audioElsewhere = "transcript.audioElsewhere" // "Audio is on your iPhone. …" (no player bar then)
+        static let audioElsewhere = "transcript.audioElsewhere" // the audio banner: "Audio is in iCloud …" (no player bar then)
+        static let audioBannerAction = "transcript.audioElsewhere.action"     // Download Now / Try Again
+        static let audioBannerProgress = "transcript.audioElsewhere.progress" // download progress bar
         static let noSpeechCard = "transcript.noSpeechCard"
         static let failedCard = "transcript.failedCard"
         static let retryButton = "transcript.failedCard.retry"
@@ -221,6 +223,14 @@ enum AX {
         static let removeCloud = "settings.sync.removeCloud"
         static let removeCloudConfirm = "settings.sync.removeCloudConfirm"
         static let review = "settings.sync.review"          // reopens the account-change or mass-delete question
+        static let audio = "settings.sync.audio"            // the Sync audio switch
+        static let audioStatus = "settings.sync.audioStatus" // label = value = the audio status line
+        static let audioNow = "settings.sync.audioNow"      // Sync Audio Now
+        static let quotaAudio = "settings.sync.quotaAudio"  // "Synced audio uses about …" under the quota pause
+        static let downloadAudioFirst = "settings.sync.downloadAudioFirst" // button in the remove and leave dialogs
+        static let audioIntro = "library.audioIntro"        // the one-time "Audio now syncs with iCloud" card
+        static let audioIntroTurnOff = "library.audioIntro.turnOff"
+        static let audioIntroOK = "library.audioIntro.ok"
         enum Leave {
             static let keep = "sync.leave.keep"
             static let remove = "sync.leave.remove"

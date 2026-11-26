@@ -47,6 +47,7 @@ public final class AppEnvironment {
 
     public init(config: LaunchConfig, engine: any SpeechEngine, background: any BackgroundTaskBridge,
                 deviceIdentity: any DeviceIdentity, seeder: Seeder?, syncTransport: (any SyncTransport)? = nil,
+                audio: AudioSyncDependencies? = nil, syncAudioDefault: Bool = true,
                 activity: AppActivity = AppActivity(), activityPhase: (@MainActor () -> AppPhase)? = nil) throws {
         self.config = config
         self.activity = activity
@@ -65,7 +66,7 @@ public final class AppEnvironment {
         let defaults = config.uiTesting
             ? (UserDefaults(suiteName: "uitest-\(ProcessInfo.processInfo.processIdentifier)") ?? .standard)
             : .standard
-        let settings = AppSettings(defaults: defaults)
+        let settings = AppSettings(defaults: defaults, syncAudioDefault: syncAudioDefault)
         self.settings = settings
         let monitor = ProcessingMonitor()
         self.monitor = monitor
@@ -92,16 +93,27 @@ public final class AppEnvironment {
         self.player = player
         let modelKey = engine.info.embeddingModel.key
         self.sync = syncTransport.map {
-            SyncCoordinator(store: store, transport: $0, settings: settings, clock: config.clock, modelKey: modelKey)
+            SyncCoordinator(store: store, transport: $0, settings: settings, clock: config.clock, modelKey: modelKey,
+                            audio: audio)
         }
         // Real iCloud only: UI tests and fake-engine runs use a fake iCloud, which has no environment to change.
         if !config.uiTesting && !config.useFakeEngine {
             sync?.cloudEnvironment = Bundle.main.object(forInfoDictionaryKey: "TranscribeICloudEnvironment") as? String
         }
+        // Audio sync: uploads wait while a recording is captured or processed; transfers start only in front (the Mac
+        // always counts as in front); a transfer in flight when the iPhone app leaves holds a short background task.
+        if let audioSync = sync?.audio {
+            audioSync.isBusy = { [weak recorder, weak monitor] in
+                (recorder?.isActive ?? false) || (monitor?.isProcessing ?? false)
+            }
+            audioSync.isInFront = { !activity.inBackground }
+            audioSync.background = background
+        }
     }
 
     /// Order: activity seeded (iPhone) → paths.prepare (+ detached removal of the old downloaded models) → seed (if
-    /// config.seed) → store.stampCaptureChannels → store.sweepOrphanAudio → models.refresh →
+    /// config.seed) → store.stampCaptureChannels → store.adoptStrayDownloads → store.sweepOrphanAudio →
+    /// sync.audio.prepareOnLaunch (audio sync's scratch folders, the first sweep date) → models.refresh →
     /// coordinator.recoverOnLaunch → sync.start (its own task, when the switch is on) → models.prepareIfInstalled (detached;
     /// it waits for the front when the app launched in the background) → isLaunched = true. Runs once: a second caller
     /// (the Mac app's DEBUG Claude session start, beside the window's task) waits for the same run instead of starting
@@ -124,8 +136,11 @@ public final class AppEnvironment {
             do { try seeder(seed, container.mainContext, paths, clock) } catch { launchError = "Seed \(seed.rawValue) failed: \(error)" }
         }
         do { _ = try store.stampCaptureChannels() } catch { launchError = "Capture channel stamping failed: \(error)" }
+        // A download moved into Audio/ just before a crash: point its row at it before the sweep sees the file.
+        do { try store.adoptStrayDownloads() } catch { launchError = "Adopting downloaded audio failed: \(error)" }
         // Audio files no row names (a delete synced from another device after a crash, say), older than an hour.
         _ = try? store.sweepOrphanAudio(minimumAge: 3_600, now: Date())
+        sync?.audio?.prepareOnLaunch()
         await models.refresh()
         await coordinator.recoverOnLaunch()
         if settings.syncEnabled, let sync { syncLaunch = Task { await sync.start() } }

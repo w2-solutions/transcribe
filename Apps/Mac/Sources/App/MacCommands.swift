@@ -109,8 +109,11 @@ extension AppEnvironment {
         return try? container.mainContext.fetch(descriptor).first
     }
 
-    /// The transcript on screen has its audio on this Mac (a synced recording keeps it on the device that recorded it).
+    /// The transcript on screen has its audio on this Mac (a synced recording's audio may not be: not in iCloud, not
+    /// downloaded yet, or not syncing here). Reads audio sync's `revision`, so Playback → Play turns on when a download
+    /// lands.
     func hasLocalAudio(_ id: UUID?) -> Bool {
+        _ = sync?.audio?.revision
         guard let id, let recording = libraryRecording(id) else { return false }
         return store.hasLocalAudio(recording)
     }

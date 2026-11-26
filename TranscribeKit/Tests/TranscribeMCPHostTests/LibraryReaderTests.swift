@@ -269,6 +269,76 @@ struct LibraryReaderTests {
         }
     }
 
+    /// Audio and audio sync stay out of Claude's reach: with a downloaded `.m4a` copy, audio rows for every kind of
+    /// marker and transfers in progress, no reply of either tool names a file, a marker or blob, the audio's hash or
+    /// bytes, or any audio or iCloud status, and searching for them finds nothing.
+    @Test func audioNeverReachesClaude() async throws {
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        try seed(.library)
+        let context = container.mainContext
+        let recordings = try context.fetch(FetchDescriptor<Recording>())
+        let a = try #require(recordings.first { $0.id == Seeds.ID.recordingA })
+        let b = try #require(recordings.first { $0.id == Seeds.ID.recordingB })
+        let c = try #require(recordings.first { $0.id == Seeds.ID.recordingC })
+        let fm = FileManager.default
+        for dir in [paths.audioDirectory, paths.audioIncomingDirectory, paths.audioOutgoingDirectory] {
+            try fm.createDirectory(at: dir, withIntermediateDirectories: true)
+        }
+
+        // A's audio is a copy downloaded from iCloud.
+        let bytes = Data((0..<4_096).map { UInt8(truncatingIfNeeded: $0 &* 31 &+ 7) })
+        let copy = "\(a.id.uuidString).m4a"
+        try bytes.write(to: paths.audioURL(fileName: copy))
+        a.audioFileName = copy
+        let sha = try await FileDigest.sha256(of: paths.audioURL(fileName: copy))
+        let descriptor = AudioDescriptor(recordingID: a.id, format: .aac16kMono, bytes: Int64(bytes.count), sha256: sha,
+                                         duration: a.duration)
+        // Audio rows: A's marker known, B's being sent, C's being deleted.
+        let now = Seeds.Dates.a
+        context.insert(SyncRecordState.audioRow(AudioRowFacts(descriptor: descriptor, marker: .onServer,
+                                                              recordingSeen: true, firstSeenAt: now), now: now))
+        for (r, marker) in [(b, AudioRowFacts.Marker.sending), (c, .deleting)] {
+            let d = AudioDescriptor(recordingID: r.id, format: .aac16kMono, bytes: 1_000, sha256: sha, duration: r.duration)
+            context.insert(SyncRecordState.audioRow(AudioRowFacts(descriptor: d, marker: marker, recordingSeen: true,
+                                                                  firstSeenAt: now), now: now))
+        }
+        try context.save()
+        // Transfers in progress: B's download part, C's staged upload.
+        try bytes.prefix(1_000).write(to: paths.audioIncomingDirectory.appendingPathComponent("\(b.id.uuidString).m4a.part"))
+        try bytes.write(to: paths.audioOutgoingDirectory.appendingPathComponent("\(c.id.uuidString).m4a"))
+
+        let forbidden = [".m4a", ".wav", ".part", "au.", "af.", "AudioState", "~audio", sha, String(sha.prefix(16)),
+                         bytes.prefix(48).base64EncodedString(), bytes[1_200..<1_248].base64EncodedString()]
+        let words = ["audio", "icloud", "downloading", "uploading"]
+
+        let server = MCPServer(version: "1", library: reader, timeZone: { TimeZone(identifier: "Australia/Sydney")! })
+        var replies = [await Self.reply(server, 1, "tools/list")]
+        replies.append(await Self.reply(server, 2, "tools/call", ["name": "list_recordings", "arguments": ["limit": 50]]))
+        let searches: [[String: JSONValue]] = [["query": "m4a"], ["query": "audio"], ["query": "iCloud"],
+                                               ["query": .string(String(sha.prefix(16)))], ["speaker": "au."]]
+        for (i, arguments) in searches.enumerated() {
+            let reply = await Self.reply(server, Int64(3 + i), "tools/call",
+                                         ["name": "list_recordings", "arguments": .object(arguments)])
+            #expect(reply.hasPrefix("No finished recordings match."), "a search for audio found \(reply)")
+            replies.append(reply)
+        }
+        #expect(try await all(MCPRecordingQuery(terms: ["m4a"])).total == 0)
+        #expect(try await all(MCPRecordingQuery(terms: ["audio"])).total == 0)
+
+        let ids = try await all(MCPRecordingQuery(limit: 50)).items.map(\.id)
+        #expect(ids == [a.id, b.id, c.id])      // the audio rows change nothing in the list
+        for (i, id) in ids.enumerated() {
+            replies.append(await Self.reply(server, Int64(10 + i), "tools/call",
+                                            ["name": "get_transcript", "arguments": ["recording_id": .string(id.uuidString)]]))
+        }
+        // The transcripts were read (the check is not vacuous).
+        #expect(replies.contains { $0.contains("Hey, Karan.") })
+        for reply in replies {
+            for word in forbidden { #expect(!reply.contains(word), "a reply contains \(word)") }
+            for word in words { #expect(!reply.lowercased().contains(word), "a reply contains \(word)") }
+        }
+    }
+
     /// The text of a JSON-RPC call's result (a tool's first content block, or the whole reply for any other method).
     static func reply(_ server: MCPServer, _ id: Int64, _ method: String, _ params: JSONValue? = nil) async -> String {
         var body: [String: JSONValue] = ["jsonrpc": "2.0", "id": .int(id), "method": .string(method)]

@@ -62,7 +62,7 @@ extension SyncSuites {
             defer { a.cleanup(); b.cleanup() }
             try richLibrary(on: a)
             let source = a.projections()
-            #expect(Set(source.keys.compactMap { SyncRecordID(recordName: $0)?.type }) == Set(SyncRecordType.allCases))
+            #expect(Set(source.keys.compactMap { SyncRecordID(recordName: $0)?.type }) == Set(SyncRecordType.libraryCases))
 
             // Apply every record on B in one fetched batch, exactly as a fetch would.
             let records = source.map { SyncRecord(id: SyncRecordID(recordName: $0.key)!, fields: $0.value, systemFields: Data("x".utf8)) }

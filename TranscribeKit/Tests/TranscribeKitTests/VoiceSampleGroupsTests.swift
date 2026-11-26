@@ -278,4 +278,76 @@ struct VoiceSampleGroupsProfileTests {
         #expect(close.playSampleID == sample.id && close.subtitle == "From \u{201C}Standup\u{201D}")
         #expect(view.clipStates[sample.id] == playable)
     }
+
+    /// With audio sync, a sample whose recording's audio is in iCloud or downloading says so, and its group plays once
+    /// the recording's copy lands (audio sync §5.2).
+    @Test func aGroupPlaysOnceItsRecordingsCopyLands() throws {
+        let h = try WP3Harness()
+        defer { h.cleanup() }
+        let tom = try h.tom()
+        let id = UUID()
+        let recording = Recording(id: id, createdAt: Seeds.Dates.c, audioFileName: h.paths.newAudioFileName(for: id),
+                                  source: .microphone)
+        recording.captureChannel = CaptureChannel.mac
+        h.context.insert(recording)
+        let sample = tom.close[0]
+        sample.sourceRecordingID = id
+        sample.clipStart = 10.8
+        sample.clipEnd = 14.8
+        try h.context.save()
+        let byID = [id: recording]
+        var state: RecordingAudioState = .inICloud(bytes: 14_000_000, wait: .network)
+        let build = {
+            VoiceSampleGroups.build(profile: tom.profile, recordingsByID: byID, localChannel: h.store.localChannel,
+                                    paths: h.paths, audioState: { byID[$0] == nil ? nil : state })
+        }
+
+        // In iCloud, not downloaded: no play button, and the row says where the audio is.
+        var view = build()
+        var close = try #require(view.channels.first?.groups.first)
+        #expect(view.clipStates[sample.id] == .audioInICloud && close.playSampleID == nil)
+        #expect(VoiceSampleGroups.clipState(sample, recordingsByID: byID, paths: h.paths, audioState: { _ in state })
+                == .audioInICloud)
+        state = .downloading(fraction: 0.5)
+        #expect(build().clipStates[sample.id] == .audioDownloading)
+        state = .notInICloud(channel: CaptureChannel.mac)
+        #expect(build().clipStates[sample.id] == .audioElsewhere(channel: CaptureChannel.mac))
+
+        // The copy lands: the row points at it and the group plays it.
+        let landed = id.uuidString + ".m4a"
+        try Data([0]).write(to: h.paths.audioURL(fileName: landed))
+        recording.audioFileName = landed
+        try h.context.save()
+        state = .local
+        view = build()
+        close = try #require(view.channels.first?.groups.first)
+        let playable = SampleClipState.playable(fileName: landed, range: TimeRange(start: 10.8, end: 14.8))
+        #expect(view.clipStates[sample.id] == playable && close.playSampleID == sample.id)
+    }
+
+    /// Without an audio state (no audio sync), every result is what it was before audio sync.
+    @Test func noAudioStateKeepsTheOldResults() throws {
+        let h = try WP3Harness()
+        defer { h.cleanup() }
+        let tom = try h.tom()
+        let id = UUID()
+        let recording = Recording(id: id, createdAt: Seeds.Dates.c, audioFileName: h.paths.newAudioFileName(for: id),
+                                  source: .microphone)
+        recording.captureChannel = CaptureChannel.ipad
+        h.context.insert(recording)
+        let sample = tom.close[0]
+        sample.sourceRecordingID = id
+        sample.clipStart = 1
+        sample.clipEnd = 4
+        try h.context.save()
+        let byID = [id: recording]
+        let plain = VoiceSampleGroups.build(profile: tom.profile, recordingsByID: byID, localChannel: h.store.localChannel,
+                                            paths: h.paths)
+        let none = VoiceSampleGroups.build(profile: tom.profile, recordingsByID: byID, localChannel: h.store.localChannel,
+                                           paths: h.paths, audioState: { _ in nil })
+        #expect(plain == none)
+        #expect(plain.clipStates[sample.id] == .audioElsewhere(channel: CaptureChannel.ipad))
+        #expect(VoiceSampleGroups.clipState(sample, recordingsByID: byID, paths: h.paths)
+                == .audioElsewhere(channel: CaptureChannel.ipad))
+    }
 }

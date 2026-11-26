@@ -51,5 +51,57 @@ import TranscribeCore
         #expect(SampleClipState.audioElsewhere(channel: "iphone").caption(iPhone) == "Audio is on your other iPhone")
         #expect(SampleClipState.audioElsewhere(channel: "mac").caption(mac) == "Audio is on your other Mac")
         #expect(SampleClipState.audioElsewhere(channel: nil).caption(mac) == "Audio is on another device")
+        #expect(SampleClipState.audioDownloading.caption(iPhone) == "Downloading audio…")
+        #expect(SampleClipState.audioDownloading.caption(mac) == "Downloading audio…")
+        #expect(SampleClipState.audioInICloud.caption(iPhone) == "Audio is in iCloud")
+        #expect(SampleClipState.audioInICloud.caption(mac) == "Audio is in iCloud")
+        // The old captions are the same with audio sync on.
+        let synced = DeviceCopy(platform: .mac, syncOn: true, audioSyncOn: true)
+        #expect(SampleClipState.audioElsewhere(channel: "iphone").caption(synced) == "Audio is on your iPhone")
+        #expect(SampleClipState.audioElsewhere(channel: "mac").caption(synced) == "Audio is on your other Mac")
     }
+
+    /// With audio sync, a missing file is described by the recording's audio state (§1.3 "Voice samples").
+    @Test func audioStateDecidesWhenTheFileIsMissing() {
+        func resolve(_ state: RecordingAudioState?, audio: Bool = false) -> SampleClipState {
+            SampleClipState.resolve(sourceRecordingID: source, clip: clip, recording: ("a.m4a", "mac"),
+                                    audioExists: { _ in audio }, audioState: { _ in state })
+        }
+        #expect(resolve(.downloading(fraction: nil)) == .audioDownloading)
+        #expect(resolve(.downloading(fraction: 0.4)) == .audioDownloading)
+        for wait in [AudioDownloadWait.queued, .network, .lowPower, .lowStorage, .syncPaused] {
+            #expect(resolve(.inICloud(bytes: 14_000_000, wait: wait)) == .audioInICloud)
+        }
+        #expect(resolve(.failed(bytes: 14_000_000)) == .audioInICloud)
+        #expect(resolve(.syncAudioOffHere(inICloud: true, channel: "mac")) == .audioInICloud)
+        // Anything else is still "audio is on the device that recorded it".
+        for state: RecordingAudioState? in [nil, .checking, .notInICloud(channel: "mac"), .needsUpdate,
+                                            .syncAudioOffHere(inICloud: false, channel: "mac"), .syncOffHere(channel: "mac"),
+                                            .local] {
+            #expect(resolve(state) == .audioElsewhere(channel: "mac"), "\(String(describing: state))")
+        }
+        // A file on disk plays whatever the state says.
+        #expect(resolve(.downloading(fraction: 0.4), audio: true) == .playable(fileName: "a.m4a", range: clip))
+        #expect(![SampleClipState.audioDownloading, .audioInICloud].contains { $0.isPlayable })
+    }
+
+    /// The audio state is asked about the source recording only, and only once the file is found missing.
+    @Test func audioStateIsAskedLast() {
+        var asked: [UUID] = []
+        _ = SampleClipState.resolve(sourceRecordingID: source, clip: nil, recording: ("a.m4a", "mac"),
+                                    audioExists: { _ in false }, audioState: { asked.append($0); return .audioStateSample })
+        _ = SampleClipState.resolve(sourceRecordingID: source, clip: clip, recording: nil,
+                                    audioExists: { _ in false }, audioState: { asked.append($0); return .audioStateSample })
+        _ = SampleClipState.resolve(sourceRecordingID: source, clip: clip, recording: ("a.m4a", "mac"),
+                                    audioExists: { _ in true }, audioState: { asked.append($0); return .audioStateSample })
+        #expect(asked.isEmpty)
+        #expect(SampleClipState.resolve(sourceRecordingID: source, clip: clip, recording: ("a.m4a", "mac"),
+                                        audioExists: { _ in false },
+                                        audioState: { asked.append($0); return .audioStateSample }) == .audioInICloud)
+        #expect(asked == [source])
+    }
+}
+
+private extension RecordingAudioState {
+    static let audioStateSample = RecordingAudioState.inICloud(bytes: 1, wait: .queued)
 }

@@ -30,11 +30,14 @@ import TranscribeFakes
         #if DEBUG
         let fakeSync = (config.uiTesting || config.useFakeEngine) ? FakeCloud.scenario(config.sync, clock: config.clock) : nil
         let transport: (any SyncTransport)? = fakeSync?.transport ?? Self.syncTransport(config: config)
+        let audio = fakeSync.map { Self.fakeAudioSync($0, config: config) } ?? Self.audioSync(config: config)
         #else
         let transport = Self.syncTransport(config: config)
+        let audio = Self.audioSync(config: config)
         #endif
         let env = try! AppEnvironment(config: config, engine: engine, background: background, deviceIdentity: identity, seeder: seeder,
-                                      syncTransport: transport, activity: activity,
+                                      syncTransport: transport, audio: audio,
+                                      syncAudioDefault: Self.syncAudioDefault(config: config), activity: activity,
                                       activityPhase: PlatformServices.activityPhase)
         // VoiceOver hears "Transcribe is ready." once, when a shown setup card turns to ready.
         env.models.announce = { AccessibilityNotification.Announcement($0).post() }
@@ -47,9 +50,55 @@ import TranscribeFakes
                 assertionFailure("Preparing the fake sync scenario failed: \(error)")
             }
             if fakeSync.startsOn { env.settings.syncEnabled = true }
+            // Sync audio starts on (fresh defaults) unless the test says otherwise, and the one-time "Audio now syncs
+            // with iCloud" notice shows only in the tests that ask for it.
+            if config.syncAudioOff { env.settings.syncAudio = false }
+            env.settings.syncAudioIntroShown = !config.syncAudioIntro
         }
         #endif
         return env
+    }
+
+    /// Audio sync's dependencies beside the real transport: the audio of finished recordings moves through the private
+    /// database's default zone (`CloudKitAudioTransfer`), encoded to AAC, on the real network, power and storage. Like
+    /// the transport, nothing touches iCloud until the user turns sync on. Nil for UI tests and fake-engine runs.
+    static func audioSync(config: LaunchConfig) -> AudioSyncDependencies? {
+        if config.uiTesting || config.useFakeEngine { return nil }
+        return AudioSyncDependencies(transfer: CloudKitAudioTransfer(), encoder: AACAudioEncoder(),
+                                     conditions: LiveDeviceConditions())
+    }
+
+    #if DEBUG
+    /// Fake-engine and UI-test runs: the scenario's fake iCloud holds the audio too, on the network the run names
+    /// (`TRANSCRIBE_NETWORK`, Wi-Fi by default). UI tests copy WAVs instead of encoding AAC, so the existing
+    /// timing-sensitive tests keep their pace.
+    static func fakeAudioSync(_ fakeSync: FakeSyncSetup, config: LaunchConfig) -> AudioSyncDependencies {
+        let encoder: any AudioEncoding = config.uiTesting ? CopyAudioEncoder() : AACAudioEncoder()
+        return AudioSyncDependencies(transfer: fakeSync.audioTransfer, encoder: encoder,
+                                     conditions: FakeDeviceConditions(network: networkKind(config.network) ?? .unmetered))
+    }
+
+    static func networkKind(_ network: FakeNetwork?) -> NetworkKind? {
+        switch network {
+        case .wifi?: .unmetered
+        case .cellular?: .metered
+        case .lowData?: .constrained
+        case .offline?: .offline
+        case nil: nil
+        }
+    }
+    #endif
+
+    /// "Sync audio" is on by default, except in a Debug build running the real engine outside UI tests (decision 25):
+    /// such a build on the Mac shares its container and defaults with /Applications/Transcribe.app and uses the
+    /// Development database, so a default-on switch would upload the real library's audio there. The key is only
+    /// written when the user flips the switch, so Release builds still read the absent key as on.
+    static func syncAudioDefault(config: LaunchConfig) -> Bool {
+        #if DEBUG
+        return config.useFakeEngine || config.uiTesting
+        #else
+        return true
+        #endif
     }
 
     /// iCloud sync's transport (§8.3). The real app always gets `CloudKitTransport`, which touches nothing in iCloud

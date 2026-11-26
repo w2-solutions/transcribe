@@ -15,8 +15,8 @@ struct CKRecordCodecTests {
     let outgoing = FileManager.default.temporaryDirectory.appendingPathComponent("ckcodec-\(UUID().uuidString)", isDirectory: true)
     var codec: CKRecordCodec { CKRecordCodec(outgoingDirectory: outgoing) }
 
-    /// The seeded library plus a folder, a negative, a group label, odd floats and empty lists: every record type and
-    /// field kind.
+    /// The seeded library plus a folder, a negative, a group label, an audio marker, odd floats and empty lists: every
+    /// record type and field kind.
     func library() throws -> (ModelContainer, [SyncRecord]) {
         let container = try ModelContainerFactory.make(inMemory: true, url: nil)
         let context = container.mainContext
@@ -49,9 +49,13 @@ struct CKRecordCodecTests {
 
         let projector = RecordProjector(context: context)
         var records: [SyncRecord] = []
-        for type in SyncRecordType.allCases {
+        for type in SyncRecordType.libraryCases {
             for e in try projector.all(type) { records.append(RecordProjector.record(e)) }
         }
+        // A marker has no entity: it comes from AudioSync's descriptor.
+        records.append(AudioMarker.record(AudioDescriptor(recordingID: recording.id, format: .aac16kMono, bytes: 14_400_123,
+                                                          sha256: String(repeating: "ab", count: 32),
+                                                          duration: 3_600.016_5)))
         return (container, records)
     }
 
@@ -89,6 +93,13 @@ struct CKRecordCodecTests {
             }
             #expect(!encrypted.contains(SyncSchema.versionField))
             #expect(!encrypted.isEmpty)
+            if record.id.type == .audio {
+                // The marker: its four fields encrypted, sv plain, no asset.
+                #expect(encrypted == ["bytes", "sha256", "format", "duration"])
+                #expect(Set(ck.allKeys()).subtracting(encrypted) == [SyncSchema.versionField])
+                #expect(ck.recordType == "RecordingAudio")
+                #expect(ck.recordID.recordName.hasPrefix("au."))
+            }
             if case .asset? = record.fields["transcript"] {
                 sawAsset = true
                 let asset = try #require(ck["transcript"] as? CKAsset)
@@ -173,6 +184,9 @@ struct CKRecordCodecTests {
         #expect(try codec.decode(CKRecord(recordType: "Folder", recordID: CKRecord.ID(recordName: id.recordName, zoneID: otherZone))) == nil)
         #expect(try codec.decode(CKRecord(recordType: "Folder", recordID: CKRecord.ID(recordName: "nonsense", zoneID: codec.zoneID))) == nil)
         #expect(try codec.decode(CKRecord(recordType: "Recording", recordID: codec.recordID(id))) == nil)   // type mismatch
+        // An audio blob's name (it lives in the default zone) is never a Library record, even inside the zone.
+        let blob = CKRecord.ID(recordName: "af.\(UUID().uuidString)", zoneID: codec.zoneID)
+        #expect(try codec.decode(CKRecord(recordType: "AudioFile", recordID: blob)) == nil)
     }
 
     @Test func sendFailuresMapToTheCoordinatorsCases() {

@@ -4,9 +4,24 @@ import Foundation
 
 /// The record types in the `Library` zone. The raw value is the CloudKit record type and is stored in
 /// `SyncRecordState.typeRaw`, so it must never change.
+///
+/// A state row whose `typeRaw` is no raw value here (audio sync's `"AudioState"` rows, `AudioRows`) is foreign to the
+/// generic sync code: its `recordID` is nil, so the full scan, the breaker, `pendingCount` and `finishFetch` skip it,
+/// and only `clearSyncState()` (which deletes every row) touches it.
 public enum SyncRecordType: String, CaseIterable, Sendable, Codable {
     case recording = "Recording", speaker = "Speaker", profile = "VoiceProfile", sample = "VoiceSample",
-         negative = "VoiceNegative", folder = "Folder", groupLabel = "VoiceGroupLabel"
+         negative = "VoiceNegative", folder = "Folder", groupLabel = "VoiceGroupLabel",
+         /// An audio marker: this recording's audio is in iCloud (`AudioFile` in the default zone). Never a SwiftData
+         /// entity; `SyncCoordinator` hands these records to `AudioSync` before any generic code sees them.
+         audio = "RecordingAudio"
+
+    /// False only for `.audio`.
+    public var isLibraryEntity: Bool { self != .audio }
+    /// Every type with a SwiftData entity (all but `.audio`), in declaration order. New loops meaning "every library
+    /// entity type" use this. The older generic loops (`ChangeDetector`'s full scan) still iterate `allCases`; `.audio`
+    /// is harmless there only because `RecordProjector` returns nothing for it and no state row carries its `typeRaw`
+    /// (audio rows use `"AudioState"`), so never create a state row with `typeRaw` `"RecordingAudio"`.
+    public static let libraryCases: [SyncRecordType] = allCases.filter(\.isLibraryEntity)
 
     /// The record-name prefix: "<prefix>.<UUID>".
     public var prefix: String {
@@ -18,11 +33,13 @@ public enum SyncRecordType: String, CaseIterable, Sendable, Codable {
         case .negative: "vn"
         case .folder: "fd"
         case .groupLabel: "vg"
+        case .audio: "au"
         }
     }
 
     /// Order in which fetched records are applied, so a link's target usually arrives before the record that names
-    /// it (folders and profiles first, then recordings, their speakers, then samples, negatives and group labels).
+    /// it (folders and profiles first, then recordings, their speakers, then samples, negatives and group labels;
+    /// audio markers last, though they never reach the applier).
     public var applyOrder: Int {
         switch self {
         case .folder: 0
@@ -32,6 +49,7 @@ public enum SyncRecordType: String, CaseIterable, Sendable, Codable {
         case .sample: 4
         case .negative: 5
         case .groupLabel: 6
+        case .audio: 7
         }
     }
 

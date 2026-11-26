@@ -285,7 +285,7 @@ struct V3FixtureWriter {
         let container = try ModelContainerFactory.make(inMemory: false, url: scratch.appendingPathComponent("Library.store"))
         let projector = RecordProjector(context: container.mainContext)
         var out: [String: [String: String]] = [:]
-        for type in SyncRecordType.allCases {
+        for type in SyncRecordType.libraryCases {
             for e in try projector.all(type) where e.isSyncable {
                 let name = e.recordID.recordName
                 out[name] = RecordProjector.hashes(e, unresolved: unresolvedLinks[name] ?? [:])
