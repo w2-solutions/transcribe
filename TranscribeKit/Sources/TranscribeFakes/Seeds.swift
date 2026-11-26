@@ -19,6 +19,21 @@ public enum Seeds {
         public static let recordingG = UUID(uuidString: "A0000000-0000-4000-8000-000000000010")!
         public static let liam = UUID(uuidString: "B0000000-0000-4000-8000-000000000001")!
         public static let karan = UUID(uuidString: "B0000000-0000-4000-8000-000000000002")!
+        // `voiceGroups`
+        public static let tom = UUID(uuidString: "B0000000-0000-4000-8000-000000000003")!
+        /// Tom and Liam on this device (no channel until the launch stamp).
+        public static let recordingT1 = UUID(uuidString: "A0000000-0000-4000-8000-000000000011")!
+        /// Tom and Liam heard on an iPad: the row synced here, its audio did not.
+        public static let recordingT2 = UUID(uuidString: "A0000000-0000-4000-8000-000000000012")!
+        /// A source recording that exists nowhere (deleted after the sample was taken).
+        public static let goneRecording = UUID(uuidString: "A0000000-0000-4000-8000-0000000000FF")!
+        /// Tom's ten samples, in `sortedSamples` order. Their uuidString order is the same, so where the grouping ties
+        /// on closeness to the centroid, representatives come in this order.
+        public static let tomSamples: [UUID] = (0..<10).map {
+            UUID(uuidString: "C0000000-0000-4000-8000-00000000000\($0)")!
+        }
+        /// The seeded "Close" label on Tom's first group.
+        public static let closeLabel = UUID(uuidString: "D0000000-0000-4000-8000-000000000001")!
     }
 
     // MARK: Dates (Calendar.current, device time zone)
@@ -38,6 +53,13 @@ public enum Seeds {
         public static var liamNamed: Date { date(17, 9, 20) }
         /// Karan named: 18 Nov 14:25
         public static var karanNamed: Date { date(18, 14, 25) }
+        /// T1: Tue 17 Nov 10:30
+        public static var t1: Date { date(17, 10, 30) }
+        /// T2 (iPad): Tue 17 Nov 11:40
+        public static var t2: Date { date(17, 11, 40) }
+        /// Tom named: 17 Nov 12:00; his sample k is added at 12:0k, the "Close" label saved at 12:30. All before the
+        /// UI-test clock (18 Nov 14:31).
+        public static var tomNamed: Date { date(17, 12, 0) }
 
         static func date(_ day: Int, _ hour: Int, _ minute: Int) -> Date {
             Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: day, hour: hour, minute: minute))!
@@ -54,6 +76,7 @@ public enum Seeds {
         case .shortKaran: (4, 2, 5)
         case .processingHeld: (1, 2, 5)
         case .failedProcessing: (1, 0, 0)
+        case .voiceGroups: (5, 3, 15)
         }
     }
 
@@ -82,12 +105,16 @@ public enum Seeds {
             try s.processingHeldE()
         case .failedProcessing:
             try s.failedF()
+        case .voiceGroups:
+            try s.library()
+            try s.tomGroups()
         }
         s.linkSamplesToSpeakers()
         try context.save()
     }
 
     @MainActor static func wipe(_ context: ModelContext) throws {
+        for label in try context.fetch(FetchDescriptor<VoiceGroupLabel>()) { context.delete(label) }
         for negative in try context.fetch(FetchDescriptor<VoiceNegative>()) { context.delete(negative) }
         for sample in try context.fetch(FetchDescriptor<VoiceSample>()) { context.delete(sample) }
         for speaker in try context.fetch(FetchDescriptor<RecordingSpeaker>()) { context.delete(speaker) }
@@ -105,6 +132,7 @@ struct SeedBuilder {
     let paths: AppPaths
     var liam: VoiceProfile?
     var karan: VoiceProfile?
+    var tom: VoiceProfile?
     /// (sample, recording id, speaker key) for linking sourceSpeakerID once speakers exist.
     var pendingLinks: [(VoiceSample, UUID, SpeakerKey)] = []
 
@@ -249,6 +277,91 @@ struct SeedBuilder {
         for r in recordings where sources.contains(r.id) { r.captureChannel = CaptureChannel.iphone }
     }
 
+    /// One of Tom's seeded samples: its setting axis (57 close, 58 far, 59 on speaker), residual variant, origin, source
+    /// (recording and clip; T1 and T2 clips lie in S2's first turn, words 7.05–14.5) and quote.
+    private struct TomSample {
+        let axis: Int, variant: Int, origin: SampleOrigin, seconds: Double
+        let recording: UUID, clip: TimeRange?, quote: String
+    }
+
+    /// Tom's ten samples, index = `sortedSamples` index (voice sample groups §8, R6). Every vector is
+    /// `mix([(.stranger, 0.6)], setting: (axis, 0.7))`: 0.85 within a setting, 0.36 across. On this device: Close
+    /// {0, 1, 5}, Far {2, 3, 4} and On speaker {6, 7}; 8 and 9 were heard on an iPad. The honest non-playable states:
+    /// 3's recording is gone, 4 has no clip, 8 and 9's audio is on the iPad.
+    private static let tomSamples: [TomSample] = [
+        TomSample(axis: 57, variant: 8, origin: .named, seconds: 12.0, recording: Seeds.ID.recordingT1,
+                  clip: TimeRange(start: 7.05, end: 11.5), quote: "Can you pass me that?"),
+        TomSample(axis: 57, variant: 9, origin: .confirmed, seconds: 11.0, recording: Seeds.ID.recordingT1,
+                  clip: TimeRange(start: 9.0, end: 13.0), quote: "I'll be there in five."),
+        TomSample(axis: 58, variant: 13, origin: .confirmed, seconds: 10.5, recording: Seeds.ID.recordingT1,
+                  clip: TimeRange(start: 7.05, end: 10.4), quote: "Is anyone in the kitchen?"),
+        TomSample(axis: 58, variant: 14, origin: .confirmed, seconds: 10.2, recording: Seeds.ID.goneRecording,
+                  clip: TimeRange(start: 1.0, end: 4.0), quote: "I said the blue one!"),
+        TomSample(axis: 58, variant: 15, origin: .confirmed, seconds: 11.4, recording: Seeds.ID.recordingT1,
+                  clip: nil, quote: "Can you hear me from there?"),
+        TomSample(axis: 57, variant: 10, origin: .confirmed, seconds: 10.8, recording: Seeds.ID.recordingT1,
+                  clip: TimeRange(start: 10.2, end: 14.2), quote: "Sounds good to me."),
+        TomSample(axis: 59, variant: 16, origin: .confirmed, seconds: 10.6, recording: Seeds.ID.recordingT1,
+                  clip: TimeRange(start: 7.6, end: 11.0), quote: "You're breaking up a bit."),
+        TomSample(axis: 59, variant: 17, origin: .strongMatch, seconds: 10.1, recording: Seeds.ID.recordingT1,
+                  clip: TimeRange(start: 11.0, end: 14.4), quote: "Can you hear me now?"),
+        TomSample(axis: 57, variant: 18, origin: .confirmed, seconds: 11.2, recording: Seeds.ID.recordingT2,
+                  clip: TimeRange(start: 7.05, end: 11.0), quote: "Let's do it tomorrow."),
+        TomSample(axis: 57, variant: 19, origin: .confirmed, seconds: 10.9, recording: Seeds.ID.recordingT2,
+                  clip: TimeRange(start: 10.2, end: 14.4), quote: "That works for me."),
+    ]
+
+    /// `voiceGroups`: Tom, heard in T1 on this device and T2 on an iPad, with ten samples in three settings and a saved
+    /// "Close" label on the first. The label has no channel (a seed does not know the run's), so the launch stamp
+    /// gives it this device's, as it does T1 and the samples taken from it; T2 and its samples stay on `ipad`.
+    mutating func tomGroups() throws {
+        let p = VoiceProfile(id: Seeds.ID.tom, name: "Tom", colourSlot: 2, embeddingModelKey: Self.modelKey,
+                             now: Seeds.Dates.tomNamed)
+        context.insert(p)
+        tom = p
+        try tomRecording(id: Seeds.ID.recordingT1, createdAt: Seeds.Dates.t1, title: "Kitchen chat", channel: nil,
+                         tomVariant: 26)
+        let t2 = try tomRecording(id: Seeds.ID.recordingT2, createdAt: Seeds.Dates.t2, title: "Video call",
+                                  channel: CaptureChannel.ipad, tomVariant: 27)
+        // Only the row reached this device: the WAV stays on the iPad (the peaks came with the row).
+        try FileManager.default.removeItem(at: paths.audioURL(fileName: t2.audioFileName))
+
+        var samples: [VoiceSample] = []
+        for (k, s) in Self.tomSamples.enumerated() {
+            samples.append(addSample(
+                to: p, id: Seeds.ID.tomSamples[k],
+                vector: SyntheticVoices.mix([(.stranger, 0.6)], setting: (s.axis, 0.7), variant: s.variant),
+                origin: s.origin, added: Seeds.Dates.date(17, 12, k), seconds: s.seconds,
+                recording: s.recording, key: "S2", clip: s.clip, quote: s.quote,
+                channel: s.recording == Seeds.ID.recordingT2 ? CaptureChannel.ipad : nil))
+        }
+
+        // The anchor is the group's member vectors as grouping decodes them, members by id (R1, R6).
+        let close = [0, 1, 5].map { samples[$0] }.sorted { $0.id.uuidString < $1.id.uuidString }
+        let label = VoiceGroupLabel(id: Seeds.ID.closeLabel, text: "Close", createdAt: Seeds.Dates.date(17, 12, 30),
+                                    embeddingModelKey: Self.modelKey, captureChannel: "",
+                                    anchors: close.compactMap(\.vector))
+        context.insert(label)
+        label.profile = p
+    }
+
+    /// A recording of Liam (S1) and Tom (S2, a stranger's voice), both named, on B's content.
+    @discardableResult
+    func tomRecording(id: UUID, createdAt: Date, title: String, channel: String?, tomVariant: Int) throws -> Recording {
+        let r = try makeRecording(id: id, createdAt: createdAt, turns: SeedContent.conversationB,
+                                  duration: SeedContent.conversationBDuration, stage: .ready, speakers: true,
+                                  persons: ["S1": .liam, "S2": .stranger])
+        r.title = title
+        r.captureChannel = channel
+        addSpeaker(r, key: "S1", ordinal: 1, slot: 0, clean: 11.0, total: 11.4,
+                   vector: SyntheticVoices.vector(near: .liam, cosine: 0.90, variant: 1), label: .named, profile: liam)
+        addSpeaker(r, key: "S2", ordinal: 2, slot: 2, clean: 11.5, total: 13.0,
+                   vector: SyntheticVoices.mix([(.stranger, 0.6)], setting: (57, 0.7), variant: tomVariant),
+                   label: .named, profile: tom)
+        finish(r)
+        return r
+    }
+
     /// E: B's date and content, held at `.separating` with speaker-less paragraphs.
     mutating func processingHeldE() throws {
         let r = try makeRecording(id: Seeds.ID.recordingE, createdAt: Seeds.Dates.b, turns: SeedContent.conversationB,
@@ -309,16 +422,22 @@ struct SeedBuilder {
         return s
     }
 
-    mutating func addSample(to p: VoiceProfile, vector: VoiceVector, origin: SampleOrigin, added: Date, seconds: Double,
-                            recording: UUID, key: SpeakerKey, clip: TimeRange, quote: String) {
-        let sample = VoiceSample(vector: vector, embeddingModelKey: Self.modelKey, origin: origin, addedAt: added, speechSeconds: seconds)
+    /// `clip` nil leaves the sample without a clip; `channel` nil leaves it to the launch stamp.
+    @discardableResult
+    mutating func addSample(to p: VoiceProfile, id: UUID = UUID(), vector: VoiceVector, origin: SampleOrigin, added: Date,
+                            seconds: Double, recording: UUID, key: SpeakerKey, clip: TimeRange?, quote: String,
+                            channel: String? = nil) -> VoiceSample {
+        let sample = VoiceSample(id: id, vector: vector, embeddingModelKey: Self.modelKey, origin: origin, addedAt: added,
+                                 speechSeconds: seconds)
         context.insert(sample)
         sample.profile = p
         sample.sourceRecordingID = recording
-        sample.clipStart = clip.start
-        sample.clipEnd = clip.end
+        sample.clipStart = clip?.start
+        sample.clipEnd = clip?.end
         sample.quote = quote
+        sample.captureChannel = channel
         pendingLinks.append((sample, recording, key))
+        return sample
     }
 
     /// searchText = lowercased title + transcript + speaker names.

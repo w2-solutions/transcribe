@@ -175,6 +175,14 @@ public struct DeviceCopy: Sendable, Equatable {
         return "Audio is on your other \(other.noun). The transcript and names are synced; audio stays on the device that recorded it."
     }
 
+    /// A voice sample whose clip is in a recording whose audio stayed on the device that recorded it (`channel`), in
+    /// the place of its waveform: "Audio is on your iPad", "Audio is on your other Mac" when it was another device of
+    /// this kind, and "Audio is on another device" when the channel is unknown.
+    public func sampleAudioElsewhere(channel: String?) -> String {
+        guard let other = DevicePlatform(channel: channel) else { return "Audio is on another device" }
+        return other == platform ? "Audio is on your other \(other.noun)" : "Audio is on your \(other.noun)"
+    }
+
     /// Settings → Acknowledgements, first line.
     public var attributionsIntro: String { "Transcribe runs these models and libraries on your \(noun)." }
 

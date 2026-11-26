@@ -7,6 +7,7 @@ import TranscribeCore
 /// Before V3 every voice row was made on this device (the old wipe guaranteed that), so a row with no channel was
 /// heard through this device's microphone. A sample or negative takes its source recording's channel when that
 /// recording still exists, so a voice learned from an imported or older recording keeps the recording's channel.
+/// A seeded group label (text, no channel) takes this device's channel.
 extension LibraryStore {
     @discardableResult
     public func stampCaptureChannels() throws -> Int {
@@ -22,7 +23,14 @@ extension LibraryStore {
         for s in samples { s.captureChannel = s.sourceRecordingID.flatMap { sourceChannels[$0] } ?? channel }
         for n in negatives { n.captureChannel = n.sourceRecordingID.flatMap { sourceChannels[$0] } ?? channel }
 
-        let stamped = recordings.count + samples.count + negatives.count
+        // A group label with text but no channel can only come from a seed, which does not know the run's channel: it
+        // takes this device's. (A label the user saves always has its group's channel.)
+        let labels = try context.fetch(FetchDescriptor<VoiceGroupLabel>(predicate: #Predicate {
+            $0.captureChannel == "" && $0.text != ""
+        }))
+        for l in labels { l.captureChannel = channel }
+
+        let stamped = recordings.count + samples.count + negatives.count + labels.count
         if stamped > 0 { try context.save() }
         return stamped
     }

@@ -145,9 +145,9 @@ public enum ZoneDeletionReason: String, Sendable, Codable {
     case deleted, purged, encryptedDataReset
 }
 
-// MARK: - Typed accessors on the V3 sync models
+// MARK: - Typed accessors on the sync models (current schema)
 
-public extension TranscribeSchemaV3.SyncRecordState {
+public extension TranscribeSchemaV4.SyncRecordState {
     var pending: SyncPending {
         get { SyncPending(rawValue: pendingRaw) ?? .none }
         set { pendingRaw = newValue.rawValue }
@@ -198,7 +198,7 @@ public extension TranscribeSchemaV3.SyncRecordState {
     }
 }
 
-public extension TranscribeSchemaV3.SyncAccountState {
+public extension TranscribeSchemaV4.SyncAccountState {
     var pausedReason: SyncPauseReason? {
         get { pausedReasonRaw.flatMap(SyncPauseReason.init(rawValue:)) }
         set { pausedReasonRaw = newValue?.rawValue }

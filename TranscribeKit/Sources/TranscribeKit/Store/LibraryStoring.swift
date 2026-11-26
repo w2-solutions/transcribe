@@ -8,8 +8,9 @@ public protocol LibraryStoring: AnyObject, Sendable {
 
     // MARK: Capture channels
     /// Idempotent launch backfill (§6.4): recordings with no capture channel get this device's channel; samples and
-    /// negatives with none take their source recording's channel when it still exists, else this device's. One save,
-    /// only when something changed. Never deletes anything. Returns the number of rows stamped.
+    /// negatives with none take their source recording's channel when it still exists, else this device's; group labels
+    /// with text and an empty channel (seeded) take this device's. One save, only when something changed. Never deletes
+    /// anything. Returns the number of rows stamped.
     func stampCaptureChannels() throws -> Int
 
     // MARK: Local audio (§8.5)
@@ -77,6 +78,16 @@ public protocol LibraryStoring: AnyObject, Sendable {
     /// Deletes one voice sample. A profile left with no sample on its model needs a new one.
     func removeSample(id: UUID) throws
 
+    // MARK: Sample group labels
+    /// Saves `text` (trimmed, cut to `GroupLabelText.maxLength`) as the group's label: updates the label the group
+    /// shows (text, `editedAt`, and the anchor, to the group's members now) or inserts one. Empty text removes the
+    /// shown label (nothing when there is none). Never touches another label, contenders included. Returns the saved
+    /// label's id, nil when nothing is saved. Throws `StoreError.groupChanged` unless a group with `ref.key` exists
+    /// now on `ref.channel` with the same members and the same shown label.
+    @discardableResult func setGroupLabel(_ ref: SampleGroupRef, text: String) throws -> UUID?
+    /// Deletes the label the group shows, and only that one. Same `StoreError.groupChanged` check.
+    func removeGroupLabel(_ ref: SampleGroupRef) throws
+
     // MARK: Diagnostics
     /// JSON of match scores and decisions for tuning: no names, titles, text or vectors.
     func matchingLog() throws -> String
@@ -86,5 +97,13 @@ public extension LibraryStoring {
     /// Applies decisions without traces.
     func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], policy: MatchPolicy) throws -> ProcessingOutcome {
         try applyMatches(id: id, decisions: decisions, traces: [:], policy: policy)
+    }
+
+    /// Stores that do not keep labels (test doubles) throw.
+    @discardableResult func setGroupLabel(_ ref: SampleGroupRef, text: String) throws -> UUID? {
+        throw StoreError.notImplemented("setGroupLabel")
+    }
+    func removeGroupLabel(_ ref: SampleGroupRef) throws {
+        throw StoreError.notImplemented("removeGroupLabel")
     }
 }

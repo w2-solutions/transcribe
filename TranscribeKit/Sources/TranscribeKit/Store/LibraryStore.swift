@@ -149,11 +149,12 @@ public final class LibraryStore: LibraryStoring {
         let live = profile.samples.filter { $0.embeddingModelKey == profile.embeddingModelKey }
         if live.isEmpty && profile.embeddingModelKey != modelKey {
             // A profile with no usable samples (all removed, or a model change) re-enrols on the new model.
-            // Its negatives were measured on the old model too, so they go with the samples.
+            // Its negatives and group labels were measured on the old model too, so they go with the samples.
             for stale in profile.samples { context.delete(stale) }
             profile.samples.removeAll()
             for stale in profile.negatives { context.delete(stale) }
             profile.negatives.removeAll()
+            deleteGroupLabels(of: profile)
             profile.embeddingModelKey = modelKey
         }
         guard profile.embeddingModelKey == modelKey else { return false }
@@ -825,13 +826,18 @@ public final class LibraryStore: LibraryStoring {
             }
         }
         // Samples keep their origin and channel, so trust survives the merge on the channel it was earned on.
+        // They also keep their stored bytes: `sample.vector` normalises again, and packing that would change the last
+        // bits of some values, so copied group label anchors would no longer find their samples bit for bit.
         for sample in src.sortedSamples {
-            guard let v = sample.vector else { continue }
+            guard let decoded = sample.vector else { continue }
+            let v = VoiceVector.unpacked(sample.vectorData, dimension: decoded.dimension).first ?? decoded
             insertSample(into: dst, vector: v, modelKey: sample.embeddingModelKey, origin: sample.origin,
                          speechSeconds: sample.speechSeconds, sourceRecordingID: sample.sourceRecordingID,
                          sourceSpeakerID: sample.sourceSpeakerID, clip: sample.clipRange, quote: sample.quote,
                          channel: sample.captureChannel, input: sample.captureInput)
         }
+        // After the samples: the loop can re-enrol dst on src's model, and labels follow dst's model as it is now.
+        copyGroupLabels(from: src, into: dst)
         try mergeNegatives(from: src, into: dst)
         if src.isMe { dst.isMe = true }
         dst.namedAt = max(dst.namedAt, src.namedAt)

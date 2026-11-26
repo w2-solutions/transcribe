@@ -29,7 +29,11 @@ struct SkeletonSeedTests {
         #expect(try context.fetchCount(FetchDescriptor<VoiceProfile>()) == expected.profiles)
         #expect(try context.fetchCount(FetchDescriptor<VoiceSample>()) == expected.samples)
         for r in try context.fetch(FetchDescriptor<Recording>()) {
-            #expect(FileManager.default.fileExists(atPath: paths.audioURL(fileName: r.audioFileName).path))
+            // A recording seeded with a channel may have been heard on another device, whose audio stays there; one
+            // without a channel is this device's and has its WAV.
+            if r.captureChannel == nil {
+                #expect(FileManager.default.fileExists(atPath: paths.audioURL(fileName: r.audioFileName).path))
+            }
             #expect(r.transcript != nil)
             #expect(r.peaks.count == SyntheticAudio.peakBins)
         }
@@ -56,6 +60,103 @@ struct SkeletonSeedTests {
         #expect(liam.isMe && liam.colourSlot == 0 && liam.samples.count == 3)
         #expect(liam.recordingCount == 3)
         #expect(liam.samples.allSatisfy { $0.sourceSpeakerID != nil })
+    }
+
+    /// The numbers the samples card and the voice-groups UI tests rely on, checked through the real grouping, resolver
+    /// and view model after the launch stamp, on both channels the UI tests run on.
+    @Test(arguments: [CaptureChannel.iphone, CaptureChannel.mac])
+    func voiceGroupsSeedMakesThreeLocalGroupsAndOneOnIPad(_ local: String) throws {
+        let h = try WP3Harness(channel: local)
+        defer { h.cleanup() }
+        try h.seed(.voiceGroups)   // applies the seed, then stamps channels as a launch does
+        let ids = Seeds.ID.tomSamples
+        let tom = try #require(try h.profile(named: "Tom"))
+        let samples = tom.sortedSamples
+        #expect(samples.map(\.id) == ids)
+        #expect(samples.map(\.captureChannel) == Array(repeating: local, count: 8) + [CaptureChannel.ipad, CaptureChannel.ipad])
+        #expect(tom.recordingCount == 2)
+        let label = try #require(tom.groupLabels.first)
+        #expect(tom.groupLabels.count == 1 && label.id == Seeds.ID.closeLabel && label.text == "Close")
+        #expect(label.captureChannel == local)
+
+        let recordings = try h.context.fetch(FetchDescriptor<Recording>())
+        let byID = Dictionary(uniqueKeysWithValues: recordings.map { ($0.id, $0) })
+        let t1 = try #require(byID[Seeds.ID.recordingT1]), t2 = try #require(byID[Seeds.ID.recordingT2])
+        #expect(t1.captureChannel == local && t2.captureChannel == CaptureChannel.ipad)
+        #expect(FileManager.default.fileExists(atPath: h.paths.audioURL(fileName: t1.audioFileName).path))
+        #expect(!FileManager.default.fileExists(atPath: h.paths.audioURL(fileName: t2.audioFileName).path))
+        #expect(t1.sortedSpeakers.map(\.displayName) == ["Liam", "Tom"])
+        // Every clip but the gone recording's points at Tom's own turn.
+        for s in samples where s.sourceRecordingID != Seeds.ID.goneRecording {
+            let sourceID = try #require(s.sourceRecordingID)
+            let source = try #require(byID[sourceID])
+            #expect(source.speakers.first { $0.id == s.sourceSpeakerID }?.profile?.id == Seeds.ID.tom)
+        }
+
+        // The grouping and the resolver, on exactly what the screen and the store feed them.
+        let split = GroupingInput.split(tom, localChannel: local)
+        #expect(split.items.count == 10 && split.ungrouped.isEmpty)
+        let dimension = try #require(GroupingInput.dimension(ofModelKey: tom.embeddingModelKey))
+        let groups = SampleGrouping.group(split.items, dimension: dimension)
+        let byChannel = Dictionary(grouping: groups, by: \.channel)
+        #expect(byChannel[local]?.map(\.memberIDs) == [[ids[0], ids[1], ids[5]], [ids[2], ids[3], ids[4]], [ids[6], ids[7]]])
+        #expect(byChannel[CaptureChannel.ipad]?.map(\.memberIDs) == [[ids[8], ids[9]]])
+        let anchors = GroupingInput.anchors(tom)
+        let vectors = Dictionary(uniqueKeysWithValues: split.items.map { ($0.id, $0.vector) })
+        let placement = GroupLabelResolver.resolve(groups: groups, memberVectors: vectors, labels: anchors)
+        #expect(placement.placed == [ids[0]: Seeds.ID.closeLabel])
+        #expect(placement.contenders.isEmpty && placement.unplaced.isEmpty)
+        let close = try #require(byChannel[local]?.first)
+        let anchor = try #require(anchors.first)
+        let fit = try #require(GroupLabelResolver.fit(anchor, close, memberVectors: vectors))
+        #expect(fit.present == 3)
+
+        // The samples card.
+        let view = VoiceSampleGroups.build(profile: tom, recordingsByID: byID, localChannel: local, paths: h.paths)
+        #expect(view.showsNote && view.showsChannelHeaders)
+        #expect(view.channels.map(\.channel) == [local, CaptureChannel.ipad])
+        #expect(view.channels.map(\.sampleCount) == [8, 2])
+        #expect(view.channels.allSatisfy { $0.ungroupedIndexes.isEmpty && $0.ungroupedSubtitle == nil })
+
+        let here = view.channels[0].groups
+        #expect(here.map(\.title) == ["Close", "Group 2", "Group 3"])
+        #expect(here.map(\.isLabelled) == [true, false, false])
+        #expect(here.map(\.position) == [0, 1, 2])
+        #expect(here.map(\.sampleIndexes) == [[0, 1, 5], [2, 3, 4], [6, 7]])
+        #expect(here.map(\.sampleIndexes.count) == [3, 3, 2])
+        #expect(here.map(\.showsHeader) == [true, true, true])
+        #expect(here.map(\.subtitle) == Array(repeating: "From \u{201C}Kitchen chat\u{201D}", count: 3))
+        #expect(here.map(\.ref.shownLabelID) == [Seeds.ID.closeLabel, nil, nil])
+        #expect(here.map(\.playSampleID) == [ids[0], ids[2], ids[6]])
+        let closePlays = try #require(samples.first { $0.id == here[0].playSampleID }?.clipRange)
+        #expect(closePlays.duration >= 4)
+
+        let iPad = view.channels[1].groups
+        #expect(iPad.count == 1)
+        #expect(iPad.first?.title == "Group 1" && iPad.first?.isLabelled == false && iPad.first?.showsHeader == false)
+        #expect(iPad.first?.sampleIndexes == [8, 9] && iPad.first?.playSampleID == nil)
+
+        // Every sample's clip state: 3 recording deleted, 4 no clip saved, 8 and 9 audio on the iPad, the rest play.
+        for (i, s) in samples.enumerated() {
+            let state = view.clipStates[s.id]
+            switch i {
+            case 3: #expect(state == .recordingDeleted)
+            case 4: #expect(state == .noClip)
+            case 8, 9: #expect(state == .audioElsewhere(channel: CaptureChannel.ipad))
+            default:
+                let clip = try #require(s.clipRange)
+                #expect(state == .playable(fileName: t1.audioFileName, range: clip), "sample \(i)")
+            }
+        }
+        let copy = DeviceCopy(platform: local == CaptureChannel.mac ? .mac : .iPhone)
+        #expect(view.clipStates[ids[3]]?.caption(copy) == "Recording deleted")
+        #expect(view.clipStates[ids[4]]?.caption(copy) == "No clip saved")
+        #expect(view.clipStates[ids[8]]?.caption(copy) == "Audio is on your iPad")
+
+        // The store accepts the screen's refs: labelling Group 2 shows it, and the seeded label stays on Close.
+        try h.store.setGroupLabel(here[1].ref, text: "Far")
+        let relabelled = VoiceSampleGroups.build(profile: tom, recordingsByID: byID, localChannel: local, paths: h.paths)
+        #expect(relabelled.channels[0].groups.map(\.title) == ["Close", "Far", "Group 3"])
     }
 }
 

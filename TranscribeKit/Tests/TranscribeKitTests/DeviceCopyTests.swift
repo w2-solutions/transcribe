@@ -95,6 +95,17 @@ import Testing
         #expect(mac.audioElsewhere(channel: "mac").hasPrefix("Audio is on your other Mac."))
         #expect(mac.audioElsewhere(channel: nil).hasPrefix("Audio is on the device that recorded it."))
     }
+
+    @Test func sampleAudioElsewhereByChannel() {
+        let iPhone = DeviceCopy(platform: .iPhone), mac = DeviceCopy(platform: .mac, syncOn: true)
+        #expect(iPhone.sampleAudioElsewhere(channel: "ipad") == "Audio is on your iPad")
+        #expect(iPhone.sampleAudioElsewhere(channel: "mac") == "Audio is on your Mac")
+        #expect(iPhone.sampleAudioElsewhere(channel: "iphone") == "Audio is on your other iPhone")
+        #expect(mac.sampleAudioElsewhere(channel: "iphone") == "Audio is on your iPhone")
+        #expect(mac.sampleAudioElsewhere(channel: "mac") == "Audio is on your other Mac")
+        #expect(mac.sampleAudioElsewhere(channel: nil) == "Audio is on another device")
+        #expect(iPhone.sampleAudioElsewhere(channel: "watch") == "Audio is on another device")
+    }
 }
 
 @Suite struct SyncCopyTests {
