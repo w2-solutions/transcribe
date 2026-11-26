@@ -167,7 +167,12 @@ enum TapBufferLayout {
                   fits(first) else { return nil }
             return Placement(first: first, certain: true)
         }
-        if n == tapBuffers { return fits(0) ? Placement(first: 0, certain: true) : nil }
+        if n == tapBuffers {
+            // Only one set of streams: never a microphone. When the output has inputs of its own and no terminal type
+            // tells, it is the tap only by assumption (flagged).
+            guard fits(0), !microphoneAt(0) else { return nil }
+            return Placement(first: 0, certain: subDeviceLayout.isEmpty || terminalTypes.count == n)
+        }
         let sub = subDeviceLayout.count
         guard sub > 0, n == sub + tapBuffers else { return nil }
         let subFirst = fits(sub) && Array(channelsPerBuffer[0..<sub]) == subDeviceLayout && !microphoneAt(sub)

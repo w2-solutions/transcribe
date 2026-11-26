@@ -177,6 +177,20 @@ struct TapRingTests {
         #expect(!TapBufferLayout.isMicrophone(0x0301))                              // a USB speaker
     }
 
+    /// Final review 2026-11-26: with only one set of input streams listed, a microphone stream is never taken as the
+    /// tap, and when the output has inputs of its own the placement is certain only if a terminal type says so.
+    @Test func aSingleInputStreamIsNeverAMicrophone() {
+        func place(_ terminals: [UInt32], sub: [UInt32]) -> TapBufferLayout.Placement? {
+            TapBufferLayout.place(channelsPerBuffer: [1], aggregateStreams: [60], subDeviceStreams: [40],
+                                  subDeviceLayout: sub, terminalTypes: terminals, tapBuffers: 1, tapChannelsPerBuffer: 1)
+        }
+        #expect(place([kAudioStreamTerminalTypeHeadsetMicrophone], sub: [1]) == nil)
+        #expect(place([0x0402], sub: [1]) == nil)                                   // a USB headset microphone
+        #expect(place([], sub: [1]) == .init(first: 0, certain: false))
+        #expect(place([kAudioStreamTerminalTypeUnknown], sub: [1]) == .init(first: 0, certain: true))
+        #expect(place([], sub: []) == .init(first: 0, certain: true))               // built-in speakers: no inputs
+    }
+
     @Test func anUnexpectedLayoutIsRefused() {
         // More buffers than the output device and the tap account for.
         #expect(TapBufferLayout.firstTapIndex(channelsPerBuffer: [1, 1, 1], subDeviceLayout: [1], tapBuffers: 1,

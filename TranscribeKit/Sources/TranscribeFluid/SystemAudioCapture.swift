@@ -271,13 +271,14 @@ actor SystemAudioCapture: StampedCaptureSource {
         // The tap's buffers among the aggregate's inputs (the output device may add its own microphone streams). A
         // new aggregate can report no inputs for a moment: read once more before giving up.
         let tapBuffers = format.isInterleaved ? 1 : Int(format.channelCount)
+        // Read again too when the output has inputs of its own and they are not listed yet.
+        let subLayout = Self.inputLayout(outputID)
         var layout = Self.inputLayout(aggregate)
-        if layout.count < tapBuffers {
+        if layout.count < tapBuffers + subLayout.count {
             usleep(50_000)
             layout = Self.inputLayout(aggregate)
         }
         let streams = Self.inputStreams(aggregate)
-        let subLayout = Self.inputLayout(outputID)
         guard let placement = TapBufferLayout.place(
             channelsPerBuffer: layout, aggregateStreams: streams, subDeviceStreams: Set(Self.inputStreams(outputID)),
             subDeviceLayout: subLayout, terminalTypes: streams.count == layout.count ? streams.map(Self.terminalType) : [],
@@ -414,8 +415,18 @@ actor SystemAudioCapture: StampedCaptureSource {
     }
 
     /// The IO block saw an input list of another length than the aggregate was built with.
+    /// Each counts against `maxLayoutRebuilds` only when it starts a rebuild. Once they are used up, Mac audio is
+    /// reported lost (the IO block drops every cycle, so nothing would reach the receiver or its silence notice); a
+    /// later device change still tries again.
     private func layoutMismatch() async {
-        guard layoutRebuilds < Self.maxLayoutRebuilds else { return }
+        guard deliver != nil, !rebuildScheduled, state.running else { return }
+        guard layoutRebuilds < Self.maxLayoutRebuilds else {
+            log.error("Mac audio's input layout keeps changing under the IO block; stopping Mac audio until the output changes")
+            destroyAggregate()
+            let failure = state.failed()
+            if failure.firstLoss { deliver?(.event(.systemAudioLost)) }
+            return
+        }
         layoutRebuilds += 1
         log.error("Mac audio's input layout changed under the IO block; rebuilding (\(self.layoutRebuilds, privacy: .public) of \(Self.maxLayoutRebuilds, privacy: .public))")
         await configurationChanged()
