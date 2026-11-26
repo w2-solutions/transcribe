@@ -99,6 +99,15 @@ struct TurnRow: View, Equatable {
                 .accessibilityLabel(chipLabel(speaker))
                 .accessibilityHint(chipHint(speaker))
                 .accessibilityIdentifier(AX.Transcript.turnChip(index))
+                if speaker.heardThroughMacAudio {
+                    // Heard through Mac audio (the far side of a call): a quiet glyph beside the chip.
+                    Image(systemName: RecordingSourceCopy.heardThroughMacAudioSymbol)
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(DS.Colour.secondary)
+                        .help(RecordingSourceCopy.heardThroughMacAudio)
+                        .accessibilityLabel(RecordingSourceCopy.heardThroughMacAudio)
+                        .accessibilityIdentifier(AX.Transcript.turnSource(index))
+                }
             }
             if canPlay {
                 Button { onTimestamp() } label: { timestampText }

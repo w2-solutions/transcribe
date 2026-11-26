@@ -8,6 +8,15 @@ final class SettingsFlowTests: FlowTestCase {
         return app
     }
 
+    /// What a recording captures is a Mac setting: the iPhone has no Recording section.
+    @MainActor func testNoRecordingSourceOnTheIPhone() {
+        let app = launchSettings()
+        app.waitFor(AX.Settings.identifySpeakers)
+        app.scrollTo(AX.Settings.modelRow)
+        XCTAssertFalse(app.element(AX.RecordingSource.section).exists)
+        XCTAssertFalse(app.element(AX.RecordingSource.picker).exists)
+    }
+
     @MainActor func testIdentifySpeakersOffDisablesRecognise() {
         let app = launchSettings()
         let identify = app.waitFor(AX.Settings.identifySpeakers)

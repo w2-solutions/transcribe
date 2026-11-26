@@ -292,7 +292,8 @@ struct VoiceDetailView: View {
     private func groupHeader(_ group: GroupSection, channel: String, clipStates: [UUID: SampleClipState]) -> some View {
         let isPlaying = env.player.playingClipID.map { id in group.ref.memberIDs.contains { $0.uuidString == id } } == true
         return SampleGroupHeader(
-            title: group.title, count: group.sampleIndexes.count, subtitle: group.subtitle, isLabelled: group.isLabelled,
+            title: group.title, count: group.sampleIndexes.count, subtitle: group.subtitle,
+            note: group.heardThroughMacAudio ? VoiceSampleGroups.macAudioNote : nil, isLabelled: group.isLabelled,
             isPlaying: isPlaying, canPlay: group.playSampleID != nil, id: AX.VoiceDetail.group(channel, group.position),
             onPlay: { playGroup(group, isPlaying: isPlaying, clipStates: clipStates) },
             onLabel: {

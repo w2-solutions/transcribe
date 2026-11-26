@@ -2,6 +2,9 @@ import SwiftUI
 #if os(iOS)
 import UIKit
 #endif
+#if os(macOS)
+import CoreAudio
+#endif
 
 /// iOS-only SwiftUI modifiers and values, wrapped so the shared views compile for both apps.
 /// On iOS every helper expands to exactly the modifier it replaces; the macOS branches arrive with the Mac app.
@@ -114,6 +117,45 @@ enum Platform {
         URL(string: UIApplication.openSettingsURLString)!
         #else
         URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone")!
+        #endif
+    }
+
+    /// Mac only: where "Screen & System Audio Recording" is allowed (the Mac audio silent note's button). Not yet
+    /// checked by hand on macOS 27: if it opens the wrong pane, Privacy & Security is one level up.
+    static var macAudioSettingsURL: URL {
+        URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture")!
+    }
+
+    /// DEBUG test runs only (`TRANSCRIBE_OUTPUT_ROUTE`, set by `Composition` with the fake engine or UI tests): the
+    /// output route to report instead of the Mac's ("builtInSpeaker", "headphones", …; `CaptureDetail.OutputRoute`).
+    static var outputRouteOverride: String?
+
+    /// The Mac's sound plays through its built-in speakers now, so a microphone recording at the same time hears the
+    /// far side of a call too (the headphones hint). False on the iPhone, and whenever the route cannot be read.
+    static func outputIsBuiltInSpeaker() -> Bool {
+        if let outputRouteOverride { return outputRouteOverride == "builtInSpeaker" }
+        #if os(macOS)
+        var device = AudioObjectID(kAudioObjectUnknown)
+        var size = UInt32(MemoryLayout<AudioObjectID>.size)
+        var address = AudioObjectPropertyAddress(mSelector: kAudioHardwarePropertyDefaultOutputDevice,
+                                                 mScope: kAudioObjectPropertyScopeGlobal,
+                                                 mElement: kAudioObjectPropertyElementMain)
+        guard AudioObjectGetPropertyData(AudioObjectID(kAudioObjectSystemObject), &address, 0, nil, &size, &device) == noErr,
+              device != kAudioObjectUnknown else { return false }
+        var transport: UInt32 = 0
+        size = UInt32(MemoryLayout<UInt32>.size)
+        address.mSelector = kAudioDevicePropertyTransportType
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &transport) == noErr,
+              transport == kAudioDeviceTransportTypeBuiltIn else { return false }
+        // The built-in output: its speakers ('ispk') or the headphone jack ('hdpn'). No data source reads as speakers.
+        var source: UInt32 = 0
+        size = UInt32(MemoryLayout<UInt32>.size)
+        address.mSelector = kAudioDevicePropertyDataSource
+        address.mScope = kAudioDevicePropertyScopeOutput
+        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, &source) == noErr else { return true }
+        return source != 0x6864_706E   // 'hdpn'
+        #else
+        return false
         #endif
     }
 }

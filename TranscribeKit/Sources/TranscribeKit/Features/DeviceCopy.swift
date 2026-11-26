@@ -47,14 +47,18 @@ public struct DeviceCopy: Sendable, Equatable {
     /// Mac only: the Sparkle updater runs in this build, so the privacy wording says the app contacts w2solutions.ai
     /// for updates. Ignored on the iPhone.
     public var updatesAvailable: Bool
+    /// Mac only: this Mac can record Mac audio (calls and other apps' sound), so the privacy wording and the Voices
+    /// footer say so. Ignored on the iPhone, which records the microphone only.
+    public var macAudio: Bool
 
     public init(platform: DevicePlatform = .current, syncOn: Bool = false, cloudCopyKept: Bool = false, claudeOn: Bool = false,
-                updatesAvailable: Bool = false) {
+                updatesAvailable: Bool = false, macAudio: Bool = false) {
         self.platform = platform
         self.syncOn = syncOn
         self.cloudCopyKept = cloudCopyKept && !syncOn
         self.claudeOn = claudeOn
         self.updatesAvailable = updatesAvailable
+        self.macAudio = macAudio
     }
 
     private var noun: String { platform.noun }
@@ -139,12 +143,21 @@ public struct DeviceCopy: Sendable, Equatable {
 
     /// The privacy note under the Voices list.
     public var voicesFooter: String {
-        if syncOn { return "Voice profiles sync with iCloud. Each device learns how a voice sounds through its own microphone." }
+        let callAudio = hasMacAudio
+        if syncOn {
+            return callAudio
+                ? "Voice profiles sync with iCloud. Each device learns how a voice sounds through its own microphone, and this Mac also learns how voices sound through call audio."
+                : "Voice profiles sync with iCloud. Each device learns how a voice sounds through its own microphone."
+        }
         if cloudCopyKept { return "Not syncing. Voice profiles synced earlier remain in your iCloud until you remove them." }
+        if callAudio { return "Voice profiles are stored on this Mac only, including how voices sound through call audio." }
         return isMac
             ? "Voice profiles are stored on this Mac only."
             : "Voice profiles never leave this \(noun). Each device learns voices from its own microphone."
     }
+
+    /// The Mac records Mac audio here (`macAudio` on a Mac).
+    private var hasMacAudio: Bool { macAudio && isMac }
 
     /// The Mac sidebar's footer.
     public var sidebarFooter: String {
@@ -197,11 +210,18 @@ public struct DeviceCopy: Sendable, Equatable {
             : ""
     }
 
+    /// The Mac audio sentence of the privacy explanation (a Mac that records Mac audio). Like `updateLine`, it always
+    /// comes before a branch's closing absolute, right after the branch's first statement.
+    private var macAudioLine: String {
+        hasMacAudio ? " When you record Mac audio, the sound of calls and other apps is recorded too and stays on this Mac." : ""
+    }
+
     /// Settings → Privacy explanation.
     public var privacyDetail: String {
         let claudeLine = " Claude on this Mac can read your transcripts and speaker names, and what it reads is sent to Anthropic."
         if syncOn {
             let base = "Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles sync through your private iCloud. Speech is processed on each device."
+                + macAudioLine
             if claudeOn { return base + claudeLine + updateLine + " Transcribe shares nothing else." }
             if isMac { return base + updateLine + " Nothing is shared with anyone else." }
             // The iPhone cannot see the Mac's switch, and synced transcripts can be read there.
@@ -209,13 +229,13 @@ public struct DeviceCopy: Sendable, Equatable {
         }
         if cloudCopyKept {
             return "Sync is off. Audio stays on this \(noun). Transcripts, speaker labels, folders and voice profiles synced earlier remain in your private iCloud and on your other devices until you remove them."
-                + (claudeOn ? claudeLine : "") + updateLine
+                + macAudioLine + (claudeOn ? claudeLine : "") + updateLine
         }
         if claudeOn {
-            return "Audio, transcripts and voice profiles are stored only on this \(noun)." + claudeLine + updateLine
+            return "Audio, transcripts and voice profiles are stored only on this \(noun)." + macAudioLine + claudeLine + updateLine
                 + " Audio and voice samples are never shared."
         }
-        return "Audio, transcripts and voice profiles are stored only on this \(noun)." + updateLine
+        return "Audio, transcripts and voice profiles are stored only on this \(noun)." + macAudioLine + updateLine
             + " Voice profiles are never synced or shared."
     }
 

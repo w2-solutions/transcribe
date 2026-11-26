@@ -10,6 +10,12 @@ final class RecordingFlowTests: FlowTestCase {
         // Live text (display-only) runs at 10× under `instant`.
         Wait.label(app.element(AX.Recording.liveTranscript), contains: "Karan", timeout: 5)
 
+        // The iPhone records the microphone only: no source line, one level meter, no Mac audio notes.
+        XCTAssertFalse(app.element(AX.Recording.source).exists, "No source line on the iPhone")
+        XCTAssertFalse(app.element(AX.Recording.levelMeterMic).exists, "One meter on the iPhone")
+        XCTAssertFalse(app.element(AX.Recording.levelMeterMacAudio).exists)
+        XCTAssertFalse(app.element(AX.Recording.headphonesHint).exists)
+
         let elapsed = app.waitFor(AX.Recording.elapsed)
         let start = elapsed.label
         Wait.label(elapsed, changesFrom: start, timeout: 5)
@@ -63,6 +69,7 @@ final class RecordingFlowTests: FlowTestCase {
         app.waitFor(AX.Library.MicDenied.sheet)
         XCTAssertTrue(app.element(AX.Library.MicDenied.openSettings).exists)
         XCTAssertTrue(app.element(AX.Library.MicDenied.importInstead).exists)
+        XCTAssertFalse(app.element(AX.Library.MicDenied.macAudioOnly).exists, "Mac audio is the Mac's")
         app.element(AX.Library.MicDenied.close).press()
         app.waitForGone(AX.Library.MicDenied.sheet)
         XCTAssertFalse(app.element(AX.Recording.screen).exists)

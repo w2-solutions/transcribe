@@ -17,22 +17,27 @@ public struct TranscriptSpeaker: Sendable, Equatable, Identifiable {
     public var suggestedName: String?
     public var cleanSeconds: Double
     public var totalSeconds: Double
+    /// Which stream the speaker was heard on (a `system` speaker's chip carries a speaker glyph).
+    public var source: SpeakerSource
     public var id: SpeakerKey { key }
 
     public init(key: SpeakerKey, ordinal: Int, slot: Int, label: SpeakerLabelState, name: String,
                 profileID: UUID? = nil, suggestedProfileID: UUID? = nil, suggestedName: String? = nil,
-                cleanSeconds: Double = 0, totalSeconds: Double = 0) {
+                cleanSeconds: Double = 0, totalSeconds: Double = 0, source: SpeakerSource = .mic) {
         self.key = key; self.ordinal = ordinal; self.slot = slot; self.label = label; self.name = name
         self.profileID = profileID; self.suggestedProfileID = suggestedProfileID; self.suggestedName = suggestedName
-        self.cleanSeconds = cleanSeconds; self.totalSeconds = totalSeconds
+        self.cleanSeconds = cleanSeconds; self.totalSeconds = totalSeconds; self.source = source
     }
 
     @MainActor public init(_ speaker: RecordingSpeaker, suggestedName: String?) {
         self.init(key: speaker.key, ordinal: speaker.ordinal, slot: speaker.colourSlot, label: speaker.label,
                   name: speaker.displayName, profileID: speaker.profile?.id,
                   suggestedProfileID: speaker.suggestedProfileID, suggestedName: suggestedName,
-                  cleanSeconds: speaker.cleanSeconds, totalSeconds: speaker.totalSeconds)
+                  cleanSeconds: speaker.cleanSeconds, totalSeconds: speaker.totalSeconds, source: speaker.source)
     }
+
+    /// The chip shows the Mac audio glyph: the speaker was heard through Mac audio only.
+    public var heardThroughMacAudio: Bool { source == .system }
 
     /// Same rule as `Recording.speakersNeedingName`.
     public var needsName: Bool {
