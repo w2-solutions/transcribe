@@ -6,6 +6,9 @@ import TranscribeKit
 struct MicDeniedSheet: View {
     /// Called after the sheet dismisses itself because the user chose "Import an audio file instead".
     let onImportInstead: () -> Void
+    /// Mac, Both mode: called after the sheet dismisses itself because the user chose "Record Mac audio only". Nil
+    /// hides that choice (the iPhone, and the Mac recording the microphone only).
+    var onMacAudioOnly: (() -> Void)? = nil
     @Environment(\.dismiss) private var dismiss
     @Environment(\.openURL) private var openURL
 
@@ -38,6 +41,15 @@ struct MicDeniedSheet: View {
                 openURL(Platform.micSettingsURL)
             }
             .accessibilityIdentifier(AX.Library.MicDenied.openSettings)
+            if let onMacAudioOnly {
+                LinkButton(RecordingSourceCopy.macAudioOnlyInstead, font: .subheadline.weight(.semibold)) {
+                    dismiss()
+                    onMacAudioOnly()
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.top, 4)
+                .accessibilityIdentifier(AX.Library.MicDenied.macAudioOnly)
+            }
             LinkButton("Import an audio file instead", font: .subheadline.weight(.semibold)) {
                 dismiss()
                 onImportInstead()

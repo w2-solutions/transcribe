@@ -4,13 +4,20 @@ import TranscribeDesign
 import TranscribeKit
 
 extension AppEnvironment {
-    /// Device wording with the sync switch (and, on the Mac, the Claude switch and the updater) applied ("Saved to your
-    /// voices and synced with iCloud", "Delete from all your devices?"). Shared views read their copy here so it follows
-    /// them.
+    /// Device wording with the sync switch (and, on the Mac, the Claude switch, the updater and Mac audio) applied
+    /// ("Saved to your voices and synced with iCloud", "Delete from all your devices?"). Shared views read their copy
+    /// here so it follows them.
     var copy: DeviceCopy {
         DeviceCopy(syncOn: sync != nil && settings.syncEnabled, cloudCopyKept: sync?.keepsCloudCopy ?? false, claudeOn: claudeAccessOn,
-                   updatesAvailable: updatesAvailable)
+                   updatesAvailable: updatesAvailable, macAudio: engine.systemAudioAvailable)
     }
+
+    /// This engine can record Mac audio (the Mac with a capture that supports it; never the iPhone). While false no
+    /// source control shows and every recording captures the microphone.
+    var macAudioAvailable: Bool { engine.systemAudioAvailable }
+
+    /// What New Recording captures now: the chosen source, or the microphone where Mac audio is not available.
+    var recordingSource: CaptureSources { settings.effectiveRecordingSource(systemAudioAvailable: macAudioAvailable) }
 }
 
 /// Settings → iCloud (§8.6): the "Sync with iCloud" switch (off by default), what syncs, the status line, Sync Now and

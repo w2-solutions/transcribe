@@ -38,6 +38,8 @@ enum AX {
             static let openSettings = "micDenied.openSettings"
             static let importInstead = "micDenied.importInstead"
             static let close = "micDenied.close"
+            /// Both mode on the Mac: record Mac audio alone instead.
+            static let macAudioOnly = "micDenied.macAudioOnly"
         }
     }
 
@@ -50,7 +52,14 @@ enum AX {
         static let date = "recording.date"
         static let liveTranscript = "recording.liveTranscript"
         static let liveTextNote = "recording.liveTextNote"
-        static let levelMeter = "recording.levelMeter"
+        static let levelMeter = "recording.levelMeter"            // the one meter (microphone, or Mac audio only)
+        // Mac audio (Mac only): what this recording captures, the Both mode's two meters and its notes.
+        static let source = "recording.source"                    // "Recording the microphone and Mac audio"
+        static let levelMeterMic = "recording.levelMeter.mic"
+        static let levelMeterMacAudio = "recording.levelMeter.macAudio"
+        static let macAudioNote = "recording.macAudioNote"        // silent / lost
+        static let macAudioNoteOpenSettings = "recording.macAudioNote.openSettings"
+        static let headphonesHint = "recording.headphonesHint"
         static let pauseButton = "recording.pauseButton"     // label "Pause recording" / "Resume recording"
         static let stopButton = "recording.stopButton"
         static let markButton = "recording.markButton"
@@ -99,6 +108,8 @@ enum AX {
         static func turnTimestamp(_ i: Int) -> String { "transcript.turn.\(i).timestamp" }
         static func turnText(_ i: Int) -> String { "transcript.turn.\(i).text" }
         static func turnMark(_ i: Int) -> String { "transcript.turn.\(i).mark" }        // bookmark glyph
+        /// The Mac audio glyph beside a turn's chip, for a speaker heard through Mac audio (label "Heard through Mac audio").
+        static func turnSource(_ i: Int) -> String { "transcript.turn.\(i).source" }
         static func changeSpeaker(_ i: Int) -> String { "transcript.turn.\(i).changeSpeaker" }
         static let copyButton = "transcript.copyButton"
         static let copiedToast = "transcript.copiedToast"
@@ -140,6 +151,8 @@ enum AX {
         static let rememberHelp = "nameSpeaker.rememberHelp"
         static let saveButton = "nameSpeaker.saveButton"           // "Save and label 2 turns"
         static let notNowButton = "nameSpeaker.notNowButton"
+        /// A speaker heard on both the microphone and Mac audio: not learned from this recording.
+        static let notLearned = "nameSpeaker.notLearned"
     }
 
     enum Voices {
@@ -184,6 +197,7 @@ enum AX {
         static func groupPlay(_ channel: String, _ n: Int) -> String { group(channel, n) + ".play" }
         static func groupSubtitle(_ channel: String, _ n: Int) -> String { group(channel, n) + ".subtitle" }
         static func groupLabelButton(_ channel: String, _ n: Int) -> String { group(channel, n) + ".label" }   // "Label" / "Edit"
+        static func groupMacAudio(_ channel: String, _ n: Int) -> String { group(channel, n) + ".macAudio" }   // "Heard through Mac audio"
         static func ungrouped(_ channel: String) -> String { "voiceDetail.ungrouped.\(channel)" }             // "Not grouped · 2"
         enum GroupLabel { static let field = "voiceDetail.groupLabel.field"; static let save = "voiceDetail.groupLabel.save"; static let remove = "voiceDetail.groupLabel.remove"; static let cancel = "voiceDetail.groupLabel.cancel" }
         enum Edit { static let sheet = "voiceEdit.sheet"; static let nameField = "voiceEdit.nameField"; static let isMeToggle = "voiceEdit.isMeToggle"; static let saveButton = "voiceEdit.saveButton"; static let cancelButton = "voiceEdit.cancelButton" }
@@ -209,6 +223,21 @@ enum AX {
         static let copyMatchLogRow = "settings.copyMatchLogRow"
         static let copiedToast = "settings.copiedToast"
         static let privacyDetail = "settings.privacyDetail"
+    }
+
+    /// Settings → Recording (Mac only): what New Recording captures.
+    enum RecordingSource {
+        static let section = "settings.recording.section"
+        static let picker = "settings.recording.source"
+        static func option(_ raw: String) -> String { "settings.recording.source.\(raw)" }   // microphone | both | macAudio
+        static let footnote = "settings.recording.footnote"
+    }
+
+    /// The Mac audio explainer, shown once before the first recording of Mac audio.
+    enum MacAudioExplainer {
+        static let sheet = "macAudioExplainer.sheet"
+        static let continueButton = "macAudioExplainer.continue"
+        static let cancel = "macAudioExplainer.cancel"
     }
 
     /// "Sync with iCloud" (§8.6): the Settings section, the leave dialog, and the account and mass-delete sheets.
@@ -324,6 +353,11 @@ enum AX {
         static let voiceList = "mac.list.voices"
         static let detailEmpty = "mac.detail.empty"
         static let toolbarRecord = "mac.toolbar.record"
+        /// The toolbar's New Recording when Mac audio is available: a menu whose click records with the current source.
+        static let toolbarRecordSourceMenu = "mac.toolbar.record.sourceMenu"
+        static func toolbarRecordSource(_ raw: String) -> String { "mac.toolbar.record.source.\(raw)" }
+        /// The sidebar New Recording pill's second line naming the source.
+        static let sidebarNewRecordingSource = "mac.sidebar.newRecording.source"
         static let toolbarImport = "mac.toolbar.import"
         static let toolbarRecordingPill = "mac.toolbar.recordingPill"
         static let recordingWindow = "mac.recordingWindow"

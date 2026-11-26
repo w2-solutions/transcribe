@@ -27,6 +27,8 @@ public final class AppSettings {
         static let appearance = "settings.appearance"
         static let autoCopy = "settings.autoCopy"
         static let syncEnabled = "settings.syncEnabled"
+        static let recordingSource = "settings.recordingSource"   // CaptureSources raw value (Mac only)
+        static let macAudioExplained = "settings.macAudioExplained"
         static let syncCloudEnvironment = "sync.cloudEnvironment"
     }
 
@@ -40,6 +42,13 @@ public final class AppSettings {
     public var autoCopy: CopyFormat { didSet { defaults.set(autoCopy.rawValue, forKey: Key.autoCopy) } }              // default .textOnly
     /// "Sync with iCloud" on this device (§8.4, D3). Off by default.
     public var syncEnabled: Bool { didSet { defaults.set(syncEnabled, forKey: Key.syncEnabled) } }                  // default false
+    /// What New Recording captures on this Mac (Settings → Recording, the toolbar menu, File → Record From). Per
+    /// device, never synced; the iPhone records the microphone only and never reads it. Default `.microphone`.
+    public var recordingSource: CaptureSources {
+        didSet { defaults.set(recordingSource.rawValue, forKey: Key.recordingSource) }
+    }
+    /// The Mac audio explainer sheet has been shown (and Continue chosen) once on this device.
+    public var macAudioExplained: Bool { didSet { defaults.set(macAudioExplained, forKey: Key.macAudioExplained) } }   // default false
 
     /// The iCloud environment ("Development" or "Production") this device's sync state was made in; see
     /// `SyncCoordinator.cloudEnvironment`. Not a user setting.
@@ -57,6 +66,14 @@ public final class AppSettings {
         appearance = defaults.string(forKey: Key.appearance).flatMap(AppearanceSetting.init(rawValue:)) ?? .system
         autoCopy = defaults.string(forKey: Key.autoCopy).flatMap(CopyFormat.init(rawValue:)) ?? .textOnly
         syncEnabled = defaults.object(forKey: Key.syncEnabled) as? Bool ?? false
+        recordingSource = defaults.string(forKey: Key.recordingSource).flatMap(CaptureSources.init(rawValue:)) ?? .microphone
+        macAudioExplained = defaults.object(forKey: Key.macAudioExplained) as? Bool ?? false
+    }
+
+    /// What a new recording captures here: the chosen source when this engine can record Mac audio, else the
+    /// microphone (the iPhone, and a Mac engine without Mac audio).
+    public func effectiveRecordingSource(systemAudioAvailable: Bool) -> CaptureSources {
+        systemAudioAvailable ? recordingSource : .microphone
     }
 
     public var pipeline: PipelineSettings {

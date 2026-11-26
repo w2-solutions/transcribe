@@ -65,13 +65,16 @@ public final class NameSpeakerModel {
         public var canBeRemembered: Bool
         /// False for speakers the user added ("Just this turn") and for voices whose vector was dropped.
         public var hasVector: Bool
+        /// Which stream the speaker was heard on. A `mixed` speaker (heard on both the microphone and Mac audio) is never
+        /// learned from: the sheet says so and offers no Remember.
+        public var source: SpeakerSource
         public init(key: SpeakerKey, ordinal: Int, slot: Int, label: SpeakerLabelState, displayName: String,
                     profileID: UUID? = nil, suggestedProfileID: UUID? = nil, cleanSeconds: Double, totalSeconds: Double,
-                    canBeRemembered: Bool, hasVector: Bool = true) {
+                    canBeRemembered: Bool, hasVector: Bool = true, source: SpeakerSource = .mic) {
             self.key = key; self.ordinal = ordinal; self.slot = slot; self.label = label; self.displayName = displayName
             self.profileID = profileID; self.suggestedProfileID = suggestedProfileID
             self.cleanSeconds = cleanSeconds; self.totalSeconds = totalSeconds; self.canBeRemembered = canBeRemembered
-            self.hasVector = hasVector
+            self.hasVector = hasVector; self.source = source
         }
     }
 
@@ -131,8 +134,9 @@ public final class NameSpeakerModel {
         } else {
             self.otherSpeakers = []
         }
-        // On whenever the voice could be added somewhere: 5 s to a saved voice (new voices still need 10 s).
-        remember = subject.hasVector && subject.cleanSeconds >= MatchPolicy.default.minLearnSeconds
+        // On whenever the voice could be added somewhere: 5 s to a saved voice (new voices still need 10 s). Never for a
+        // voice heard on both streams, which is not learned from this recording.
+        remember = subject.source != .mixed && subject.hasVector && subject.cleanSeconds >= MatchPolicy.default.minLearnSeconds
         // Prefill: the suggested profile's name, else empty.
         if mode == .name, let suggested = subject.suggestedProfileID, let p = self.profiles.first(where: { $0.id == suggested }) {
             setName(p.name, selecting: .profile(p.id))
@@ -148,7 +152,8 @@ public final class NameSpeakerModel {
             displayName: speaker?.displayName ?? "Speaker", profileID: speaker?.profile?.id,
             suggestedProfileID: speaker?.label == .suggested ? speaker?.suggestedProfileID : nil,
             cleanSeconds: speaker?.cleanSeconds ?? 0, totalSeconds: speaker?.totalSeconds ?? 0,
-            canBeRemembered: speaker?.canBeRemembered ?? false, hasVector: speaker?.vectorData != nil)
+            canBeRemembered: speaker?.canBeRemembered ?? false, hasVector: speaker?.vectorData != nil,
+            source: speaker?.source ?? .mic)
         let turns = recording.transcript?.turns ?? []
         let peaks = recording.peaks
         let duration = recording.duration
@@ -240,8 +245,13 @@ public final class NameSpeakerModel {
 
     public var canSave: Bool { isNameValid }
 
-    /// The Remember card is hidden for "Just this turn" and for "same as another speaker here".
+    /// "This voice was heard on both your microphone and Mac audio, …" for a mixed speaker, else nil.
+    public var notLearnedNote: String? { subject.source == .mixed ? RecordingSourceCopy.mixedNotLearned : nil }
+
+    /// The Remember card is hidden for "Just this turn", for "same as another speaker here", and for a voice heard
+    /// on both streams (it is never learned from this recording; `notLearnedNote` says so instead).
     public var showsRemember: Bool {
+        if subject.source == .mixed { return false }
         if effectiveScope == .justThisTurn { return false }
         if case .speaker = selection { return false }
         return true
@@ -249,7 +259,8 @@ public final class NameSpeakerModel {
 
     /// The toggle is disabled (and off) under ~5 s of clear speech for a saved voice, and under ~10 s for a new one.
     public var rememberEnabled: Bool {
-        switch selection {
+        if subject.source == .mixed { return false }
+        return switch selection {
         case .profile: subject.hasVector && subject.cleanSeconds >= MatchPolicy.default.minLearnSeconds
         case .newPerson, .speaker: subject.canBeRemembered
         }
@@ -265,6 +276,8 @@ public final class NameSpeakerModel {
     /// needs 10 s, not because the user opted out: the store still creates no profile (it checks 10 s itself), but
     /// it keeps this voice as a negative (5 s) for the person it was wrongly labelled or suggested as.
     var rememberForSave: Bool {
+        // A voice heard on both streams learns nothing from this recording: no sample and no negative.
+        if subject.source == .mixed { return false }
         if case .newPerson = selection, !rememberEnabled {
             return remember && subject.hasVector && subject.cleanSeconds >= MatchPolicy.default.minLearnSeconds
         }

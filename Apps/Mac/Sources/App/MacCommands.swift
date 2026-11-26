@@ -34,6 +34,17 @@ struct MacCommands: Commands {
         CommandGroup(replacing: .newItem) {
             Button("New Recording") { newRecording() }
                 .keyboardShortcut("n")
+            if env.macAudioAvailable {
+                // File → Record From: picks this Mac's source (the setting) and records with it. ⌘N uses the current one.
+                Menu(RecordingSourceCopy.recordFromTitle) {
+                    ForEach(CaptureSources.allCases, id: \.self) { source in
+                        Toggle(RecordingSourceCopy.title(source), isOn: Binding(
+                            get: { env.settings.recordingSource == source },
+                            set: { if $0 { recordFrom(source) } }))
+                    }
+                }
+                .disabled(env.recorder.isActive)
+            }
             Button("Stop Recording") { stopRecording() }
                 .keyboardShortcut(".")
                 .disabled(!env.recorder.isActive)
@@ -76,6 +87,14 @@ struct MacCommands: Commands {
             return
         }
         selection.recordRequested = true
+    }
+
+    /// File → Record From: remembers the source as this Mac's setting, then the main window records with it.
+    private func recordFrom(_ source: CaptureSources) {
+        guard !env.recorder.isActive else { return }
+        env.settings.recordingSource = source
+        openWindow(id: "main")
+        selection.recordSourceRequest = source
     }
 
     private func stopRecording() {
