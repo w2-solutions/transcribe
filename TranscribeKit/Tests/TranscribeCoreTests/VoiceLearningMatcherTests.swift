@@ -263,7 +263,7 @@ struct VoiceLearningMatcherTests {
         guard case .autoLabel(let id, let s, let m) = d else { Issue.record("expected auto, got \(d)"); return }
         #expect(id == TV.liamID && approx(s, 0.6) && approx(m, 0.4))
 
-        #expect(t.version == 2 && t.key == "S1" && t.cleanSeconds == 12.5)
+        #expect(t.version == MatchTrace.currentVersion && t.key == "S1" && t.cleanSeconds == 12.5)
         #expect(t.kind == .auto && t.profileID == TV.liamID && t.reason == "auto")
         #expect(near(t.score, 0.6) && near(t.runnerUp, 0.2) && near(t.margin, 0.4))
         #expect(t.autoLabelMin == 0.55 && t.autoLabelMargin == 0.10 && t.askMin == 0.40)

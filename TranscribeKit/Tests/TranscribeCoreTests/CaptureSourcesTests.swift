@@ -83,10 +83,12 @@ struct CaptureSourcesTests {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.sortedKeys]
         let json = String(decoding: try encoder.encode(trace), as: UTF8.self)
-        for key in ["autoScore", "groupCount", "groupSize", "groupTrustedCount", "singletonBorrowShadow", "speakerSource", "systemShare"] {
+        for key in ["autoScore", "groupCount", "groupSize", "groupTrustedCount", "singletonBorrowShadow", "groupBestScore",
+                    "autoTrustedScore", "autoCentroidCosine", "speakerSource", "systemShare"] {
             #expect(!json.contains(key), "\(key)")
         }
-        #expect(MatchTrace.currentVersion == 2 && MatchTrace.groupsVersion == 3)
+        // The matcher writes v3 with groups on and v2 with them off (`MatchTrace.channelsVersion`).
+        #expect(MatchTrace.currentVersion == 3 && MatchTrace.groupsVersion == 3 && MatchTrace.channelsVersion == 2)
     }
 
     @Test func v3TraceRoundTripsAndOlderTracesStillDecode() throws {

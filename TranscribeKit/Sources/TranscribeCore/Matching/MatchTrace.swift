@@ -26,19 +26,31 @@ public struct ProfileEvidence: Sendable, Codable, Equatable {
     /// Trusted members of the winning group.
     public var groupTrustedCount: Int?
     /// Shadow only, never used to decide: A under rule S1, where a one-sample group borrows its second place from
-    /// the rest of the channel, logged so S2 (the rule in use) can be compared on real data.
+    /// every other sample of the profile, logged so S2 (the rule in use) can be compared on real data.
     public var singletonBorrowShadow: Float?
+    /// G: the best score over every group on the probe's channel, trusted or not. It feeds the symmetric runner-up
+    /// of the other profiles.
+    public var groupBestScore: Float?
+    /// The trusted score an automatic sample is gated on: the mean of the top trusted cosines in the winning group
+    /// when it has two or more trusted members, else `trustedScore`.
+    public var autoTrustedScore: Float?
+    /// The probe's cosine to the winning group's centroid; an automatic sample must join the group (at least
+    /// `MatchPolicy.groupJoinCosine`).
+    public var autoCentroidCosine: Float?
 
     public init(profileID: UUID, score: Float, trustedTop: Float?, trustedScore: Float?, trustedCount: Int,
                 untrustedCount: Int, askOnly: Bool, negativeMax: Float?, blocked: Bool, cohortMax: Float?,
                 otherChannelTrustedCount: Int? = nil, autoScore: Float? = nil, groupCount: Int? = nil,
-                groupSize: Int? = nil, groupTrustedCount: Int? = nil, singletonBorrowShadow: Float? = nil) {
+                groupSize: Int? = nil, groupTrustedCount: Int? = nil, singletonBorrowShadow: Float? = nil,
+                groupBestScore: Float? = nil, autoTrustedScore: Float? = nil, autoCentroidCosine: Float? = nil) {
         self.profileID = profileID; self.score = score; self.trustedTop = trustedTop; self.trustedScore = trustedScore
         self.trustedCount = trustedCount; self.untrustedCount = untrustedCount; self.askOnly = askOnly
         self.negativeMax = negativeMax; self.blocked = blocked; self.cohortMax = cohortMax
         self.otherChannelTrustedCount = otherChannelTrustedCount
         self.autoScore = autoScore; self.groupCount = groupCount; self.groupSize = groupSize
         self.groupTrustedCount = groupTrustedCount; self.singletonBorrowShadow = singletonBorrowShadow
+        self.groupBestScore = groupBestScore; self.autoTrustedScore = autoTrustedScore
+        self.autoCentroidCosine = autoCentroidCosine
     }
 }
 
@@ -48,8 +60,11 @@ public enum TraceKind: String, Sendable, Codable { case auto, ask, unknown }
 ///
 /// `reason` is the first rule that applies:
 /// - auto: `"auto"`;
-/// - ask: `"downgraded"`, `"otherChannel"` (no trusted sample on the probe's channel, but some on another),
-///   `"askOnly"` (no trusted sample at all), `"autoLabelOff"`, `"belowAuto"`, `"margin"`;
+/// - ask: `"downgraded"`, `"mixedSource"` (the probe is ask-only: heard on both the microphone and Mac audio),
+///   `"otherChannel"` (no trusted sample on the probe's channel, but some on another), `"askOnly"` (no trusted sample
+///   at all), `"autoLabelOff"`, `"negativeNear"` (the auto score passed but a negative is at least as close),
+///   `"groupScore"` (the whole score W would have auto-labelled, the auto score A does not), `"belowAuto"`, `"margin"`
+///   (with groups, both on A);
 /// - unknown: `"noVector"`, `"tooShort"`, `"noEligibleProfiles"`, `"blocked"` (the top profile was blocked and
 ///   nothing else reached ask), `"taken"` (every profile that reached ask was taken), `"lowScore"`.
 ///
@@ -58,10 +73,14 @@ public enum TraceKind: String, Sendable, Codable { case auto, ask, unknown }
 ///
 /// Version 3 (sound groups and Mac audio, 2026-11-26) adds `speakerSource`, `systemShare` and the group fields of
 /// `ProfileEvidence`; all optional and left out of the JSON when nil, so v1 and v2 JSON still decode and a trace
-/// without them encodes as before. The matcher writes version 2 until it fills them (`currentVersion`).
+/// without them encodes as before. The matcher writes version 3 while `MatchPolicy.groupScoring` is on, and version 2
+/// with it off (the matcher from before groups). The group fields are filled only for a profile scored per group
+/// (one whose candidate carries sample ids).
 public struct MatchTrace: Sendable, Codable, Equatable {
-    public static let currentVersion = 2
-    /// The version whose fields this type can hold.
+    public static let currentVersion = groupsVersion
+    /// The version written with capture channels and without groups (`MatchPolicy.groupScoring` off).
+    public static let channelsVersion = 2
+    /// The version with sound-group scoring.
     public static let groupsVersion = 3
 
     public var version: Int
