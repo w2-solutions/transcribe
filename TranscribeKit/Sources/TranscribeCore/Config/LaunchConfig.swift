@@ -67,6 +67,7 @@ public struct LaunchConfig: Sendable, Equatable {
     public static let envNetwork = "TRANSCRIBE_NETWORK"    // wifi | cellular | lowData | offline (fake engine and UI tests only)
     public static let envSyncAudio = "TRANSCRIBE_SYNC_AUDIO"  // "off": the switch starts off; "intro": the one-time
                                                               // notice may show (fake engine and UI tests only)
+    public static let envShortcuts = "TRANSCRIBE_SHORTCUTS"        // sim (fake engine and UI tests only)
 
     public var useFakeEngine: Bool
     public var uiTesting: Bool
@@ -102,6 +103,11 @@ public struct LaunchConfig: Sendable, Equatable {
     /// The one-time "Audio now syncs with iCloud" notice may show in this run (`TRANSCRIBE_SYNC_AUDIO=intro`), for the
     /// notice's UI tests. Read only with the fake engine or `-uiTesting`, like `channel`.
     public var syncAudioIntro: Bool
+    /// The Mac's global shortcuts simulated for this session (`TRANSCRIBE_SHORTCUTS=sim`): a Shortcut Simulation menu
+    /// stands in for the keys. Read only with the fake engine or `-uiTesting`, like `channel`, and never saved; the Mac
+    /// app honours it only in DEBUG builds. A simulated session never registers system shortcuts, never posts events
+    /// and never touches the general pasteboard.
+    public var shortcutSimulation: Bool
 
     public init(arguments: [String], environment: [String: String]) {
         useFakeEngine = arguments.contains(Self.argUseFakeEngine) || environment["TRANSCRIBE_ENGINE"] == "fake"
@@ -127,6 +133,7 @@ public struct LaunchConfig: Sendable, Equatable {
         let syncAudio = environment[Self.envSyncAudio]?.trimmingCharacters(in: .whitespaces).lowercased()
         syncAudioOff = testRun && syncAudio == "off"
         syncAudioIntro = testRun && syncAudio == "intro"
+        shortcutSimulation = testRun && environment[Self.envShortcuts]?.trimmingCharacters(in: .whitespaces).lowercased() == "sim"
     }
     /// "1.2.3": digits and dots, starting and ending with a digit; anything else → nil.
     private static func parseVersion(_ raw: String?) -> String? {

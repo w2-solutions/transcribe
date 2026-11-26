@@ -21,6 +21,8 @@ public final class AppEnvironment {
     public let coordinator: ProcessingCoordinator
     public let models: ModelManager
     public let recorder: RecorderController
+    /// One microphone owner at a time: a meeting recording or a dictation (Mac).
+    public let captureGate: CaptureGate
     public let player: PlaybackController
     /// iCloud sync (§8.4); nil when the app was built without a transport.
     public let sync: SyncCoordinator?
@@ -32,6 +34,10 @@ public final class AppEnvironment {
     /// Mac only: the Sparkle updater runs in this build (set by the Mac app from `UpdateAvailability`). Always false on
     /// iPhone.
     public var updatesAvailable = false
+    /// Mac only: another copy of Transcribe is running (set by the Mac app before launch). It shares this container's
+    /// `Dictation/` folder and may be dictating into it, so launch then keeps recent dictation files. Always false on
+    /// iPhone.
+    @ObservationIgnored public var otherCopyRunning: @MainActor () -> Bool = { false }
     public private(set) var isLaunched = false
     public private(set) var launchError: String?
 
@@ -84,8 +90,10 @@ public final class AppEnvironment {
             if let recorder = readyRecorder.recorder { Task { await recorder.modelsBecameReady() } }
         })
         self.models = models
+        let captureGate = CaptureGate()
+        self.captureGate = captureGate
         let recorder = RecorderController(engine: engine, store: store, coordinator: coordinator, models: models,
-                                          paths: paths, settings: settings, clock: config.clock)
+                                          paths: paths, settings: settings, clock: config.clock, gate: captureGate)
         readyRecorder.recorder = recorder
         self.recorder = recorder
         let player = PlaybackController()
@@ -111,7 +119,8 @@ public final class AppEnvironment {
         }
     }
 
-    /// Order: activity seeded (iPhone) → paths.prepare (+ detached removal of the old downloaded models) → seed (if
+    /// Order: activity seeded (iPhone) → paths.prepare → clearDictationFiles (+ detached removal of the old downloaded
+    /// models) → seed (if
     /// config.seed) → store.stampCaptureChannels → store.adoptStrayDownloads → store.sweepOrphanAudio →
     /// sync.audio.prepareOnLaunch (audio sync's scratch folders, the first sweep date) → models.refresh →
     /// coordinator.recoverOnLaunch → sync.start (its own task, when the switch is on) → models.prepareIfInstalled (detached;
@@ -129,6 +138,9 @@ public final class AppEnvironment {
         guard !isLaunched else { return }
         if activityPhase?() == .background { activity.enterBackground() }
         do { try paths.prepare() } catch { launchError = "Couldn't prepare storage: \(error.localizedDescription)" }
+        // Dictation audio left by a crash or a quit mid-dictation. This process cannot dictate before `isLaunched` (the
+        // Mac's shortcuts wait for it); another running copy can, into the same folder, so then only old files go.
+        paths.clearDictationFiles(otherCopyRunning: otherCopyRunning(), now: Date())
         // Builds before bundling downloaded ~704 MB of models into Models/; they now ship in the app.
         let paths = self.paths
         Task.detached(priority: .utility) { paths.removeLegacyModels() }

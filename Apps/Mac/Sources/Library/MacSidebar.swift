@@ -5,8 +5,8 @@ import TranscribeDesign
 import TranscribeKit
 
 /// The Mac sidebar (§5): Library (All Recordings, Favourites, Unnamed, Folders) and People (Voices, with a dashed
-/// badge counting voices waiting for a name), then the update reminder (only while an update waits), the privacy footer
-/// and a glass New Recording pill.
+/// badge counting voices waiting for a name), then the update reminder (only while an update waits), the shortcuts'
+/// permission note (only until Settings → Shortcuts has been opened), the privacy footer and a glass New Recording pill.
 struct MacSidebar: View {
     let onRecord: () -> Void
 
@@ -103,6 +103,7 @@ struct MacSidebar: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let version = updater.pendingVersion { updateReminder(version) }
+            ShortcutsReminder()
             syncFooter
             Button(action: onRecord) {
                 HStack(spacing: 10) {

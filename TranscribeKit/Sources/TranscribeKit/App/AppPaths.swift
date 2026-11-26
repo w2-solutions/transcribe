@@ -15,6 +15,9 @@ public struct AppPaths: Sendable {
     /// One JSON line per speech-model prepare (timings only, the last 200; `PrepareLog` in TranscribeFluid). Written
     /// by the real engine only, never in UI tests.
     public var prepareLogURL: URL { root.appendingPathComponent("prepare-log.jsonl") }
+    /// Dictation audio (Mac): one short WAV per dictation, deleted as soon as it is transcribed, and leftovers at
+    /// launch (`clearDictationFiles`). Never in Audio/, never in the library, never synced, excluded from backups.
+    public var dictationDirectory: URL { root.appendingPathComponent("Dictation", isDirectory: true) }
 
     public init(config: LaunchConfig) {
         if config.uiTesting {
@@ -55,6 +58,45 @@ public struct AppPaths: Sendable {
             var values = URLResourceValues()
             values.isExcludedFromBackup = true
             try url.setResourceValues(values)
+        }
+    }
+
+    /// Creates `Dictation/` and excludes it from backups.
+    public func prepareDictation() throws {
+        try FileManager.default.createDirectory(at: dictationDirectory, withIntermediateDirectories: true)
+        var values = URLResourceValues()
+        values.isExcludedFromBackup = true
+        var url = dictationDirectory
+        try url.setResourceValues(values)
+    }
+
+    /// "Dictation/dictation-<uuid>.wav": the prefix tells the fake engine it is dictation.
+    public func newDictationURL() -> URL {
+        dictationDirectory.appendingPathComponent("\(DictationFiles.prefix)\(UUID().uuidString).wav", isDirectory: false)
+    }
+
+    /// A dictation file not modified for this long belongs to no running dictation: the longest one records for
+    /// `DictationLimits.handsFreeMax` (the file is written all that time) and then waits at most
+    /// `DictationLimits.modelsWaitCap` for the models before it is transcribed and deleted.
+    public static let dictationLeftoverAge: TimeInterval = 3_600
+
+    /// Removes dictation audio left by a crash or a quit mid-dictation (best effort). Only at launch, before this
+    /// process can start a dictation.
+    ///
+    /// With no other copy of Transcribe running, the whole `Dictation/` folder goes. While another copy runs it may be
+    /// dictating into this same folder (a Debug build and `/Applications/Transcribe.app` share one container), so then
+    /// only files untouched for `dictationLeftoverAge` go.
+    public func clearDictationFiles(otherCopyRunning: Bool = false, now: Date = Date()) {
+        let fm = FileManager.default
+        guard otherCopyRunning else {
+            try? fm.removeItem(at: dictationDirectory)
+            return
+        }
+        let files = (try? fm.contentsOfDirectory(at: dictationDirectory, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
+        for file in files {
+            guard let modified = try? file.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate,
+                  now.timeIntervalSince(modified) >= Self.dictationLeftoverAge else { continue }
+            try? fm.removeItem(at: file)
         }
     }
 

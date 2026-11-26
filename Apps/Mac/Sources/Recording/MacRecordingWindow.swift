@@ -10,6 +10,9 @@ struct MacRecordingWindow: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(Router.self) private var router
     @Environment(MacSelection.self) private var selection
+    @Environment(MacWindowOpener.self) private var opener
+    @Environment(\.openWindow) private var openWindow
+    @Environment(\.dismissWindow) private var dismissWindow
 
     var body: some View {
         RecordingView()
@@ -23,7 +26,10 @@ struct MacRecordingWindow: View {
                     router.path = []
                 }
             }
-            .onAppear { router.isRecordingPresented = true }
+            .onAppear {
+                router.isRecordingPresented = true
+                opener.fill(open: openWindow, dismiss: dismissWindow)
+            }
             .onDisappear { router.isRecordingPresented = false }
     }
 }

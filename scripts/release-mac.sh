@@ -30,7 +30,7 @@
 # Without the profile the script stops after the signed DMG and exits 3.
 #
 # Exit codes: 0 done; 1 a step or check failed; 2 bad arguments; 3 stopped before notarisation (no profile).
-# Runs on macOS /bin/bash 3.2; needs Xcode, xcodegen and jq (/usr/bin/jq on macOS 15 and later).
+# Runs on macOS /bin/bash 3.2; needs Xcode, xcodegen, jq (/usr/bin/jq on macOS 15 and later) and python3.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -208,6 +208,11 @@ if [ "$TEST_BUILD" = 1 ]; then
   echo "TEST BUILD: not publishable (trusts the update key from the environment; feed $FEED_URL)"
 fi
 echo "build folder: $DD"
+# The DMG's background art (scripts/make-dmg.sh), checked now rather than after the archive.
+for f in background.png background@2x.png; do
+  [ -f "$ROOT/Apps/Mac/DMG/$f" ] || fail "no DMG background art at Apps/Mac/DMG/$f"
+done
+command -v python3 >/dev/null || fail "needs python3 (scripts/make-dmg.sh writes the DMG's .DS_Store with it)"
 
 # Build settings for the archive. xcodebuild reads "//" in a command-line value as the start of a comment, so the
 # feed URL's "//" is written "/$()/" (an empty expansion).
@@ -413,13 +418,11 @@ while IFS= read -r key; do
 done < <(plutil -convert xml1 -o - "$ENT" | sed -n '/^\t<key>/s/.*<key>\(.*\)<\/key>.*/\1/p')
 ok "entitlements match the allowlist"
 
-# 6. The DMG: the app plus an Applications link, signed with Developer ID.
+# 6. The DMG: the app plus an Applications link in a styled Finder window (scripts/make-dmg.sh, art in
+# Apps/Mac/DMG), signed with Developer ID.
 step "6/9 DMG"
-rm -rf "$DD/dmg"
-mkdir -p "$DD/dmg" "$ROOT/dist"
-ditto "$APP" "$DD/dmg/Transcribe.app"
-ln -s /Applications "$DD/dmg/Applications"
-hdiutil create -volname Transcribe -srcfolder "$DD/dmg" -ov -format UDZO "$DMG"
+mkdir -p "$ROOT/dist"
+"$ROOT/scripts/make-dmg.sh" "$APP" "$DMG" --volname Transcribe
 codesign --sign "$IDENTITY" --timestamp "$DMG"
 codesign --verify -vv "$DMG"
 check_signed_code "$DMG" "the DMG"
@@ -430,9 +433,11 @@ hdiutil attach -quiet -nobrowse -readonly -noautoopen -mountpoint "$WORK/mnt" "$
 MOUNT="$WORK/mnt"
 codesign --verify --deep --strict "$MOUNT/Transcribe.app" || fail "the app inside the DMG does not verify"
 [ "$(readlink "$MOUNT/Applications")" = /Applications ] || fail "the DMG has no Applications link"
+[ -f "$MOUNT/.background/background.tiff" ] || fail "the DMG has no background picture"
+python3 -I "$ROOT/scripts/dmg-dsstore.py" dump "$MOUNT/.DS_Store" >/dev/null || fail "the DMG has no readable .DS_Store"
 hdiutil detach -quiet "$MOUNT"
 MOUNT=""
-ok "DMG checksum, the app inside it and the Applications link"
+ok "DMG checksum, the app inside it, the Applications link, the background and the window layout"
 
 if [ "$SKIP_NOTARIZE" = 1 ]; then
   echo
