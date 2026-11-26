@@ -6,9 +6,9 @@ import TranscribeCore
 ///
 /// Mac audio (`request.sources`, with `FakeMacAudio` from `TRANSCRIBE_MAC_AUDIO`):
 /// - Both: each tick also carries Mac audio's level (a second deterministic table), and `stop()` writes the stems:
-///   the system stem is non-zero exactly over the segments of the script's `remoteSpeakers`, the microphone stem over
-///   the others (when Mac audio is `silent`, the system stem is all zeros and the microphone stem holds everyone, as
-///   when the far side plays through the speakers with access off). So the real source attribution runs on them.
+///   the stems follow the script's `speakerSources` (`FakeScript.stemSegments`: `.system` speakers on the system stem
+///   only, `.mixed` ones on both, everyone else on the microphone's). When Mac audio is `silent`, the system stem is
+///   all zeros and the microphone stem holds everyone, as when the far side plays through the speakers with access off. So the real source attribution runs on them.
 /// - Mac audio only: one meter, Mac audio's level; no stems.
 /// - `silent`: Mac audio's level stays 0 and `.notice(.systemAudioSilent)` comes once after 5 s.
 ///   `lost`: after 3 s, a Both recording gets `.notice(.systemAudioLost)` and Mac audio's level drops to 0; a Mac-audio-
@@ -172,21 +172,12 @@ public actor FakeLiveRecording: LiveRecording {
                              detail: Self.detail(sources), stems: writtenStems)
     }
 
-    /// Which segments each stem holds: the script's remote speakers on the system stem, everyone else on the
-    /// microphone's; with Mac audio `silent`, nothing on the system stem and everyone on the microphone's.
+    /// Which segments each stem holds: `FakeScript.stemSegments` for each stream; with Mac audio `silent`, nothing on
+    /// the system stem and everyone on the microphone's.
     static func stemSegments(_ script: FakeScript, macAudio: FakeMacAudio)
         -> (mic: [(TimeRange, SyntheticPerson)], system: [(TimeRange, SyntheticPerson)]) {
-        var mic: [(TimeRange, SyntheticPerson)] = []
-        var system: [(TimeRange, SyntheticPerson)] = []
-        for segment in script.segments {
-            let part = (segment.range, script.persons[segment.speakerKey] ?? .stranger)
-            if macAudio != .silent, script.remoteSpeakers.contains(segment.speakerKey) {
-                system.append(part)
-            } else {
-                mic.append(part)
-            }
-        }
-        return (mic, system)
+        if macAudio == .silent { return (script.audioSegments, []) }
+        return (script.stemSegments(.mic), script.stemSegments(.system))
     }
 
     static func detail(_ sources: CaptureSources) -> CaptureDetail {

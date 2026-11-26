@@ -79,6 +79,78 @@ public enum ProcessingPipeline {
     static func languageCode(_ hint: LanguageHint) -> String? {
         if case .language(let code) = hint { code } else { nil }
     }
+
+    // MARK: Mac audio (decision D1)
+
+    /// Which stream each speaker of a recording was heard on, and which file each is embedded from.
+    struct SourcePlan: Sendable, Equatable {
+        var sources: CaptureSources
+        var audio: URL
+        /// The stems of a Both recording, when both files exist.
+        var stems: CaptureStems?
+        var attribution: [SpeakerKey: SourceAttribution.Result] = [:]
+        var silent = false
+
+        var stemsFound: Bool { stems != nil }
+
+        /// nil for a microphone-only recording (stored as nil: no sync change for such recordings); `.system` for Mac
+        /// audio only; in Both mode the attributed source, or `.mixed` when the stems are gone (processing ran again
+        /// after they were deleted) or the speaker has no clean speech to attribute.
+        func source(of key: SpeakerKey) -> SpeakerSource? {
+            switch sources {
+            case .microphone: nil
+            case .macAudio: .system
+            case .both: stems == nil ? .mixed : (attribution[key]?.source ?? .mixed)
+            }
+        }
+
+        /// The file a speaker is embedded from: its own stem in Both mode, else the recording.
+        func embeddingURL(for source: SpeakerSource?) -> URL {
+            guard sources == .both, let stems else { return audio }
+            switch source {
+            case .system?: return stems.system
+            case .mic?: return stems.mic
+            case .mixed?, nil: return audio
+            }
+        }
+    }
+
+    /// Reads the system stem of a Both recording and attributes every speaker (`SourceAttribution`). A missing or
+    /// unreadable stem leaves `stems` nil, so every speaker is mixed.
+    static func sourcePlan(sources: CaptureSources, audio: URL, spans: [SpeakerKey: [TimeRange]],
+                           policy: SourceAttributionPolicy) -> SourcePlan {
+        var plan = SourcePlan(sources: sources, audio: audio)
+        guard sources == .both else { return plan }
+        let stems = CaptureStems.beside(audioURL: audio)
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: stems.mic.path), fm.fileExists(atPath: stems.system.path),
+              let levels = try? SourceAttribution.levels(ofWAV: stems.system, policy: policy) else { return plan }
+        let analysis = SourceAttribution.analyse(levels, policy: policy)
+        plan.stems = stems
+        plan.silent = analysis.silent
+        plan.attribution = spans.mapValues {
+            SourceAttribution.attribute(spans: $0, levels: levels, analysis: analysis, policy: policy)
+        }
+        return plan
+    }
+
+    /// Adds the speaker's source and system share to the traces of a recording that captured Mac audio (trace v3).
+    /// A microphone-only recording's traces are left exactly as they were.
+    static func annotate(_ traces: [SpeakerKey: MatchTrace], sources: CaptureSources,
+                         attribution: [SpeakerKey: SourceAttribution.Result]) -> [SpeakerKey: MatchTrace] {
+        guard sources != .microphone else { return traces }
+        return traces.mapValues { trace in
+            var t = trace
+            if let a = attribution[t.key] {
+                t.speakerSource = a.source.rawValue
+                t.systemShare = SourceAttribution.rounded(a.share)
+            } else if sources == .macAudio {
+                t.speakerSource = SpeakerSource.system.rawValue
+            }
+            t.version = Swift.max(t.version, MatchTrace.groupsVersion)
+            return t
+        }
+    }
 }
 
 // MARK: - Steps
@@ -139,6 +211,8 @@ extension ProcessingCoordinator {
             let doc = ProcessingPipeline.paragraphDocument(document, config: alignment)
             return try await lane { try store.finishWithoutMatching(id: id, document: doc, noSpeech: false) }
         }
+        // Which stream each speaker was heard on (Both mode only), kept for the match traces of this run.
+        var attribution: [SpeakerKey: SourceAttribution.Result] = [:]
         if ProcessingPipeline.resumePoint(snap) == .match {
             let voices = try await lane { try store.probes(for: id).count }
             updateJob(id) { $0.voicesFound = voices; $0.states[.separating] = .done }
@@ -157,8 +231,9 @@ extension ProcessingCoordinator {
                 }
                 Self.log.info("job \(id, privacy: .public): speakers separated by \(separation.separator.rawValue, privacy: .public)")
                 return try await self.buildSpeakers(document: documentSoFar, separation: separation, audio: audio,
-                                                    progress: progress)
+                                                    sources: snap.captureSources, progress: progress)
             }
+            attribution = built.attribution
             Self.log.info("job \(id, privacy: .public): \(built.drafts.count) voices found")
             if built.drafts.isEmpty {
                 updateJob(id) {
@@ -196,8 +271,8 @@ extension ProcessingCoordinator {
             let run = VoiceMatcher.decideWithTrace(probes: probes, profiles: candidates, modelKey: modelKey,
                                                    policy: policy, cohort: cohort)
             decisions = run.decisions
-            traces = run.traces
-            for trace in run.traces.values.sorted(by: { $0.key < $1.key }) { Self.logTrace(trace, job: id) }
+            traces = ProcessingPipeline.annotate(run.traces, sources: snap.captureSources, attribution: attribution)
+            for trace in traces.values.sorted(by: { $0.key < $1.key }) { Self.logTrace(trace, job: id) }
             updateJob(id) { $0.states[.matching] = .done }
         }
         let policy = self.policy
@@ -210,33 +285,50 @@ extension ProcessingCoordinator {
         let cohortMax = t.profiles.compactMap(\.cohortMax).max()
         let blocked = t.profiles.filter(\.blocked).count
         let profile = t.profileID?.uuidString ?? "-"
-        Self.log.info("job \(id, privacy: .public): match \(t.key, privacy: .public) \(t.kind.rawValue, privacy: .public) reason=\(t.reason, privacy: .public) profile=\(profile, privacy: .private) score=\(f(t.score), privacy: .public) margin=\(f(t.margin), privacy: .public) runnerUp=\(f(t.runnerUp), privacy: .public) cohortMax=\(f(cohortMax), privacy: .public) blocked=\(blocked, privacy: .public)")
+        let source = t.speakerSource ?? "-"
+        Self.log.info("job \(id, privacy: .public): match \(t.key, privacy: .public) \(t.kind.rawValue, privacy: .public) reason=\(t.reason, privacy: .public) profile=\(profile, privacy: .private) score=\(f(t.score), privacy: .public) margin=\(f(t.margin), privacy: .public) runnerUp=\(f(t.runnerUp), privacy: .public) cohortMax=\(f(cohortMax), privacy: .public) blocked=\(blocked, privacy: .public) source=\(source, privacy: .public) systemShare=\(f(t.systemShare), privacy: .public)")
     }
 
     /// Speaker turns, ordinals, clean speech and one voice vector per speaker (§5.6 step 2).
     /// Speaker separation share of the step's progress; the rest is per-speaker voice embedding.
     static let separationProgressShare = 0.6
+    /// The stream attribution constants (untested starting values; logged in the matching log's policy block).
+    static let attributionPolicy = SourceAttributionPolicy.default
 
     func buildSpeakers(document: TranscriptDocument, separation: SpeakerSeparation, audio: URL,
-                       progress: (@Sendable (Double) -> Void)? = nil) async throws -> (document: TranscriptDocument, drafts: [SpeakerDraft]) {
+                       sources: CaptureSources = .microphone,
+                       progress: (@Sendable (Double) -> Void)? = nil) async throws
+        -> (document: TranscriptDocument, drafts: [SpeakerDraft], attribution: [SpeakerKey: SourceAttribution.Result]) {
         let segments = separation.segments.sorted { $0.range.start < $1.range.start }
-        guard !segments.isEmpty, !document.words.isEmpty else { return (document, []) }
+        guard !segments.isEmpty, !document.words.isEmpty else { return (document, [], [:]) }
         let turns = TurnBuilder.speakerTurns(words: document.words, segments: segments, config: alignment)
         let ordinals = SpeakerOrdinals.assign(turns: turns)
         let model = engine.info.embeddingModel
         var drafts: [SpeakerDraft] = []
         let ordered = ordinals.sorted(by: { $0.value < $1.value })
+        let cleanSpans = Dictionary(uniqueKeysWithValues: ordered.map { key, _ in
+            (key, CleanSpeech.spans(for: key, in: segments, config: alignment))
+        })
+        let plan = ProcessingPipeline.sourcePlan(sources: sources, audio: audio, spans: cleanSpans,
+                                                 policy: Self.attributionPolicy)
+        if sources != .microphone {
+            Self.log.info("sources \(sources.rawValue, privacy: .public): stems \(plan.stemsFound ? "found" : "missing", privacy: .public), system stream \(plan.silent ? "silent" : "active", privacy: .public)")
+        }
         let share = Self.separationProgressShare
         for (index, (key, ordinal)) in ordered.enumerated() {
             defer { progress?(share + (1 - share) * Double(index + 1) / Double(ordered.count)) }
             try Task.checkCancellation()
-            let spans = CleanSpeech.spans(for: key, in: segments, config: alignment)
+            let spans = cleanSpans[key] ?? []
+            let source = plan.source(of: key)
             var vector: VoiceVector?
             var coherence: Float?
             if !spans.isEmpty {
                 let embedSpans = CleanSpeech.embeddingSpans(spans, config: alignment)
                 do {
-                    let vectors = try await engine.embedVoice(audio, spans: embedSpans)
+                    // Each speaker from its own stream: system speakers from the system stem, microphone speakers
+                    // from the microphone stem, mixed speakers (and every speaker of a one-stream recording) from
+                    // the recording itself.
+                    let vectors = try await engine.embedVoice(plan.embeddingURL(for: source), spans: embedSpans)
                     if vectors.count == embedSpans.count,
                        let robust = VoiceVector.robustMean(zip(vectors, embedSpans).map { ($0, $1.duration) },
                                                            dropBelow: policy.spanDropBelow,
@@ -253,12 +345,12 @@ extension ProcessingCoordinator {
             drafts.append(SpeakerDraft(key: key, ordinal: ordinal, cleanSeconds: CleanSpeech.seconds(spans),
                                        totalSeconds: CleanSpeech.totalSeconds(for: key, in: segments),
                                        turnCount: turns.filter { $0.speakerKey == key }.count,
-                                       vector: vector, embeddingModel: model, coherence: coherence))
+                                       vector: vector, embeddingModel: model, coherence: coherence, source: source))
         }
         let flagged = turns.flatMap(\.words)
         let words = flagged.count == document.words.count ? flagged : document.words
         let doc = TranscriptDocument(words: words, turns: turns, language: document.language, asrModelID: document.asrModelID)
-        return (doc, drafts)
+        return (doc, drafts, plan.attribution)
     }
 
     /// Runs one engine call while forwarding its progress, in order, to the job's snapshot.

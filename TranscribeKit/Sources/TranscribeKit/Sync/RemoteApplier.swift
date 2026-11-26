@@ -121,6 +121,11 @@ final class RemoteApplier {
                         let theirs = (server.fields["rejectedProfileIDs"]?.stringsValue ?? []).compactMap(UUID.init(uuidString:))
                         s.rejectedProfileIDs = LibraryStore.sortedIDs(s.rejectedProfileIDs + theirs)
                     }
+                case .keepLocalJoinSource:
+                    if case .speaker(let s) = e {
+                        s.captureSource = MergePolicy.joinedSource(local: s.captureSource,
+                                                                   server: server.fields["captureSource"]?.stringValue)
+                    }
                 case .same, .keepLocal:
                     break
                 }

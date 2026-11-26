@@ -5,8 +5,9 @@ public enum SyntheticPerson: Int, Sendable, CaseIterable { case liam, karan, str
 
 public enum SyntheticVoices {
     public static let dimension = 256
-    /// Variant directions are precomputed for 0..<maxVariants.
-    public static let maxVariants = 64
+    /// Variant directions are precomputed for 0..<maxVariants. Each is orthogonalised only against the bases and the
+    /// lower-numbered variants, so adding more never changed an existing one (64–71 were added with Mac audio).
+    public static let maxVariants = 72
 
     /// Orthonormal bases: SplitMix64(seed 0x5EED + person) uniform[-1,1] vectors, Gram–Schmidt in person order.
     public static func base(_ p: SyntheticPerson) -> VoiceVector {
@@ -35,10 +36,14 @@ public enum SyntheticVoices {
     ///
     /// Variants in use (keep each test's residual unique): 1–7, 11, 12, 20–25 (seeds, scripts and sync scenarios),
     /// 8–10, 13–19 (the `voiceGroups` seed: Tom's ten samples), 26, 27 (its Tom speakers), 30–43, 44–49 (stage-2
-    /// tests; 30–47 also the group label tests), 50–55; 56–63 are setting axes (57–59 Tom's three settings).
+    /// tests; 30–47 also the group label tests), 50–52, 55; 28, 29 (the `callVoices` script), 53, 54 (the
+    /// `voiceGroupsCalls` seed: Tom's two call samples), 64 (`callVoices`' mixed voice), 65 (the `voiceGroupsCalls`
+    /// call speaker); 56–63 are setting axes (57–59 Tom's three settings, 60 his Teams calls), so residual variants are
+    /// 0–55 and 64–71.
     public static func mix(_ people: [(SyntheticPerson, Float)], setting: (axis: Int, weight: Float)? = nil,
                            variant: Int) -> VoiceVector {
-        precondition((0..<settingAxes.lowerBound).contains(variant), "variant must be below the setting axes")
+        precondition((0..<maxVariants).contains(variant) && !settingAxes.contains(variant),
+                     "variant must be a residual variant, not a setting axis")
         if let setting { precondition(settingAxes.contains(setting.axis), "setting axis must be in 56..<64") }
         let weights = people.map { Double($0.1) } + [setting.map { Double($0.weight) } ?? 0]
         let sumSquares = weights.map { $0 * $0 }.reduce(0, +)

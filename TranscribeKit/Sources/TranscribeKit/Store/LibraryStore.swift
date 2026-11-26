@@ -85,8 +85,17 @@ public final class LibraryStore: LibraryStoring {
         return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
     }
 
+    /// Deletes the recording's audio file and any stems left beside it.
     func removeAudio(of recording: Recording) {
         try? FileManager.default.removeItem(at: paths.audioURL(fileName: recording.audioFileName))
+        removeStems(of: recording)
+    }
+
+    /// Deletes the temporary per-stream files of a recording that captured the microphone and Mac audio
+    /// (`Audio/Stems/<base>.mic.wav` and `.system.wav`). Nothing happens when there are none.
+    func removeStems(of recording: Recording) {
+        let stems = CaptureStems.beside(audioURL: paths.audioURL(fileName: recording.audioFileName))
+        for stream in CaptureStream.allCases { try? FileManager.default.removeItem(at: stems.url(stream)) }
     }
 
     static func trimmed(_ name: String) -> String { name.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -186,6 +195,7 @@ public final class LibraryStore: LibraryStoring {
 
     /// Adds a sample taken from a recording speaker (clip and quote from its first listen clip).
     func addSpeakerSample(_ s: RecordingSpeaker, to profile: VoiceProfile, origin: SampleOrigin) -> (stored: Bool, skip: SampleSkipReason?) {
+        guard s.source != .mixed else { return (false, .mixedSource) }
         guard let vector = s.vector, let key = s.embeddingModelKey else { return (false, .noVector) }
         guard SampleCurator.shouldAddSample(origin: origin, decision: nil, cleanSeconds: s.cleanSeconds, policy: policy) else {
             return (false, .tooLittleSpeech(seconds: s.cleanSeconds))
@@ -196,7 +206,7 @@ public final class LibraryStore: LibraryStoring {
         let added = insertSample(into: profile, vector: vector, modelKey: key, origin: origin,
                                  speechSeconds: s.cleanSeconds, sourceRecordingID: s.recording?.id,
                                  sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote,
-                                 channel: s.recording?.captureChannel, input: Self.captureInput(of: s.recording))
+                                 channel: s.recording?.captureChannel, input: Self.captureInput(of: s))
         return added ? (true, nil) : (false, .duplicate)
     }
 
@@ -288,6 +298,31 @@ public final class LibraryStore: LibraryStoring {
                   now.timeIntervalSince(modified) >= minimumAge else { continue }
             if (try? fm.removeItem(at: url)) != nil { removed += 1 }
         }
+        return removed + ((try? sweepOrphanStems(minimumAge: minimumAge, now: now)) ?? 0)
+    }
+
+    /// Deletes stems (`Audio/Stems/*.wav`) older than `minimumAge` whose recording is gone or already ready: stems are
+    /// deleted when a recording becomes ready, so these are left over from a crash or a failed delete. Stems of a
+    /// recording still processing (or failed, which can be retried) are kept. `sweepOrphanAudio` calls this too (the
+    /// stems live in a subfolder it does not list). Returns the number of files deleted.
+    @discardableResult
+    public func sweepOrphanStems(minimumAge: TimeInterval = 3_600, now: Date = Date()) throws -> Int {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.contentModificationDateKey, .isRegularFileKey]
+        guard let files = try? fm.contentsOfDirectory(at: paths.stemsDirectory, includingPropertiesForKeys: keys) else { return 0 }
+        let stageByFile = Dictionary(try context.fetch(FetchDescriptor<Recording>()).map { ($0.audioFileName, $0.stage) },
+                                     uniquingKeysWith: { a, _ in a })
+        var removed = 0
+        for url in files where url.pathExtension.lowercased() == "wav" {
+            let name = url.lastPathComponent
+            guard let stream = CaptureStream.allCases.first(where: { name.hasSuffix(".\($0.rawValue).wav") }) else { continue }
+            let base = String(name.dropLast(".\(stream.rawValue).wav".count))
+            if let stage = stageByFile[base + ".wav"], stage != .ready { continue }
+            let values = try? url.resourceValues(forKeys: Set(keys))
+            guard values?.isRegularFile == true, let modified = values?.contentModificationDate,
+                  now.timeIntervalSince(modified) >= minimumAge else { continue }
+            if (try? fm.removeItem(at: url)) != nil { removed += 1 }
+        }
         return removed
     }
 
@@ -301,7 +336,8 @@ public final class LibraryStore: LibraryStoring {
     public func snapshot(of id: UUID) throws -> RecordingSnapshot {
         let r = try recording(id)
         return RecordingSnapshot(id: r.id, audioFileName: r.audioFileName, duration: r.duration, stage: r.stage,
-                                 language: r.language, transcript: r.transcript, attemptCount: r.attemptCount)
+                                 language: r.language, transcript: r.transcript, attemptCount: r.attemptCount,
+                                 captureSources: Self.captureSources(of: r))
     }
 
     public func setStage(_ stage: RecordingStage, queueReason: QueueReason?, for id: UUID) throws {
@@ -334,6 +370,7 @@ public final class LibraryStore: LibraryStoring {
             s.vectorData = d.vector?.packed
             s.vectorCoherence = d.coherence.map(Double.init)
             s.embeddingModelKey = d.embeddingModel.key
+            s.captureSource = d.source?.rawValue   // in the same save as the speaker, so its first sync carries it
             s.recording = r
         }
         r.embeddingModelKey = drafts.first?.embeddingModel.key
@@ -348,9 +385,10 @@ public final class LibraryStore: LibraryStoring {
         try recording(id).sortedSpeakers.map(Self.probe)
     }
 
+    /// A speaker heard on both streams (`SpeakerSource.mixed`) is only ever asked about.
     static func probe(_ s: RecordingSpeaker) -> SpeakerProbe {
         SpeakerProbe(key: s.key, vector: s.vector, cleanSeconds: s.cleanSeconds, rejectedProfileIDs: Set(s.rejectedProfileIDs),
-                     channel: s.recording?.captureChannel)
+                     channel: s.recording?.captureChannel, askOnly: s.source == .mixed)
     }
 
     public func matchCandidates(modelKey: String) throws -> [ProfileCandidate] {
@@ -360,12 +398,24 @@ public final class LibraryStore: LibraryStoring {
     public func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], traces: [SpeakerKey: MatchTrace],
                              policy: MatchPolicy) throws -> ProcessingOutcome {
         let r = try recording(id)
+        let sources = Self.captureSources(of: r)
         // The trace is written once, here, and never cleared by later edits.
         for s in r.sortedSpeakers {
-            if let trace = traces[s.key] { s.matchTraceData = try? JSONEncoder().encode(trace) }
+            guard var trace = traces[s.key] else { continue }
+            if sources != .microphone {
+                if trace.speakerSource == nil { trace.speakerSource = s.source.rawValue }
+                trace.version = Swift.max(trace.version, MatchTrace.groupsVersion)
+            }
+            if s.source == .mixed, trace.kind == .auto {
+                // Never an automatic label for a voice heard on both streams (the matcher's askOnly; kept here too).
+                trace.kind = .ask
+                trace.reason = Self.mixedSourceReason
+            }
+            s.matchTraceData = try? JSONEncoder().encode(trace)
         }
         for s in r.sortedSpeakers where s.label != .named {
             var decision = decisions[s.key]
+            if s.source == .mixed, case .autoLabel(let id, let score, _)? = decision { decision = .ask(profileID: id, score: score) }
             if case .autoLabel(let id, _, _)? = decision, (try? profile(id)) == nil { decision = nil }
             if case .ask(let id, _)? = decision, (try? profile(id)) == nil { decision = nil }
             switch decision {
@@ -380,7 +430,7 @@ public final class LibraryStore: LibraryStoring {
                 // An automatic sample needs the profile's trusted samples alone to match strongly (§1.7), measured
                 // before the insert, so an automatic sample never vouches for the next one. Only trusted samples
                 // heard on this recording's channel count (§7).
-                if let vector = s.vector, let key = s.embeddingModelKey, key == p.embeddingModelKey,
+                if s.source != .mixed, let vector = s.vector, let key = s.embeddingModelKey, key == p.embeddingModelKey,
                    SampleCurator.shouldAddAutomaticSample(
                        decision: decision,
                        trustedScore: VoiceMatcher.evidence(vector, against: Self.candidate(p, policy: policy),
@@ -389,7 +439,7 @@ public final class LibraryStore: LibraryStoring {
                     let clip = firstClip(for: s.key, in: r)
                     insertSample(into: p, vector: vector, modelKey: key, origin: .strongMatch, speechSeconds: s.cleanSeconds,
                                  sourceRecordingID: r.id, sourceSpeakerID: s.id, clip: clip?.range, quote: clip?.quote,
-                                 channel: r.captureChannel, input: Self.captureInput(of: r))
+                                 channel: r.captureChannel, input: Self.captureInput(of: s))
                 }
             case .ask(let profileID, let score)?:
                 s.label = .suggested
@@ -414,7 +464,16 @@ public final class LibraryStore: LibraryStoring {
         r.noSpeech = false
         rebuildSearchText(r)
         try context.save()
+        removeStems(of: r)   // temporary: every speaker has been embedded from them
         return Self.outcome(of: r)
+    }
+
+    /// The trace reason of a speaker heard on both streams, never auto-labelled.
+    static let mixedSourceReason = "mixedSource"
+
+    /// What a recording captured (`CaptureDetail.sources`); the microphone when the detail is missing.
+    static func captureSources(of r: Recording) -> CaptureSources {
+        CaptureDetail.decode(r.captureDetailJSON)?.captureSources ?? .microphone
     }
 
     static func outcome(of r: Recording) -> ProcessingOutcome {
@@ -436,6 +495,7 @@ public final class LibraryStore: LibraryStoring {
         r.attemptCount = 0
         rebuildSearchText(r)
         try context.save()
+        removeStems(of: r)
         return ProcessingOutcome(noSpeech: noSpeech)
     }
 
@@ -585,7 +645,7 @@ public final class LibraryStore: LibraryStoring {
         case .newPerson(let name):
             if let previous { rollBack(previous, from: s, addNegative: remember) }
             if remember, let q = priorSuggestion, let suggested = try? profile(q) { addNegative(to: suggested, from: s) }
-            if remember && s.canBeRemembered, let vector = s.vector, let modelKey = s.embeddingModelKey {
+            if remember && s.canBeRemembered && s.source != .mixed, let vector = s.vector, let modelKey = s.embeddingModelKey {
                 let owned = Set(try allProfiles().map(\.colourSlot))
                 let slot = ColourAssigner.slotForNewProfile(speakerSlot: s.colourSlot, profileSlots: owned)
                 let p = VoiceProfile(name: name, colourSlot: slot, embeddingModelKey: modelKey, now: clock.now)
@@ -594,7 +654,7 @@ public final class LibraryStore: LibraryStoring {
                 let stored = insertSample(into: p, vector: vector, modelKey: modelKey, origin: .named,
                                           speechSeconds: s.cleanSeconds, sourceRecordingID: r.id, sourceSpeakerID: s.id,
                                           clip: clip?.range, quote: clip?.quote,
-                                          channel: r.captureChannel, input: Self.captureInput(of: r))
+                                          channel: r.captureChannel, input: Self.captureInput(of: s))
                 s.profile = p
                 s.nameSnapshot = nil
                 adoptSlot(of: p, for: s, in: r)
@@ -605,6 +665,7 @@ public final class LibraryStore: LibraryStoring {
                 s.nameSnapshot = name
                 let skip: SampleSkipReason
                 if !remember { skip = .rememberOff }
+                else if s.source == .mixed { skip = .mixedSource }
                 else if s.cleanSeconds < policy.minSampleSeconds { skip = .tooLittleSpeech(seconds: s.cleanSeconds) }
                 else { skip = .noVector }
                 result = NameResult(profileID: nil, sampleStored: false, skipReason: skip)
@@ -728,6 +789,9 @@ public final class LibraryStore: LibraryStoring {
         s.suggestedProfileID = nil
         s.matchScore = nil
         s.matchMargin = nil
+        // The target now speaks with both voices' turns: heard on two different streams, it is mixed from now on.
+        let joined = SpeakerSource.joined(s.source, t.source)
+        if joined != t.source { t.captureSource = joined.rawValue }
 
         let before = doc.turns
         for i in doc.turns.indices where doc.turns[i].effectiveSpeakerKey == source {
@@ -782,6 +846,13 @@ public final class LibraryStore: LibraryStoring {
         else { slot = (0..<SpeakerSlots.count).first { !used.contains($0) } ?? (ordinal - 1) % SpeakerSlots.count }
         let s = RecordingSpeaker(key: "U\(n)", ordinal: ordinal, colourSlot: slot)
         context.insert(s)
+        // A speaker the user made has no attribution: in a recording of both streams it is mixed (it learns nothing
+        // either way, having no vector), and in a Mac-audio-only recording it was heard through Mac audio.
+        switch Self.captureSources(of: r) {
+        case .microphone: break
+        case .both: s.captureSource = SpeakerSource.mixed.rawValue
+        case .macAudio: s.captureSource = SpeakerSource.system.rawValue
+        }
         s.recording = r
         return s
     }
@@ -825,6 +896,9 @@ public final class LibraryStore: LibraryStoring {
                 if !s.rejectedProfileIDs.contains(dst.id) { s.rejectedProfileIDs.append(dst.id) }
             }
         }
+        // TODO(integration, after T2): insert through `SampleCurator.insertMany` once per channel over the union, so
+        // group-preserving curation protects both profiles' sound groups (plan §2.5 step 6). Today each sample goes
+        // through the one-at-a-time insert.
         // Samples keep their origin and channel, so trust survives the merge on the channel it was earned on.
         // They also keep their stored bytes: `sample.vector` normalises again, and packing that would change the last
         // bits of some values, so copied group label anchors would no longer find their samples bit for bit.
@@ -918,7 +992,7 @@ public final class LibraryStore: LibraryStoring {
         let fedSpeakers = Set(p.samples.compactMap(\.sourceSpeakerID))
         let hasUsable = p.samples.contains { $0.embeddingModelKey == p.embeddingModelKey }
         let rows: [(RecordingSpeaker, Recording)] = try allSpeakers().compactMap { s in
-            guard let r = s.recording, r.stage == .ready, s.vectorData != nil,
+            guard let r = s.recording, r.stage == .ready, s.vectorData != nil, s.source != .mixed,
                   s.cleanSeconds >= policy.minSampleSeconds,
                   !fedSpeakers.contains(s.id),
                   s.profile == nil || s.profile?.id == p.id,

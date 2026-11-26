@@ -58,7 +58,8 @@ public struct CKRecordCodec: Sendable {
             k = ["recordingID": .string, "key": .string, "ordinal": .int, "colourSlot": .int, "cleanSeconds": .double,
                  "vector": .bytes, "embeddingModelKey": .string, "vectorCoherence": .double, "turnCount": .int,
                  "totalSeconds": .double, "label": .string, "profileID": .string, "suggestedProfileID": .string,
-                 "nameSnapshot": .string, "matchScore": .double, "matchMargin": .double, "rejectedProfileIDs": .strings]
+                 "nameSnapshot": .string, "matchScore": .double, "matchMargin": .double, "rejectedProfileIDs": .strings,
+                 "captureSource": .string]
         case .profile:
             k = ["name": .string, "namedAt": .dateMillis, "isMe": .int, "autoLabel": .int, "colourSlot": .int,
                  "createdAt": .dateMillis, "embeddingModelKey": .string]

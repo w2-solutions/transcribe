@@ -181,6 +181,7 @@ struct RecordProjector {
                  "colourSlot": .int(s.colourSlot), "cleanSeconds": .double(s.cleanSeconds), "vector": .bytes(s.vectorData),
                  "embeddingModelKey": .string(s.embeddingModelKey), "vectorCoherence": .double(s.vectorCoherence),
                  "turnCount": .int(s.turnCount), "totalSeconds": .double(s.totalSeconds),
+                 "captureSource": .string(s.captureSource),
                  "label": .string(s.labelRaw), "profileID": link("profileID", s.profile?.id),
                  "suggestedProfileID": .uuid(s.suggestedProfileID), "nameSnapshot": .string(s.nameSnapshot),
                  "matchScore": .double(s.matchScore), "matchMargin": .double(s.matchMargin),

@@ -45,6 +45,7 @@ struct CKRecordCodecTests {
         speakers.first?.rejectedProfileIDs = [UUID(), UUID()]
         speakers.last?.rejectedProfileIDs = []                 // an empty list of strings
         speakers.first?.matchScore = 0.123_456_789
+        speakers.first?.captureSource = SpeakerSource.system.rawValue   // V5; the other speakers keep nil (the mic)
         try context.save()
 
         let projector = RecordProjector(context: context)
@@ -165,6 +166,38 @@ struct CKRecordCodecTests {
         #expect(back.fields["ordinal"] == .int(2))
         #expect(back.fields["futureField"] == .string("x"))
         #expect(SyncSchema.recordVersion(back) == 2)
+    }
+
+    /// `captureSource` (V5) is an encrypted string in the speaker record; nil is absent and reads back as `.null`.
+    /// An update from an older build, which does not know the field, rebuilds the record from its system fields and
+    /// sets only the fields it knows: `captureSource` is neither sent nor cleared, so CloudKit keeps the server's value.
+    @Test func captureSourceRoundTripsAndAnOlderBuildsUpdateNeverTouchesIt() throws {
+        defer { try? FileManager.default.removeItem(at: outgoing) }
+        #expect(CKRecordCodec.kinds(.speaker)["captureSource"] == .string)
+        let id = SyncRecordID(type: .speaker, entityID: UUID())
+        let fields: [String: SyncValue] = ["key": .string("S2"), "turnCount": .int(2), "captureSource": .string("system"),
+                                           "sv": .int(1)]
+        let saved = try codec.encode(SyncRecord(id: id, fields: fields))
+        #expect(saved.encryptedValues.object(forKey: "captureSource") as? String == "system")
+        #expect(saved["captureSource"] == nil)   // never a plain value
+        let back = try #require(try codec.decode(try overTheWire(saved)))
+        #expect(back.fields["captureSource"] == .string("system"))
+        let none = try #require(try codec.decode(try overTheWire(try codec.encode(SyncRecord(id: id, fields: ["sv": .int(1)])))))
+        #expect(none.fields["captureSource"] == .null)
+
+        // An older build's update: the record from the server's system fields, with only its own fields set.
+        var older = fields
+        older.removeValue(forKey: "captureSource")
+        older["turnCount"] = .int(3)
+        let update = try codec.encode(SyncRecord(id: id, fields: older, systemFields: CKRecordCodec.systemFields(saved)))
+        #expect(update.encryptedValues.object(forKey: "captureSource") == nil)
+        #expect(!update.changedKeys().contains("captureSource"))
+        #expect(update.changedKeys().contains("turnCount"))
+    }
+
+    @Test func theSchemaSeedFillsCaptureSource() {
+        let speaker = CloudSchemaSeeder.records().first { $0.id.type == .speaker }
+        #expect(speaker?.fields["captureSource"] == .string("seed"))
     }
 
     @Test func recordsOutsideTheZoneOrWithForeignNamesAreIgnored() throws {

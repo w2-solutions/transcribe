@@ -152,7 +152,7 @@ struct MacAudioFakeTests {
 
     @Test func theSystemStemHoldsExactlyTheRemoteSpeakers() async throws {
         var script = FakeScript.named(.newVoices)
-        script.remoteSpeakers = ["S2"]
+        script.speakerSources = ["S2": .system]
         let (request, dir) = try request(sources: .both)
         defer { try? FileManager.default.removeItem(at: dir) }
         let session = FakeLiveRecording(script: script, speed: .instant, request: request)
@@ -183,7 +183,7 @@ struct MacAudioFakeTests {
 
     @Test func silentMacAudioLeavesTheSystemStemEmpty() async throws {
         var script = FakeScript.named(.newVoices)
-        script.remoteSpeakers = ["S2"]
+        script.speakerSources = ["S2": .system]
         let (request, dir) = try request(sources: .both)
         defer { try? FileManager.default.removeItem(at: dir) }
         let audio = try await FakeLiveRecording(script: script, speed: .instant, request: request, macAudio: .silent).stop()
