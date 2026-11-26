@@ -17,9 +17,13 @@ import TranscribeMCPHost
     /// it shows as a quiet reminder (sidebar, app menu, Settings), hidden during a recording; the updater follows the
     /// recorder itself, whichever windows are open (D23).
     @State private var updater: AppUpdater
-    @State private var router = Router()
-    @State private var selection = MacSelection()
-    @State private var captureActivity = CaptureActivity()
+    @State private var router: Router
+    @State private var selection: MacSelection
+    /// Global shortcuts and dictation (Mac only): created here, so they work with every window closed. Shortcuts are
+    /// refused until `env.isLaunched`, which this init's task also starts.
+    @State private var shortcuts: MacShortcuts
+    /// Keeps the Mac awake while a meeting or a dictation captures audio. Started once here, not from a window.
+    @State private var captureActivity: CaptureActivity
     @Environment(\.scenePhase) private var scenePhase
     @NSApplicationDelegateAdaptor(PushDelegate.self) private var pushDelegate
 
@@ -54,7 +58,14 @@ import TranscribeMCPHost
             uiTesting: env.config.uiTesting, useFakeEngine: env.config.useFakeEngine,
             feedURL: Bundle.main.infoDictionary?["SUFeedURL"] as? String,
             publicKey: Bundle.main.infoDictionary?["SUPublicEDKey"] as? String)
-        let updater = AppUpdater(availability: availability, isBusy: { [env] in env.recorder.isActive })
+        let router = Router()
+        let selection = MacSelection()
+        let shortcuts = MacShortcuts(env: env, router: router, selection: selection)
+        let dictation = shortcuts.dictation
+        // The reminder follows the recorder only; the permission prompt and a postponed install wait for a dictation
+        // too.
+        let updater = AppUpdater(availability: availability, isRecording: { [env] in env.recorder.isActive },
+                                 isBusy: { [env] in env.recorder.isActive || dictation.isBusy })
         #if DEBUG
         // Session-only: UI tests show the "Update available" reminder with TRANSCRIBE_UPDATE_AVAILABLE=<version>
         // (fake engine and UI tests only). Never starts Sparkle or touches the network; Release builds ignore it.
@@ -64,14 +75,23 @@ import TranscribeMCPHost
         _env = State(initialValue: env)
         _claude = State(initialValue: claude)
         _updater = State(initialValue: updater)
+        _router = State(initialValue: router)
+        _selection = State(initialValue: selection)
+        _shortcuts = State(initialValue: shortcuts)
+        let captureActivity = CaptureActivity()
+        captureActivity.follow { [env] in env.recorder.isActive || dictation.isBusy }
+        _captureActivity = State(initialValue: captureActivity)
         Task { @MainActor in
+            // After Relaunch Transcribe (the Accessibility setup): wait for the old copy to quit first, so this one
+            // registers shortcuts and binds Claude's ports without meeting it.
+            await AppRelauncher.waitForPreviousCopy()
+            shortcuts.start()
             await claude.start()
-            #if DEBUG
-            // The window is what runs onLaunch, and the seed of the smoke script and the helper's fake launch must not
-            // depend on one appearing (a background launch opens the main window behind other apps). Run it here as
-            // well; it runs once, and a second caller waits for that run.
-            if env.config.mcpOn { await env.onLaunch() }
-            #endif
+            // Launch does not wait for a window: a shortcut works with every window closed, and the seed of the smoke
+            // script and the helper's fake launch must not depend on one appearing (a background launch opens the main
+            // window behind other apps, and state restoration may open none). It runs once; the main window's task
+            // waits for the same run.
+            await env.onLaunch()
         }
     }
 
@@ -80,8 +100,8 @@ import TranscribeMCPHost
             MacRootView()
                 .frame(minWidth: 960, minHeight: 600)
                 .modifier(ClaudePairingAlert())
-                .modifier(SceneEnvironment(env: env, claude: claude, updater: updater, router: router, selection: selection))
-                .onAppear { [env, captureActivity] in captureActivity.follow { env.recorder.isActive } }
+                .modifier(SceneEnvironment(env: env, claude: claude, updater: updater, router: router, selection: selection,
+                                           shortcuts: shortcuts))
                 // Only once Transcribe is in front: a background launch by the Claude helper also opens this window
                 // (behind other apps), and must not show Sparkle's prompt or start a scheduled check (D11). The
                 // activation below starts it otherwise.
@@ -106,13 +126,18 @@ import TranscribeMCPHost
         }
         .defaultSize(width: 1280, height: 820)
         .windowResizability(.contentMinSize)
-        .commands { MacCommands(env: env, router: router, selection: selection, updater: updater) }
+        .commands {
+            MacCommands(env: env, router: router, selection: selection, updater: updater, shortcuts: shortcuts)
+            #if DEBUG
+            if shortcuts.availability == .simulated { ShortcutSimulationCommands(center: shortcuts.center) }
+            #endif
+        }
         .onChange(of: scenePhase) { _, p in Task { await env.onPhase(Self.appPhase(p)) } }
 
         Window("Recording", id: "recording") {
             MacRecordingWindow()
-                .modifier(SceneEnvironment(env: env, claude: claude, updater: updater, router: router, selection: selection))
-                .onAppear { [env, captureActivity] in captureActivity.follow { env.recorder.isActive } }
+                .modifier(SceneEnvironment(env: env, claude: claude, updater: updater, router: router, selection: selection,
+                                           shortcuts: shortcuts))
                 #if DEBUG
                 // `-seedCloudSchema`: complete the Development iCloud schema before a deploy (CloudSchemaSeeder).
                 .task {
@@ -128,7 +153,8 @@ import TranscribeMCPHost
         Settings {
             MacSettingsRoot()
                 .frame(width: 520, height: 640)
-                .modifier(SceneEnvironment(env: env, claude: claude, updater: updater, router: router, selection: selection))
+                .modifier(SceneEnvironment(env: env, claude: claude, updater: updater, router: router, selection: selection,
+                                           shortcuts: shortcuts))
                 .task { updater.startIfNeeded() }
         }
     }
@@ -151,14 +177,15 @@ import TranscribeMCPHost
     }
 }
 
-/// What every scene gets: the app environment, Claude access, the updater, the router, the Mac selection, the SwiftData
-/// container, tint and appearance, and (UI tests) no animations.
+/// What every scene gets: the app environment, Claude access, the updater, the router, the Mac selection, the
+/// shortcuts and dictation services, the SwiftData container, tint and appearance, and (UI tests) no animations.
 private struct SceneEnvironment: ViewModifier {
     let env: AppEnvironment
     let claude: ClaudeAccess
     let updater: AppUpdater
     let router: Router
     let selection: MacSelection
+    let shortcuts: MacShortcuts
 
     func body(content: Content) -> some View {
         content
@@ -167,6 +194,12 @@ private struct SceneEnvironment: ViewModifier {
             .environment(updater)
             .environment(router)
             .environment(selection)
+            .environment(shortcuts)
+            .environment(shortcuts.center)
+            .environment(shortcuts.settings)
+            .environment(shortcuts.permissions)
+            .environment(shortcuts.dictation)
+            .environment(shortcuts.opener)
             .modelContainer(env.container)
             .tint(DS.Colour.accent)
             .preferredColorScheme(env.settings.appearance == .light ? .light : env.settings.appearance == .dark ? .dark : nil)

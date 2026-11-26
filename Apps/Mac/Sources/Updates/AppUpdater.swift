@@ -33,11 +33,15 @@ final class AppUpdater {
     @ObservationIgnored private let controller: SPUStandardUpdaterController?
     @ObservationIgnored private let delegate: UpdaterDelegate
     @ObservationIgnored private var observations: [NSKeyValueObservation] = []
-    @ObservationIgnored private let isBusy: @MainActor () -> Bool
+    @ObservationIgnored private let isRecording: @MainActor () -> Bool
 
-    init(availability: UpdateAvailability, isBusy: @escaping @MainActor () -> Bool) {
+    /// `isRecording` (a meeting recording) hides the reminder; `isBusy` (a recording or a dictation) holds back
+    /// Sparkle's permission prompt and a postponed install. A dictation is short and happens over other apps, so the
+    /// reminder must not flicker with every one.
+    init(availability: UpdateAvailability, isRecording: @escaping @MainActor () -> Bool,
+         isBusy: @escaping @MainActor () -> Bool) {
         self.availability = availability
-        self.isBusy = isBusy
+        self.isRecording = isRecording
         let delegate = UpdaterDelegate(isBusy: isBusy)
         self.delegate = delegate
         #if !DEBUG
@@ -49,7 +53,7 @@ final class AppUpdater {
         #endif
         updatesLog.info("Updates: \(String(describing: availability), privacy: .public)")
         delegate.onReminderEvent = { [weak self] event in self?.reminder.apply(event) }
-        followBusy()
+        followRecording()
         guard let updater = controller?.updater else { return }
         // Sparkle's updater is main-actor bound, and so are its KVO notifications.
         observations = [
@@ -64,11 +68,11 @@ final class AppUpdater {
 
     /// Hides the reminder while a recording runs and shows it again when it stops, for the life of the app and
     /// whichever windows are open (the main window can be closed during a recording, as for `CaptureActivity`).
-    private func followBusy() {
-        let busy = withObservationTracking { isBusy() } onChange: { [weak self] in
-            Task { @MainActor in self?.followBusy() }
+    private func followRecording() {
+        let recording = withObservationTracking { isRecording() } onChange: { [weak self] in
+            Task { @MainActor in self?.followRecording() }
         }
-        if busy != reminder.isRecording { reminder.apply(.recordingChanged(isRecording: busy)) }
+        if recording != reminder.isRecording { reminder.apply(.recordingChanged(isRecording: recording)) }
     }
 
     /// Starts the updater once (a no-op unless updates are on). A feed URL an older build may have saved in the user
@@ -129,14 +133,15 @@ final class UpdaterDelegate: NSObject, SPUUpdaterDelegate, SPUStandardUserDriver
         Bundle.main.object(forInfoDictionaryKey: "SUFeedURL") as? String
     }
 
-    /// Sparkle asks on the second launch that starts the updater; never in the middle of a recording (it asks at a
-    /// later launch). Implementing this method replaces Sparkle's own second-launch rule, so it is repeated here:
+    /// Sparkle asks on the second launch that starts the updater; never in the middle of a recording or a dictation (it
+    /// asks at a later launch). Implementing this method replaces Sparkle's own second-launch rule, so it is repeated here:
     /// Sparkle sets `SUHasLaunchedBefore` only after asking.
     func updaterShouldPromptForPermissionToCheck(forUpdates updater: SPUUpdater) -> Bool {
         UserDefaults.standard.bool(forKey: "SUHasLaunchedBefore") && !isBusy()
     }
 
-    /// Install and Relaunch during a recording: the update installs, and the app reopens, once the recording stops.
+    /// Install and Relaunch during a recording (or a dictation): the update installs, and the app reopens, once it
+    /// stops.
     func updater(_ updater: SPUUpdater, shouldPostponeRelaunchForUpdate item: SUAppcastItem,
                  untilInvokingBlock installHandler: @escaping () -> Void) -> Bool {
         guard isBusy() else { return false }

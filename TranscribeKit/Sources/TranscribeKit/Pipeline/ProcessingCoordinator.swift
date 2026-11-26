@@ -2,7 +2,18 @@ import Foundation
 import os
 import TranscribeCore
 
-/// Runs post-recording processing (§5.6): a FIFO queue, one job at a time, never while capture is active.
+/// A dictation's claim on the engine (`ProcessingCoordinator.acquireExclusiveEngine`). Give it back with
+/// `releaseExclusiveEngine`; releasing it twice does nothing.
+public struct EngineHold: Hashable, Sendable {
+    let id: UUID
+    /// A running job was pre-empted to grant it (log only; not part of identity).
+    public let preemptedJob: Bool
+    public static func == (a: Self, b: Self) -> Bool { a.id == b.id }
+    public func hash(into h: inout Hasher) { h.combine(id) }
+}
+
+/// Runs post-recording processing (§5.6): a FIFO queue, one job at a time, never while capture is active or while
+/// an exclusive engine hold (dictation) is held.
 ///
 /// Concurrency rules this actor keeps:
 /// - At most one job runs, and its engine calls are strictly sequential, so the engine sees at most one
@@ -27,7 +38,7 @@ public actor ProcessingCoordinator {
     /// Minimum spacing of progress-only snapshots (about 10 per second).
     static let progressInterval: Duration = .milliseconds(100)
 
-    enum CancelReason: Sendable { case capture, backgroundExpiry, removed }
+    enum CancelReason: Sendable { case capture, backgroundExpiry, removed, exclusive }
 
     // Queue state
     private var queue: [UUID] = []
@@ -35,6 +46,11 @@ public actor ProcessingCoordinator {
     private var running: (id: UUID, task: Task<Void, Never>)?
     private var cancelReasons: [UUID: CancelReason] = [:]
     private var captureActive = false
+    /// Exclusive engine holds (dictation). A set, separate from `captureActive`, so holds nest with each other and
+    /// with a capture: processing runs again only once every hold is released and no capture is active.
+    private var exclusiveHolds: Set<UUID> = []
+    /// Tests: how many holds were ever granted.
+    private(set) var exclusiveAcquisitions = 0
     private var waitingForModels = false
     private var modelsGeneration = 0
     private var parkedByExpiry = false
@@ -124,6 +140,33 @@ public actor ProcessingCoordinator {
         for id in queue where queueReasons[id] != .modelsNotReady { markQueued(id, .pausedForRecording) }
     }
 
+    /// Blocks new jobs and pre-empts the running one (its step restarts from its checkpoint; the attempt is given back
+    /// and it goes back to the front of the queue as waiting for its turn, never "Paused for recording"). Returns once
+    /// no job's engine call is in flight, so the holder may call the engine. Nests with `suspendForCapture` and other
+    /// holds.
+    public func acquireExclusiveEngine() async -> EngineHold {
+        let id = UUID()
+        exclusiveHolds.insert(id)
+        exclusiveAcquisitions += 1
+        var preempted = false
+        if let job = running {
+            preempted = true
+            if cancelReasons[job.id] == nil { cancelReasons[job.id] = .exclusive }
+            job.task.cancel()
+            await job.task.value
+        }
+        return EngineHold(id: id, preemptedJob: preempted)
+    }
+
+    /// Gives a hold back. When it was the last one, queued jobs may run again (unless a capture is active).
+    public func releaseExclusiveEngine(_ hold: EngineHold) {
+        guard exclusiveHolds.remove(hold.id) != nil else { return }
+        if exclusiveHolds.isEmpty {
+            refreshQueuedReasons()
+            pump()
+        }
+    }
+
     public func resumeAfterCapture() {
         guard captureActive else { return }
         captureActive = false
@@ -190,12 +233,13 @@ public actor ProcessingCoordinator {
     }
 
     var queuedIDs: [UUID] { queue }
+    var exclusiveHoldCount: Int { exclusiveHolds.count }
     var runningID: UUID? { running?.id }
 
     // MARK: - Queue
 
     private var isIdle: Bool {
-        running == nil && (queue.isEmpty || captureActive || waitingForModels || parkedByExpiry)
+        running == nil && (queue.isEmpty || captureActive || !exclusiveHolds.isEmpty || waitingForModels || parkedByExpiry)
     }
 
     private func notifyIdleIfNeeded() {
@@ -218,7 +262,7 @@ public actor ProcessingCoordinator {
     }
 
     private func pump() {
-        guard running == nil, !captureActive, !waitingForModels, !parkedByExpiry, !queue.isEmpty else {
+        guard running == nil, !captureActive, exclusiveHolds.isEmpty, !waitingForModels, !parkedByExpiry, !queue.isEmpty else {
             notifyIdleIfNeeded()
             return
         }
@@ -342,6 +386,11 @@ public actor ProcessingCoordinator {
             Self.log.info("job \(id, privacy: .public): paused for recording")
             queue.insert(id, at: 0)
             markQueued(id, .pausedForRecording)
+        case .exclusive:
+            // Dictation needs the engine for a moment: back to the front, waiting for its turn.
+            Self.log.info("job \(id, privacy: .public): paused for dictation")
+            queue.insert(id, at: 0)
+            markQueued(id, currentReason())
         case .backgroundExpiry:
             Self.log.info("job \(id, privacy: .public): background time expired")
             parkedByExpiry = true

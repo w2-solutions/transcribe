@@ -165,7 +165,9 @@ struct ResumeAndRecoveryTests {
         #expect(await wp3WaitFor { (try? p.h.recording(id).queueReason) == .pausedByBackgroundExpiry })
         await p.coordinator.waitUntilIdle()
         #expect(try p.h.recording(id).stage == .transcribed)
-        #expect(await p.coordinator.runningID == nil && p.background.endResults == [false])
+        #expect(await p.coordinator.runningID == nil)
+        // The background task's end reaches the bridge through the monitor stream on the main actor: wait for it.
+        #expect(await wp3WaitFor { p.background.endResults == [false] })
         #expect(await wp3WaitFor { p.monitor.snapshot(for: id)?.phase == .queued(.pausedByBackgroundExpiry) })
 
         await p.coordinator.appBecameActive()

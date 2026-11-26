@@ -530,6 +530,32 @@ struct AppActivityWiringTests {
         #expect(activity.transitions().map(\.kind) == [.background, .active] && activity.epoch == 1)
     }
 
+    /// Dictation audio left by a crash is cleared during launch, before `isLaunched` lets any shortcut in.
+    @Test func launchClearsLeftoverDictationFilesBeforeItIsLaunched() async throws {
+        let env = try app(ScriptedPrepareEngine(), activity: AppActivity(), phase: nil)
+        defer { try? FileManager.default.removeItem(at: env.paths.root) }
+        try env.paths.prepareDictation()
+        let leftover = env.paths.newDictationURL()
+        try Data([1, 2, 3]).write(to: leftover)
+        #expect(!env.isLaunched)
+        await env.onLaunch()
+        #expect(env.isLaunched)
+        #expect(!FileManager.default.fileExists(atPath: leftover.path))
+        #expect(!FileManager.default.fileExists(atPath: env.paths.dictationDirectory.path))
+    }
+
+    /// Launch asks whether another copy runs before clearing dictation files (what it then keeps is
+    /// `AppPathsTests.whileAnotherCopyRunsOnlyOldDictationFilesGo`; the files themselves are not checked here because
+    /// every UI-testing env in this process shares one root, which parallel tests' launches clear).
+    @Test func launchAsksAboutAnotherCopyBeforeClearingDictationFiles() async throws {
+        let env = try app(ScriptedPrepareEngine(), activity: AppActivity(), phase: nil)
+        let asked = Mutex(0)
+        env.otherCopyRunning = { asked.withLock { $0 += 1 }; return true }
+        await env.onLaunch()
+        #expect(env.isLaunched)
+        #expect(asked.withLock { $0 } == 1)
+    }
+
     @Test func theMacNeverMovesTheActivity() async throws {
         let activity = AppActivity()
         let engine = ScriptedPrepareEngine()

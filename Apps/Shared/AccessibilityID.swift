@@ -277,6 +277,38 @@ enum AX {
         static let note = "settings.updates.note"
     }
 
+    /// Settings → Shortcuts (Mac only). `a` is a `ShortcutAction` raw value.
+    enum Shortcuts {
+        static let section = "settings.shortcuts.section"
+        static func recorder(_ a: String) -> String { "settings.shortcuts.\(a).recorder" }
+        static func clear(_ a: String) -> String { "settings.shortcuts.\(a).clear" }
+        static func status(_ a: String) -> String { "settings.shortcuts.\(a).status" }
+        static let reset = "settings.shortcuts.reset"
+        static let problem = "settings.shortcuts.problem"
+        static let accessibility = "settings.shortcuts.accessibility"
+        static let inputMonitoring = "settings.shortcuts.inputMonitoring"
+        static let pasteGuide = "settings.shortcuts.pasteGuide"
+        static let pasteOpenSettings = "settings.shortcuts.pasteGuide.openSettings"
+        static let pasteShowInFinder = "settings.shortcuts.pasteGuide.showInFinder"
+        static let pasteStatus = "settings.shortcuts.pasteGuide.status"
+        static let pasteRelaunch = "settings.shortcuts.pasteGuide.relaunch"
+        static let pasteDone = "settings.shortcuts.pasteGuide.done"
+        static let clipboard = "settings.shortcuts.clipboard"
+        static let clipboardNote = "settings.shortcuts.clipboardNote"
+        static let note = "settings.shortcuts.note"
+        static let keyboardNote = "settings.shortcuts.keyboardNote"
+        static let privacy = "settings.shortcuts.privacy"
+    }
+
+    /// The dictation HUD (Mac only).
+    enum Dictation {
+        static let hud = "dictation.hud"
+        static let hudTitle = "dictation.hud.title"
+        static let hudDetail = "dictation.hud.detail"
+        /// DEBUG, simulated shortcuts only: a hidden element whose value is the text the last dictation delivered.
+        static let lastDelivered = "dictation.lastDelivered"
+    }
+
     enum ModelSettings {
         static let screen = "modelSettings.screen"
         static let speechRow = "modelSettings.speechRow"
@@ -320,6 +352,8 @@ enum AX {
         static let sidebarFooter = "mac.sidebar.footer"
         /// "Update available · 0.3.1" above the footer while an update waits (D23).
         static let sidebarUpdate = "mac.sidebar.update"
+        /// "Shortcuts need permission", below the update reminder.
+        static let sidebarShortcuts = "mac.sidebar.shortcuts"
         static let recordingList = "mac.list.recordings"
         static let voiceList = "mac.list.voices"
         static let detailEmpty = "mac.detail.empty"

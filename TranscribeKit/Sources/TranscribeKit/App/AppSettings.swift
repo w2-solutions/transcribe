@@ -32,6 +32,10 @@ public final class AppSettings {
 
     @ObservationIgnored private let defaults: UserDefaults
 
+    /// The store these settings live in (the UI-test suite under `-uiTesting`), for per-Mac state kept outside
+    /// AppSettings, such as `ShortcutSettings`.
+    public var userDefaults: UserDefaults { defaults }
+
     public var identifySpeakers: Bool { didSet { defaults.set(identifySpeakers, forKey: Key.identifySpeakers) } }      // default true
     public var recogniseVoices: Bool { didSet { defaults.set(recogniseVoices, forKey: Key.recogniseVoices) } }          // default true
     public var language: LanguageHint { didSet { defaults.set(Self.encode(language), forKey: Key.language) } }           // default .automatic
