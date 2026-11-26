@@ -20,6 +20,18 @@ enum CaptureSourceEvent: Sendable, Equatable {
     case mediaServicesReset
     /// Capture failed for another reason.
     case failed(String)
+    /// Mac audio delivered only exact silence for a while although another app is playing sound (access is likely
+    /// off). Capture carries on.
+    case systemAudioSilent
+    /// Mac audio stopped and could not be restarted. A Both source carries on with the microphone.
+    case systemAudioLost
+}
+
+/// The latest level of each stream of a source that captures two (the microphone and Mac audio), 0...1 like
+/// `RecordingEvent.tick`'s level. Single-stream sources have none.
+struct StreamLevels: Sendable, Equatable {
+    var mic: Float
+    var system: Float
 }
 
 /// One item from a capture source: 16 kHz mono Float32 samples, or an event.
@@ -40,10 +52,14 @@ protocol CaptureSource: AnyObject, Sendable {
     func stop() async
     /// The hardware and input route of this capture (log-only, §6.1). Read after `stop()`; nil when unknown.
     func captureDetail() async -> CaptureDetail?
+    /// The per-stream levels of a two-stream source (`MixedCaptureSource`); nil for a single stream.
+    func streamLevels() async -> StreamLevels?
 }
 
 extension CaptureSource {
     func captureDetail() async -> CaptureDetail? { nil }
+    /// The per-stream levels of a two-stream source, read on each tick; nil (the default) for one stream.
+    func streamLevels() async -> StreamLevels? { nil }
 }
 
 // MARK: - Input route detection (log-only, never throws)

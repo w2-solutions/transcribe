@@ -216,7 +216,7 @@ struct FluidEngineTests {
         var position = 0.0
         var updates: [(at: Double, text: LiveText)] = []
         for event in await events.value {
-            if case .tick(let elapsed, _) = event { position = elapsed }
+            if case .tick(let elapsed, _, _) = event { position = elapsed }
             if case .liveText(let text) = event { updates.append((position, text)) }
         }
         let during = updates.filter { $0.at < duration - 0.2 }

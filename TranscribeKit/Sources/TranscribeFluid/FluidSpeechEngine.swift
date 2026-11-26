@@ -407,6 +407,8 @@ public actor FluidSpeechEngine: SpeechEngine {
     // MARK: Capture
 
     public func startRecording(_ request: RecordingRequest) async throws -> any LiveRecording {
+        // Mac audio capture is not built yet: `systemAudioAvailable` is false, so only the microphone is accepted.
+        guard request.sources == .microphone || systemAudioAvailable else { throw EngineError.sourceUnavailable }
         guard await microphonePermission() == .granted else { throw EngineError.microphoneDenied }
         return try await startRecording(request, source: captureFactory())
     }

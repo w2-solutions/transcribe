@@ -64,6 +64,7 @@ enum FluidErrorMapping {
             case .noSpeech: return "No speech found"
             case .tooShort: return "The recording is too short"
             case .microphoneDenied: return "Microphone access is off"
+            case .sourceUnavailable: return "Mac audio can't be recorded here"
             case .cancelled: return "Cancelled"
             }
         }

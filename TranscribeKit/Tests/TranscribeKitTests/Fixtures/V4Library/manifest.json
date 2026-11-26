@@ -1,0 +1,455 @@
+{
+  "counts" : {
+    "folders" : 1,
+    "groupLabels" : 1,
+    "negatives" : 1,
+    "profiles" : 2,
+    "recordings" : 3,
+    "samples" : 4,
+    "speakers" : 4,
+    "syncAccounts" : 1,
+    "syncRecords" : 16
+  },
+  "folders" : [
+    {
+      "createdAt" : "2026-11-17T08:00:00Z",
+      "id" : "F4000000-0000-4000-8000-000000000001",
+      "name" : "Work",
+      "recordingCount" : 1
+    }
+  ],
+  "groupLabels" : [
+    {
+      "anchor" : "\/9jtvUU\/+rzDlY690pz4vP8ffL24C469014dvSWY6b2z8Ec9Sq+IvDApkDw1onC6njhEvWckmb3I\/Ac82VUoPVlX\/DzPcaK8BMs3vTbp\/Twr2JE9ByM9vT0h3T16jao8bIgjvSoqgby99CI9ysPcvT\/tUDyzRcq9RBEmPJxiqT2smAe7rQzGvZODob2d1XK80J7Uuz6Idrzh26+9c1qkvQ4ps71\/DDu9gxHdvcJbgr14egs9HAvKvbmWob2qa8U9xjD6u7YyYrrfhN69Yi2FPBEdYjxv6f88m2S0PTpy070e0Xi9dVX9PS9hqjxJAaE6aUyGvX+uwj2XcQ68Za21vaCtmz3sNz491CEIPQHvNbwFlwg9p5H1vcVinb3Oi8i9TdduvDjXhD2HnUO98ieCPWT5y7x6slm9IkCvPFmecb1Pghg9huz2vLGDpr2jkYI9E4CMvSrhlz3XJuS9xsDKPKKICDzc6co90tCvvQKp570dzqG8KGk0PZfq07nVkiY913RLvd\/VNz1vYTI9DpGzPML4tzz64Ww93saqPcTdAD64ChQ95X3su2gZOzxLw6S9jWxBPcXIlbyp4449pFcQPfl9O72Pz8w9\/hM1vc2rpb2Ixni9W4csvSXYjL15zsw9SYeePXbshD0lmNK9\/7rBvcdslz05AjU685WWvYyRwz2D+AA9EXDCvBjjZr3J5ei74a7vvET6xD0T8OC9JertvVf1JDxLC308GyHFPCZr4DxIjcU9KhvOvGkSKj29lL+9G2X5vexgmD0svDo81QowPd2ed72LgLI9O9a\/vW2uWDzkXTS8JpzPPFGtjj2D05e7sxfivIuJGD2rLaQ9DlTxPK\/+Fb2jPiu9SFEFvNeOfj0y\/j694q\/Iu3mV3r3XjJu99wnlPGp7rDyTtZo9YwzKvc28rD1EWPQ9EbUOPGr\/1Lw+rsu9bYI\/PIGe6DyvMDW7i8WqvX9UiL2fYC69296cvNoatT271pm8EnW2PDKDM72SkTu8Y7hPPRqKxj2muk291f43veFzEbzxTaa99XF6PexCur1WR2O9m1KovfFh7TyrERE9VlcBveSK07yOL2u9df2KPYnqAL17KJc8f+ARPdT6jr3VhFc9K\/qbPdBUpL34JUw7I7MAu3g+pDykjOe9SfU3vUwPEL1lqz89\/qUzPIs0szxHefA96Mnhu+ft0j21KJ279JHjvMhRV716iKM96AU4Pdv3QD2S\/ZM9lhGmPfPot7zyP8I9xphMu\/f26rtn1de90wR\/Pe1qQT2LMM09mbyVPXtcojypX8s9rg\/APWJFz71HP866tUlgvJjdR72W8tO8S+zXPIEuzLxksqW8AYV7PYSkNT25Tu09JnLgu+1Tj71BfY+9FS6YvRQPhjxCOuG9OFlWveoaAr2pW9a99Im5PeGanr2VqJS8ixzPOVTlKr3\/8NC9+jNzPLcSjLyxekw9Bq6HvTuwmrxqZ7U9gitiPeQalbx1wBk9iiTMPHHlab3JUMG8vgMJPldhW72CjxS9hVuavGPKOj0OAPM83Z8TvRmzPL0A7ti9L8g2vKBMhb3MwqG9\/oXKvXLehL3qfC+92RqHvRpbjr1tMn29I\/KjvRJv871uGfC9Fkx2PWF72b2vCsC8SNnKvR3lUDrDJvC5E69IPemjujxVcpG9BAAKvXc\/HT1RpIM9ZgsyPB5vh70c8iI85j4vvQquML3n0ig9dmUrvJwDiDl+8bk8SImePHXbZ723BWi9JYIQvd5Qwbwzq409rxa4vUPLkT1f5PY8UwGgvUeKujwrJoC9HlrTPAkygjwSvue9WVPJPWR\/T70P2yM95TC5vUn3rryVX2e9vRj0PDXOW706Dvu9xDfdvQneSbyEEki9P1gVvWCXKb37djU9XVERPdah3rsRD727bBV5PSjm7D1zbcU9SCpgPZ4BRz1znhS9p4+ivRt9GD3KeXo9XaXoPBk+AD5ThMw8OU\/2PMsRArxdttK8f3KEvH1M170BIcu9xP4hPXjvjT1OpY09\/baavQqwsL32AEg9pKjRvAUoVb1AUjE99eIrPXAzrbxAUNa8kCRvvKj0Vb099M09IxAIvaoQu73oN\/Y9xNp\/vLRMoj1e8tu8YvXIPLCjdj0+94M9ClqkvX1Hnr1cwa08E5\/BvK1xhz3Py7i9rrWEPbbBxL2oFtI8fM6IO2QHCjw9wJ49ndyxuwdX1b0Ku7g7tgGYPZZDpD1uEIC94bGyvUPYYbxvZo49XARbvF4QKD0Po729DS\/hvbAPijz91l288hi\/PToI1r28vcA9ZwvbPSeSkTxXgKG9n4qcvUGEyTxWwd28imj6vDvXwL0tQv69bggyPZ91\/rygK9M9pdMivY5Lhj3lO929HrS9O\/A9FT34ON08jNUUPcLlQb2xlxC99erRvM6yoz1Xbea8tQOtvRP1Nr3XSCg9dW9mPfSckjx4KTQ8pj4BvuaD3DwPsHS9HrwDvddE5DzS+ai9wXrhPK4Kiz3rMYi9G5NGvDa8Q7s0PXM9aukevchxvrxogIK8wLWrvJihCz1XVqM97ozcPT+2DTsmE3M9FrnhvBmLFD3I2ma9OkTpPPiOAD6n5Lk9wgeCPW5Ihj0J2nm9x7pWPSgmHD2tt9g8lyW7vWlkITyXSec9SkPCPbsMbj1Tns09CeeOPci0vz3KL4G8W\/ZHvTZGr7wDV7+876qQvCWHYT0qu5S9MDX9PDPEYT1Zt9c8OOS\/PTHIt70=",
+      "anchorDimension" : 256,
+      "captureChannel" : "mac",
+      "createdAt" : "2026-11-19T11:00:00Z",
+      "editedAt" : "2026-11-19T11:05:00Z",
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "64000000-0000-4000-8000-000000000001",
+      "profileID" : "B4000000-0000-4000-8000-000000000001",
+      "text" : "Desk"
+    }
+  ],
+  "modelKey" : "fake-synthetic@1#256",
+  "negatives" : [
+    {
+      "addedAt" : "2026-11-18T15:00:00Z",
+      "captureChannel" : "mac",
+      "captureInput" : "usbAudio",
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "E4000000-0000-4000-8000-000000000001",
+      "packed" : "aAiyvVK9Yr3kFpo9utfbO3izr73NU3i9ftgUvT0f07wYIFQ9ix1FPcXrpj0vOK89m1wBvHZLUDykSsk9t2+AvESRcj1vQW89z989vT66Sj2x0Y+9MesMvXUUiTwhw8G9zqgMPs6Yub1T8Xs9ldsHPORgPL3R71k7+9OoPGHCvz1UJUo70ROePVC2lz0kyLi8YBFjPE\/ARr1mcMi7iJX+vFHdrT3yciI9I5Qnuz4oLj2DSpm98HtYvXcjur3QaYM9x\/enveoIwL0QCaW94qNuPQ8Trj0lU5K8Mjp9vRroKb2oQFg75y+IvTojBL2I9KO9gW5OPNHX1T3JLtE7vEBDPQj0kzqV4Qo8yraQvfMgY7wGnUq9KgDkOzrFnr0bBGs9U2uGPSTf+b1bgds9TP85PUQb57woWO09b6pBPHYrDT1Z3c88Z7m8vQ+iJ73tWtS9\/ixNPSKEOTwpNHu9C1dvvUrcw734bP49ivRVPXqpS730SME78YWtvSFanzwex3W97zBBvVKOgj1owrM8ZaDJPYJQ0Lx5HKU8Pq+jPeAtPL3S5Yw9kWi8vafJZb2Z4nS9oBkKvTAN7L2Sbxe94tYmPQhqxzv4qME9aysOPbZHJbwlqMe9zbT8u5iDgb3JiQe9Gi8kPXiOFL3964c9ervQPOjjob2tsL696ywyPXHS2DyQFCy94S9fPN4T1rxZaqc9eyqSvfm5FD6Zdwg9NYjpPdPus7yXsca8XLKyvVvc4L0FMZ69ZNaivUWAVT0PaKc9bqKEPZWDDj2tQEW9oiWrvZAGgL2Lacw9sf0AvQZXtj2SxFE9OsJRvdatQb2Gv4W9x2uOPVC2iz0oWe69tICEPfOunj12QBC+8kuzPNv237w90yO95pirPQ\/k8TwH0ps9TPdPPaOn1L25Q8U9e+nNvB7Gr7xmxAq960CaPRXl5T22wVk80NShvRM5pT2A6h292qG4PQ\/L6bxRRYW9dBrIvYICnLwYHnY8NAQbvKvwRLwtzRi9HZynvd7XeDyWVtu9ld4SvV+Mmj1gmkC76jhjuyjxRj0Zr6c9xTfCvYM05LwFfpo9DpNoPSG3Wr27x7S9HuOPPVEdIz25jgo8g9rQPfThhj0v5y28mRyMPb8CQLx5Xeq7VQ6HvWO+ljy8zcc62GXfuxOgsLwjYuk7xJfDPE29CLwmTsM9u6YYPTFJaD14N6Y9RxBxvRkP2bx0d3C8bDqrvSS4or0qYB+9QuIfvVIHiL399xa96Ey0PTfUnD3hvk08vUeFvUuNAT0An0a7f+7RvYBahj3Ecm+9+eEBPJjInry7FhQ9QzY0PVokpb1DF4C9Vy2QvFyAKDzWgUi9vZqnvQHwYbwSxqS9Xw+nPQ==",
+      "profileID" : "B4000000-0000-4000-8000-000000000002",
+      "sourceRecordingID" : "A4000000-0000-4000-8000-00000000000B",
+      "sourceSpeakerID" : "C4000000-0000-4000-8000-00000000B002",
+      "speechSeconds" : 11.5
+    }
+  ],
+  "profiles" : [
+    {
+      "autoLabel" : true,
+      "colourSlot" : 0,
+      "createdAt" : "2026-11-17T09:20:00Z",
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "B4000000-0000-4000-8000-000000000001",
+      "isMe" : true,
+      "name" : "Liam",
+      "namedAt" : "2026-11-17T09:20:00Z",
+      "needsResample" : false,
+      "negativeCount" : 0,
+      "sampleCount" : 3
+    },
+    {
+      "autoLabel" : true,
+      "colourSlot" : 1,
+      "createdAt" : "2026-11-17T09:25:00Z",
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "B4000000-0000-4000-8000-000000000002",
+      "isMe" : false,
+      "name" : "Karan",
+      "namedAt" : "2026-11-17T09:25:00Z",
+      "needsResample" : false,
+      "negativeCount" : 1,
+      "sampleCount" : 1
+    }
+  ],
+  "recordings" : [
+    {
+      "asrModelID" : "fake-parakeet",
+      "attemptCount" : 0,
+      "audioFileName" : "A4000000-0000-4000-8000-00000000000A.wav",
+      "captureChannel" : "iphone",
+      "captureDetailJSON" : "{\"hardwareModel\":\"iPhone15,4\",\"input\":\"builtInMic\",\"routeChanged\":false}",
+      "createdAt" : "2026-11-17T09:02:00Z",
+      "duration" : 20,
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "folderID" : "F4000000-0000-4000-8000-000000000001",
+      "folderName" : "Work",
+      "hasUnseenResult" : false,
+      "id" : "A4000000-0000-4000-8000-00000000000A",
+      "isFavourite" : false,
+      "marks" : [
+
+      ],
+      "noSpeech" : false,
+      "peakCount" : 40,
+      "previewText" : "Just checking if it remembers who is speaking, like if it'll auto-detect that I'm Liam and auto-detect if this is Karan. And now this is me starting to speak, which is a second attempt at testing the ",
+      "searchText" : "just checking if it remembers who is speaking, like if it'll auto-detect that i'm liam and auto-detect if this is karan.\nand now this is me starting to speak, which is a second attempt at testing the app.\nlet's see if it works. thanks, karan. appreciate that.\nliam\nkaran",
+      "source" : "microphone",
+      "speakerCount" : 2,
+      "stage" : 7,
+      "transcriptSHA256" : "9a18eb72c02b47850124794e9364ce37aa1ea29e7692d28a425d92c47d998936"
+    },
+    {
+      "asrModelID" : "fake-parakeet",
+      "attemptCount" : 0,
+      "audioFileName" : "A4000000-0000-4000-8000-00000000000B.wav",
+      "captureChannel" : "mac",
+      "captureDetailJSON" : "{\"hardwareModel\":\"Mac16,5\",\"input\":\"usbAudio\",\"inputModelUID\":\"usb:1234\",\"inputName\":\"Desk mic\",\"routeChanged\":false}",
+      "createdAt" : "2026-11-18T14:24:00Z",
+      "duration" : 24,
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "hasUnseenResult" : true,
+      "id" : "A4000000-0000-4000-8000-00000000000B",
+      "isFavourite" : true,
+      "marks" : [
+
+      ],
+      "noSpeech" : false,
+      "peakCount" : 40,
+      "previewText" : "Hey, Karan. Um, I just want to test out if this transcription app works. Can you say something? Uh yes, testing the transcription app. This is the first take that we're taking. Okay, I got the spellin",
+      "searchText" : "hey, karan. um, i just want to test out if this transcription app works. can you say something?\nuh yes, testing the transcription app. this is the first take that we're taking. okay, i got the spelling wrong, but it's alright.\nawesome. alright, i think that'll do. thanks.\noh yeah, uh thanks. you're welcome.\nliam",
+      "source" : "microphone",
+      "speakerCount" : 2,
+      "stage" : 7,
+      "transcriptSHA256" : "45d8f19c7e0b82abeb2f2895d583e38aa0ee306384c636796a20e4a443315dd0"
+    },
+    {
+      "attemptCount" : 0,
+      "audioFileName" : "A4000000-0000-4000-8000-000000000012.wav",
+      "captureChannel" : "iphone",
+      "captureDetailJSON" : "{\"hardwareModel\":\"iPhone15,4\",\"input\":\"builtInMic\",\"routeChanged\":false}",
+      "createdAt" : "2026-11-20T09:30:00Z",
+      "duration" : 31.5,
+      "hasUnseenResult" : false,
+      "id" : "A4000000-0000-4000-8000-000000000012",
+      "isFavourite" : false,
+      "language" : "en",
+      "marks" : [
+        12
+      ],
+      "noSpeech" : false,
+      "peakCount" : 60,
+      "previewText" : "",
+      "queueReason" : "modelsNotReady",
+      "searchText" : "",
+      "source" : "microphone",
+      "speakerCount" : 0,
+      "stage" : 1
+    }
+  ],
+  "samples" : [
+    {
+      "addedAt" : "2026-11-17T09:20:00Z",
+      "captureChannel" : "iphone",
+      "captureInput" : "builtInMic",
+      "clipEnd" : 5.8,
+      "clipStart" : 1,
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "54000000-0000-4000-8000-000000000001",
+      "origin" : "named",
+      "packed" : "cVS\/vYe9Cr1nkuC8E8hEvHoVvL04wde8mk+MvXtnsb0C5JI9S0pTvZsb\/7xcW6688DuXvZU9hr2yCxI9lD29PCs8vz3sirG9D+Y1vRI1Qj1I9lk9kFkMvKAUpD1qm3A8C060vQG7ljxDz849stqRvUvVA72\/OpG9iQcEPUb2nT1V6aA7WA6rvV1Ugr1dOqy8bWMRvQiZXb2XLLe9ZQImvZy+v7wyY829TOhova71j71\/fiK91GCuvfX0zb29MLk9KmSPvXZ287xFk4e9B9isu9DMLr3YkEQ9uxwvPVExur36BLi7uaitPQuqtD2+Kes7A3uovfNPST3ExFK8lv6bvR0Suj0rgIA89Oy0PK3+ALxz8hM9j\/fNvfDZZr2Mt4G9f6YkPCEntz1ERKO911pCPWY5WLzo2Au9vapCPCW0hr311KQ70wOYvN0\/zr3GuX499ADOvfy5jT3hNb69JdEPPBZCTL3cSqE9\/ZEwvdgcuL3jjpy9zo9qPPf1pL3qVvC7YoacveMpJT2iipA9zuptvEYDrTyeoJY9PZepPcC8tj2kqT097lK\/PB2487vMcsK9m0KcPVfG6DyuRVk9ljHCPf3X\/zvtlao9gjx3vQgXl719dH+8s8iZvQC2k72s93Y9Kz3GPQhULz0PnIy9LBuYvdbNuD1hYWY6DiS4vbLhWz3CGEQ72YFZPEod47xdD9q8QNmWvejtyz0hrqq9ymu9vREgwT0n40G9YOakPb87zTstXYo96104PJy8zT0XfLS9gZ3HvRSMFD0r7BG9v1JTPcijub2NSbs9I8yZvRIGmz3JrBW8qGqYu7yVPj3mWAu8OeOMvavoNLwIzm89rppEPR6vlb3A7Iu9Xm3HPPjjwD1jkPO8pqO2PLZ6p70ORIy9Qc6HOsqk17w8M749k+6svSCAjT3Imbg9lCkIPYwFpb30YaO9CekROs7DCDz9Jdm8vX\/AveA4x70PSp+7hSL\/vInhxz0ktFW9I6GlPZ52mr26uCi9M7ogPY0Waj11ZiK8Nq4lvPW\/nb1u0Wa9RKedPfzRIL0rDKy9BdGVvZ\/eiT2CAd48kqD9O7EV9ry2+8m9bD90PX3Fob3\/ZBy9GMMOPYUUxr3OQ3g97oKSPcohWb3C\/hg8q+FdvB0sgz18u4C9G4ucvSxtCL00dLQ829gAvJKQYT2YcbI9CDKSPN\/prj2+fwq8kU4wPecTl73N6HY9dQ\/BPaCrnz2vApg9v20IPZRcA71OUYs9HnIpOwq3E7u3aqa90EFlPfoZoj2mrqs9ZHEJPHAThT0bpcs9jgqAPQLxib2kzVK9xrKSvYrbmb3s\/fG8Cg1HPUhlz704T9c863ezPTtDAz1x38M9xTB6vQ==",
+      "profileID" : "B4000000-0000-4000-8000-000000000001",
+      "quote" : "Hey, Karan. Um, I just want to test out if this transcription app works.",
+      "sourceRecordingID" : "A4000000-0000-4000-8000-00000000000A",
+      "sourceSpeakerID" : "C4000000-0000-4000-8000-00000000A001",
+      "speechSeconds" : 14
+    },
+    {
+      "addedAt" : "2026-11-17T09:25:00Z",
+      "captureChannel" : "iphone",
+      "captureInput" : "builtInMic",
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "54000000-0000-4000-8000-000000000002",
+      "origin" : "named",
+      "packed" : "nzWgPUt\/Bj3luLo96gp8PbvY3zt2sp49FFT6PBd0Ub0PCwE9GXALvQoNNr0riRI8HqnXPP0nCj12Hqa9VNPOvUTfaT0KBUu9xO+CPW0YoD3waOQ8V4ysup3qyLyPVZE8ZcmpPSxDQTzNxFQ9wvOVvZdPQj0Ug0u7jMLavZZwCL00I7Y9aCqTvFUhEr0PWmM9pz+lvVEWpD0go+s7toW7vY4IJb3l89I9Pm7MvNmJtj3JLJ89JdifPK9U+DyY83G94F3bPMaOf70SQGy9TO9vvRsGTD3jnU894tPGvKpMwzzuGKG9ydKzPYuFdj34QF69EgesvWCgHj0kUNC8Pe6YuxAFnb3KPWU6waoZPSEij7z0j9u9VgWKvXzqpr2Z6bm9LamGPT4L0T1xA489d3trPC2vnT0\/BF89D0uZvZp93z1Qa6e9Tk\/LPZn+sb2WkEW9\/VQDPXdVAz3OqFO82hOfvZejkj2L0jw9JAMIPEVb7Tzr1Wy9DmysPR1jVj0ZnY+9ZhSFPUfdKD2vVJW7\/UBpvNmWyz2gzaU9O9bevMXawD1N3+U8j\/2KvffCvb1SvhQ8LADaO4toL718M6u9YhztvKjPezy+AIc9Z9\/Cvb0hnL2p9BO9QvazvZKzsL0UxCs8b+O\/PYoLVz2fAxs93C6\/PZdjgjv6YnS9TlWTvWmFxD0Yf489kKuOPZ971j0l6BC97U2WPSRuYj1RQGi90L\/8uqwD1bz5I9k9UDAHvQwWwz0aghq9ik66vV4VuDwD\/p29ab0tPbZWPb1HeQk9o+vXPWKghj3b6ye9xRkBPT7Ag70bNsG9sf0yPEFybz0umLQ7pUwzPUXw\/bzIq469XrwQPUPZFbwqU6S9bMOZvSe44L15ADW991iSvCjOSzzjW2y9Tz\/RPHFDh70YSYU9JKKIvJobgLx80+G9hdMFPaGtaDu36tQ9sh4RPK9myjvdGMo9urnuPHwYLD0X45A8fzctPTGvj70qeOI9v710PU5v07tXydk7IhklPB2zOLzBC529sJqWPfL3x71cvd49hJ7zvKnQoD1BrLA8P2ZAvFtVLz3B4Tk9+s+nvdQ1BzzdZ+I8oOlsPW7FgL1uDkC9MVHnvKEKob34ro+9oMl2vEXvmj0MXvs8Td7Fu87bpj20LMc9aZ25PHOOxT3PJHC9LVWavHXLZb1xI1a912eYPYzTND3mc7g9YfcLPfsrhb3s++M8atWbPY99wT3R8Ku7BhGnPHaCtr1sPeO9VyHFPSoezj3vxWQ9PhPJPbM1ur1QUz49VJ6\/PTOC77wOFxk9r6sjvFe5XT3gVMS9xcrNvSoKgD03oZC96GrIvZOzLrzrb7e92LV4vVkRiT0pNhi9Ur+bvQ==",
+      "profileID" : "B4000000-0000-4000-8000-000000000002",
+      "sourceRecordingID" : "A4000000-0000-4000-8000-00000000000A",
+      "sourceSpeakerID" : "C4000000-0000-4000-8000-00000000A002",
+      "speechSeconds" : 12.5
+    },
+    {
+      "addedAt" : "2026-11-18T14:26:00Z",
+      "captureChannel" : "mac",
+      "captureInput" : "usbAudio",
+      "clipEnd" : 4.9,
+      "clipStart" : 0.6,
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "54000000-0000-4000-8000-000000000003",
+      "origin" : "confirmed",
+      "packed" : "\/9jtvUU\/+rzDlY690pz4vP8ffL24C469014dvSWY6b2z8Ec9Sq+IvDApkDw1onC6njhEvWckmb3I\/Ac82VUoPVlX\/DzPcaK8BMs3vTbp\/Twr2JE9ByM9vT0h3T16jao8bIgjvSoqgby99CI9ysPcvT\/tUDyzRcq9RBEmPJxiqT2smAe7rQzGvZODob2d1XK80J7Uuz6Idrzh26+9c1qkvQ4ps71\/DDu9gxHdvcJbgr14egs9HAvKvbmWob2qa8U9xjD6u7YyYrrfhN69Yi2FPBEdYjxv6f88m2S0PTpy070e0Xi9dVX9PS9hqjxJAaE6aUyGvX+uwj2XcQ68Za21vaCtmz3sNz491CEIPQHvNbwFlwg9p5H1vcVinb3Oi8i9TdduvDjXhD2HnUO98ieCPWT5y7x6slm9IkCvPFmecb1Pghg9huz2vLGDpr2jkYI9E4CMvSrhlz3XJuS9xsDKPKKICDzc6co90tCvvQKp570dzqG8KGk0PZfq07nVkiY913RLvd\/VNz1vYTI9DpGzPML4tzz64Ww93saqPcTdAD64ChQ95X3su2gZOzxLw6S9jWxBPcXIlbyp4449pFcQPfl9O72Pz8w9\/hM1vc2rpb2Ixni9W4csvSXYjL15zsw9SYeePXbshD0lmNK9\/7rBvcdslz05AjU685WWvYyRwz2D+AA9EXDCvBjjZr3J5ei74a7vvET6xD0T8OC9JertvVf1JDxLC308GyHFPCZr4DxIjcU9KhvOvGkSKj29lL+9G2X5vexgmD0svDo81QowPd2ed72LgLI9O9a\/vW2uWDzkXTS8JpzPPFGtjj2D05e7sxfivIuJGD2rLaQ9DlTxPK\/+Fb2jPiu9SFEFvNeOfj0y\/j694q\/Iu3mV3r3XjJu99wnlPGp7rDyTtZo9YwzKvc28rD1EWPQ9EbUOPGr\/1Lw+rsu9bYI\/PIGe6DyvMDW7i8WqvX9UiL2fYC69296cvNoatT271pm8EnW2PDKDM72SkTu8Y7hPPRqKxj2muk291f43veFzEbzxTaa99XF6PexCur1WR2O9m1KovfFh7TyrERE9VlcBveSK07yOL2u9df2KPYnqAL17KJc8f+ARPdT6jr3VhFc9K\/qbPdBUpL34JUw7I7MAu3g+pDykjOe9SfU3vUwPEL1lqz89\/qUzPIs0szxHefA96Mnhu+ft0j21KJ279JHjvMhRV716iKM96AU4Pdv3QD2S\/ZM9lhGmPfPot7zyP8I9xphMu\/f26rtn1de90wR\/Pe1qQT2LMM09mbyVPXtcojypX8s9rg\/APWJFz71HP866tUlgvJjdR72W8tO8S+zXPIEuzLxksqW8AYV7PYSkNT25Tu09JnLguw==",
+      "profileID" : "B4000000-0000-4000-8000-000000000001",
+      "quote" : "Uh yes, testing the transcription app.",
+      "sourceRecordingID" : "A4000000-0000-4000-8000-00000000000B",
+      "sourceSpeakerID" : "C4000000-0000-4000-8000-00000000B001",
+      "speechSeconds" : 11
+    },
+    {
+      "addedAt" : "2026-11-19T10:06:00Z",
+      "captureChannel" : "mac",
+      "captureInput" : "usbAudio",
+      "clipEnd" : 14.8,
+      "clipStart" : 10.8,
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "54000000-0000-4000-8000-000000000004",
+      "origin" : "corrected",
+      "packed" : "7VOPvUF9j70VLpi9FA+GPEI64b04WVa96hoCvalb1r30ibk94ZqevZWolLyLHM85VOUqvf\/w0L36M3M8txKMvLF6TD0Groe9O7CavGpntT2CK2I95BqVvHXAGT2KJMw8ceVpvclQwby+Awk+V2FbvYKPFL2FW5q8Y8o6PQ4A8zzdnxO9GbM8vQDu2L0vyDa8oEyFvczCob3+hcq9ct6Evep8L73ZGoe9GluOvW0yfb0j8qO9Em\/zvW4Z8L0WTHY9YXvZva8KwLxI2cq9HeVQOsMm8LkTr0g96aO6PFVykb0EAAq9dz8dPVGkgz1mCzI8Hm+HvRzyIjzmPi+9Cq4wvefSKD12ZSu8nAOIOX7xuTxIiZ48ddtnvbcFaL0lghC93lDBvDOrjT2vFri9Q8uRPV\/k9jxTAaC9R4q6PCsmgL0eWtM8CTKCPBK+571ZU8k9ZH9PvQ\/bIz3lMLm9SfeuvJVfZ729GPQ8Nc5bvToO+73EN929Cd5JvIQSSL0\/WBW9YJcpvft2NT1dURE91qHeuxEPvbtsFXk9KObsPXNtxT1IKmA9ngFHPXOeFL2nj6K9G30YPcp5ej1dpeg8GT4APlOEzDw5T\/Y8yxECvF220rx\/coS8fUzXvQEhy73E\/iE9eO+NPU6ljT39tpq9CrCwvfYASD2kqNG8BShVvUBSMT314is9cDOtvEBQ1ryQJG+8qPRVvT30zT0jEAi9qhC7veg39j3E2n+8tEyiPV7y27xi9cg8sKN2PT73gz0KWqS9fUeevVzBrTwTn8G8rXGHPc\/LuL2utYQ9tsHEvagW0jx8zog7ZAcKPD3Anj2d3LG7B1fVvQq7uDu2AZg9lkOkPW4QgL3hsbK9Q9hhvG9mjj1cBFu8XhAoPQ+jvb0NL+G9sA+KPP3WXbzyGL89OgjWvby9wD1nC9s9J5KRPFeAob2fipy9QYTJPFbB3byKaPq8O9fAvS1C\/r1uCDI9n3X+vKAr0z2l0yK9jkuGPeU73b0etL078D0VPfg43TyM1RQ9wuVBvbGXEL316tG8zrKjPVdt5ry1A629E\/U2vddIKD11b2Y99JySPHgpNDymPgG+5oPcPA+wdL0evAO910TkPNL5qL3BeuE8rgqLPesxiL0bk0a8NrxDuzQ9cz1q6R69yHG+vGiAgrzAtau8mKELPVdWoz3ujNw9P7YNOyYTcz0WueG8GYsUPcjaZr06ROk8+I4APqfkuT3CB4I9bkiGPQnaeb3HulY9KCYcPa232DyXJbu9aWQhPJdJ5z1KQ8I9uwxuPVOezT0J5449yLS\/Pcovgbxb9ke9NkavvANXv7zvqpC8JYdhPSq7lL0wNf08M8RhPVm31zw45L89Mci3vQ==",
+      "profileID" : "B4000000-0000-4000-8000-000000000001",
+      "sourceRecordingID" : "A4000000-0000-4000-8000-000000000099",
+      "sourceSpeakerID" : "C4000000-0000-4000-8000-00000000F001",
+      "speechSeconds" : 10.4
+    }
+  ],
+  "schemaVersion" : "4.0.0",
+  "speakers" : [
+    {
+      "cleanSeconds" : 14,
+      "colourSlot" : 0,
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "C4000000-0000-4000-8000-00000000A001",
+      "key" : "S1",
+      "label" : "named",
+      "matchTrace" : "eyJraW5kIjoidW5rbm93biIsImtleSI6IlMxIiwicmVhc29uIjoibm9FbGlnaWJsZVByb2ZpbGVzIiwicHJvZmlsZXMiOltdLCJhdXRvTGFiZWxNaW4iOjAuNTUsInByb2JlQ2hhbm5lbCI6ImlwaG9uZSIsInZlcnNpb24iOjIsImF1dG9MYWJlbE1hcmdpbiI6MC4xLCJjbGVhblNlY29uZHMiOjE0LCJjb2hvcnRTaXplIjowLCJhc2tNaW4iOjAuNH0=",
+      "ordinal" : 1,
+      "profileID" : "B4000000-0000-4000-8000-000000000001",
+      "recordingID" : "A4000000-0000-4000-8000-00000000000A",
+      "rejectedProfileIDs" : [
+
+      ],
+      "totalSeconds" : 15.2,
+      "turnCount" : 2,
+      "vector" : "GaFvvT0N+byvdae9xR0KvCPYh70IpUC9gWOGvYPLzb3Cz7E819WLveUfoTv6UW+9tLjovSazo7yMols884WXPBtMcj1PXMu9\/ZWVvcbM3jxLiBs8gVOIPGomLz2WJzk9kWw0vd\/eULz7TLs9ZkOovMkYTb1m0Ty9XJZyOrYxKj0zCR49i7OOvZs5w7wgbnO9jCMrOxT5RLzLsNW91pGFvfHnlDw14zS9fKNRvZzX2L2xP+Y7FhWavToUiL0o64M93DvVvVNtKL3UyJ68pOoPvWkPRrynxbY9aJsvPd\/l1r2H0\/C8y\/XePYg72T0IFcM8AnBXvSo4dT3p64+7kPLuvftfVT1uMBE8AXbTu7pF9zwN3dY8a7wEvhQKRr08tcK9mKw+PaHHEz0db7+9xm6SPYavGr30QBI4nF68vPnk7bz0g4u88gqZvAyD\/72GDtM8WkQuvRfuxT3Mt8q9jRYaPPjZob1QXzk9QepGvOCyp72kU529V3govcuyNL0lUge9VrwhvcruXj2zc889UFUHO1d1Tz2nfBE9a8TiPf4hsT0+Qhm7WoocPTfxFT2xca+9z+mPPZTshT2qmDY8QANMPdBDwjw9O9E86eqQvXDgjb35Ota85H7+vO5FK73+vaI8LuH0PaJ3wzsD0bm8+i2SvTQMdD3l0FC8jtPRvTVVSD3pOgq8N+83vd4fhr3I7Mw8oVLavWJByj1aPm29c3+LvUwfmj1oenS9mp\/VPTYUhzwkuYA9VzGQvC\/YOj2YXpa9ZHcyvauAZz3uJ5Y8QQ0bPZijy73r47w9aN4NvQH\/AT0FS4c7aeDWO\/lCQj3zBxi91UiSvVFD9rr+TcQ9gvgfPQy8\/rykjcW95TuGPSrZDT5lBLS8VG5ZvDI4071f1ii9zn8LvVcpXb3VfaA9\/fPXvSZp4D1gKqE9hos0PfJMrb1nxDW9Wkk9PeZgij1N50Q8AkTtvfKlz72JOqU8nHVmu0oazT30omu9GZagPYuVq7256kU8ndHvPLRXXj0GACK9G+kbPdhHfr0If1e9sx3EPdCOqb0vNVy9pEAQvaN1mj3Iznk9l\/bkPMNLx73lWYa9dotjPOVXyr1qLYg8618ZO3emcr1zLmc9\/qK5PfBQV7ygah89X2AevNDUjjwBDLG8Yhu7vRJ9Jb0jKZY9oREHvSI9yT2Icoc9AB0ZvZPK8D3hqIm8mNasPYrVu73Z\/TQ8SAPQPZulkz2eIes8RG6SPYyK+bwSyhs9VlWOO2k9Hr29MIa98ZhiPYto9DwuO8A9k3IIPYbwyD3FFZQ9iiOOPRCHQr1JV7K8ZHuKvRFHu739RrA67rl2PQcUxb03U6o89zkCPk+Njj0\/fDc9YL+8vQ==",
+      "vectorCoherence" : 0.93
+    },
+    {
+      "cleanSeconds" : 12.5,
+      "colourSlot" : 1,
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "C4000000-0000-4000-8000-00000000A002",
+      "key" : "S2",
+      "label" : "named",
+      "matchTrace" : "eyJraW5kIjoidW5rbm93biIsImtleSI6IlMyIiwicmVhc29uIjoibG93U2NvcmUiLCJzY29yZSI6MC4wNSwicHJvZmlsZXMiOlt7InVudHJ1c3RlZENvdW50IjowLCJ0cnVzdGVkVG9wIjowLjA1LCJzY29yZSI6MC4wNSwidHJ1c3RlZFNjb3JlIjowLjA1LCJ0cnVzdGVkQ291bnQiOjEsImFza09ubHkiOmZhbHNlLCJibG9ja2VkIjpmYWxzZSwicHJvZmlsZUlEIjoiQjQwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIn1dLCJhdXRvTGFiZWxNaW4iOjAuNTUsInByb2JlQ2hhbm5lbCI6ImlwaG9uZSIsInZlcnNpb24iOjIsImF1dG9MYWJlbE1hcmdpbiI6MC4xLCJjbGVhblNlY29uZHMiOjEyLjUsImNvaG9ydFNpemUiOjAsImFza01pbiI6MC40fQ==",
+      "ordinal" : 2,
+      "profileID" : "B4000000-0000-4000-8000-000000000002",
+      "recordingID" : "A4000000-0000-4000-8000-00000000000A",
+      "rejectedProfileIDs" : [
+
+      ],
+      "totalSeconds" : 13,
+      "turnCount" : 1,
+      "vector" : "uF3VPe3WBT34GL09kw0OPcWoQzwxwZs9x1EhO7DJmb2AvwQ8JTmXvebFaL3Xbly7FGdnPUjQhT1iyX69JuXGvRZ4PD3DsjO8uIGbPfdUzD1SZpQ9BhxvurP7kLzGxQA9fkfLPHzus7vr\/rI9Rm7Tvb5BkD24vX08pgMQvtrwFr1mIUo9RRmGvV8lDryUtYc9I1kPva1ekj30oBQ9ex\/NvSXs0bzzOLA9RbMjPPOD7z3YHh09MOtCPbLoXz3haHm9yBWHPCfapr1dxY68P7i5vIk4sj1e3m49AUcRvJweSDwvUbq9Ow1zPfywGT3Vu9W8pX3gvZCvST0Rink8atLiPDFp9rxWBNG8nuCXPGRTpbkHrJC9fQeevXvGvL3t86G9qNoNPZM7pj032ac8\/repuq8v0jxJyxg9KPu3vbyCYj2SpRe9ZlmCPTCbiL2qMaO9tPlJvPFwGroZvGM8a0+UvYBJHj3eG9Y8Zmt\/OqKu4Tdu8mW9oJagPUV\/LjxT79S9cuSDPWpvjz2S2Mw7DPMQvcoT\/T2Kpo89YepqvIrfVz1ujo09XhdDvZALzL2W8mi75a0pO7B1cr0TK+S9DvyQvYnVq7sgTIw9i+H\/vemt7L2dJZK9uPzlvR\/u972xIby8Jn8sPZ4yeT021GM9kxqbPTBlOT1IhXa95D0TvXFu0T3NM7896OaGPYgNBz5ab8e6oevLPQZ3YjyRA6W9s16BvM3LS7wwpws+5osEulpYcz339XG9ISaXvVyir7yrhuy8IjCgO5v6qrwG\/zI9V3PIPQtn0z2PGH69izA8PQABD70pAZ+9Gjk+PSClsj0iQBi9FasyPeh8g7wozWm9c6bHPNIut7zU7bO9mc5MvVUXwL23O0O97s27PAWSvDyS7729+z22PGIypL2\/75s9biXjPLmGqzwdw9e959mEPQCPCb1ZBf89GQ0Rvc9SrLu1aYI9O74FPYuBcj2WhH47EdsaPRl3Rb2bZQo+MRZDPAFRML3fW1c67CM\/PQpUxrw7ldu9tQiVPSzhU70aLAo+cQKnvHz9pz3Z4e07gKWKPHvVfrt9Pm89ZzPevSgpBD3CHiI9qaUYPRMzH71CqIm9UT9TvXrUs7323Je89rYDPTIwnT1kewA8MVMVPWLOtT3ssfc9+lKAPZ3zKz0jimu8rwaEvWOZpry8bhC9z3KePRBL5zwAocw9\/mI1vAJ9ZL0htl89pE7hPAvPnD2HvUg8ujMbPf2Zib0YfL+9CTFePaVRyD3nHWM9yguIPb6p8L1+RZc9xOB4PewMpzvNf966KZq8PK\/xxjw5gDa99bPPvdzynzyhVg+9dleAvTVhd7x0Kh+9XkO\/u6Y0mT0auJO9qv2bvQ==",
+      "vectorCoherence" : 0.88
+    },
+    {
+      "cleanSeconds" : 11,
+      "colourSlot" : 0,
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "C4000000-0000-4000-8000-00000000B001",
+      "key" : "S1",
+      "label" : "autoLabelled",
+      "matchMargin" : 0.8,
+      "matchScore" : 0.86,
+      "matchTrace" : "eyJhdXRvTGFiZWxNaW4iOjAuNTUsImF1dG9MYWJlbE1hcmdpbiI6MC4xLCJjb2hvcnRTaXplIjowLCJzY29yZSI6MC44Niwia2luZCI6ImF1dG8iLCJ2ZXJzaW9uIjoyLCJhc2tNaW4iOjAuNCwicHJvZmlsZUlEIjoiQjQwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwicHJvZmlsZXMiOlt7InRydXN0ZWRDb3VudCI6MSwic2NvcmUiOjAuODYsInRydXN0ZWRUb3AiOjAuODYsImFza09ubHkiOmZhbHNlLCJ1bnRydXN0ZWRDb3VudCI6MCwicHJvZmlsZUlEIjoiQjQwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDAxIiwiYmxvY2tlZCI6ZmFsc2UsInRydXN0ZWRTY29yZSI6MC44Nn0seyJ0cnVzdGVkQ291bnQiOjEsInNjb3JlIjowLjA2LCJ0cnVzdGVkVG9wIjowLjA2LCJhc2tPbmx5IjpmYWxzZSwidW50cnVzdGVkQ291bnQiOjAsInByb2ZpbGVJRCI6IkI0MDAwMDAwLTAwMDAtNDAwMC04MDAwLTAwMDAwMDAwMDAwMiIsImJsb2NrZWQiOmZhbHNlLCJ0cnVzdGVkU2NvcmUiOjAuMDZ9XSwicHJvYmVDaGFubmVsIjoibWFjIiwicmVhc29uIjoiYXV0byIsImNsZWFuU2Vjb25kcyI6MTEsImtleSI6IlMxIn0=",
+      "ordinal" : 1,
+      "profileID" : "B4000000-0000-4000-8000-000000000001",
+      "recordingID" : "A4000000-0000-4000-8000-00000000000B",
+      "rejectedProfileIDs" : [
+
+      ],
+      "totalSeconds" : 11.4,
+      "turnCount" : 2,
+      "vector" : "\/9jtvUU\/+rzDlY690pz4vP8ffL24C469014dvSWY6b2z8Ec9Sq+IvDApkDw1onC6njhEvWckmb3I\/Ac82VUoPVlX\/DzPcaK8BMs3vTbp\/Twr2JE9ByM9vT0h3T16jao8bIgjvSoqgby99CI9ysPcvT\/tUDyzRcq9RBEmPJxiqT2smAe7rQzGvZODob2d1XK80J7Uuz6Idrzh26+9c1qkvQ4ps71\/DDu9gxHdvcJbgr14egs9HAvKvbmWob2qa8U9xjD6u7YyYrrfhN69Yi2FPBEdYjxv6f88m2S0PTpy070e0Xi9dVX9PS9hqjxJAaE6aUyGvX+uwj2XcQ68Za21vaCtmz3sNz491CEIPQHvNbwFlwg9p5H1vcVinb3Oi8i9TdduvDjXhD2HnUO98ieCPWT5y7x6slm9IkCvPFmecb1Pghg9huz2vLGDpr2jkYI9E4CMvSrhlz3XJuS9xsDKPKKICDzc6co90tCvvQKp570dzqG8KGk0PZfq07nVkiY913RLvd\/VNz1vYTI9DpGzPML4tzz64Ww93saqPcTdAD64ChQ95X3su2gZOzxLw6S9jWxBPcXIlbyp4449pFcQPfl9O72Pz8w9\/hM1vc2rpb2Ixni9W4csvSXYjL15zsw9SYeePXbshD0lmNK9\/7rBvcdslz05AjU685WWvYyRwz2D+AA9EXDCvBjjZr3J5ei74a7vvET6xD0T8OC9JertvVf1JDxLC308GyHFPCZr4DxIjcU9KhvOvGkSKj29lL+9G2X5vexgmD0svDo81QowPd2ed72LgLI9O9a\/vW2uWDzkXTS8JpzPPFGtjj2D05e7sxfivIuJGD2rLaQ9DlTxPK\/+Fb2jPiu9SFEFvNeOfj0y\/j694q\/Iu3mV3r3XjJu99wnlPGp7rDyTtZo9YwzKvc28rD1EWPQ9EbUOPGr\/1Lw+rsu9bYI\/PIGe6DyvMDW7i8WqvX9UiL2fYC69296cvNoatT271pm8EnW2PDKDM72SkTu8Y7hPPRqKxj2muk291f43veFzEbzxTaa99XF6PexCur1WR2O9m1KovfFh7TyrERE9VlcBveSK07yOL2u9df2KPYnqAL17KJc8f+ARPdT6jr3VhFc9K\/qbPdBUpL34JUw7I7MAu3g+pDykjOe9SfU3vUwPEL1lqz89\/qUzPIs0szxHefA96Mnhu+ft0j21KJ279JHjvMhRV716iKM96AU4Pdv3QD2S\/ZM9lhGmPfPot7zyP8I9xphMu\/f26rtn1de90wR\/Pe1qQT2LMM09mbyVPXtcojypX8s9rg\/APWJFz71HP866tUlgvJjdR72W8tO8S+zXPIEuzLxksqW8AYV7PYSkNT25Tu09JnLguw==",
+      "vectorCoherence" : 0.92
+    },
+    {
+      "cleanSeconds" : 11.5,
+      "colourSlot" : 1,
+      "embeddingModelKey" : "fake-synthetic@1#256",
+      "id" : "C4000000-0000-4000-8000-00000000B002",
+      "key" : "S2",
+      "label" : "unnamed",
+      "matchTrace" : "eyJhdXRvTGFiZWxNaW4iOjAuNTUsImF1dG9MYWJlbE1hcmdpbiI6MC4xLCJjb2hvcnRTaXplIjowLCJzY29yZSI6MC40NCwia2luZCI6ImFzayIsInZlcnNpb24iOjIsImFza01pbiI6MC40LCJwcm9maWxlSUQiOiJCNDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJwcm9maWxlcyI6W3sidHJ1c3RlZENvdW50IjoxLCJzY29yZSI6MC40NCwidHJ1c3RlZFRvcCI6MC40NCwiYXNrT25seSI6ZmFsc2UsInVudHJ1c3RlZENvdW50IjowLCJwcm9maWxlSUQiOiJCNDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDIiLCJibG9ja2VkIjpmYWxzZSwidHJ1c3RlZFNjb3JlIjowLjQ0fV0sInByb2JlQ2hhbm5lbCI6Im1hYyIsInJlYXNvbiI6ImJlbG93QXV0byIsImNsZWFuU2Vjb25kcyI6MTEuNSwia2V5IjoiUzIifQ==",
+      "ordinal" : 2,
+      "recordingID" : "A4000000-0000-4000-8000-00000000000B",
+      "rejectedProfileIDs" : [
+        "B4000000-0000-4000-8000-000000000002"
+      ],
+      "totalSeconds" : 13,
+      "turnCount" : 2,
+      "vector" : "aAiyvVK9Yr3kFpo9utfbO3izr73NU3i9ftgUvT0f07wYIFQ9ix1FPcXrpj0vOK89m1wBvHZLUDykSsk9t2+AvESRcj1vQW89z989vT66Sj2x0Y+9MesMvXUUiTwhw8G9zqgMPs6Yub1T8Xs9ldsHPORgPL3R71k7+9OoPGHCvz1UJUo70ROePVC2lz0kyLi8YBFjPE\/ARr1mcMi7iJX+vFHdrT3yciI9I5Qnuz4oLj2DSpm98HtYvXcjur3QaYM9x\/enveoIwL0QCaW94qNuPQ8Trj0lU5K8Mjp9vRroKb2oQFg75y+IvTojBL2I9KO9gW5OPNHX1T3JLtE7vEBDPQj0kzqV4Qo8yraQvfMgY7wGnUq9KgDkOzrFnr0bBGs9U2uGPSTf+b1bgds9TP85PUQb57woWO09b6pBPHYrDT1Z3c88Z7m8vQ+iJ73tWtS9\/ixNPSKEOTwpNHu9C1dvvUrcw734bP49ivRVPXqpS730SME78YWtvSFanzwex3W97zBBvVKOgj1owrM8ZaDJPYJQ0Lx5HKU8Pq+jPeAtPL3S5Yw9kWi8vafJZb2Z4nS9oBkKvTAN7L2Sbxe94tYmPQhqxzv4qME9aysOPbZHJbwlqMe9zbT8u5iDgb3JiQe9Gi8kPXiOFL3964c9ervQPOjjob2tsL696ywyPXHS2DyQFCy94S9fPN4T1rxZaqc9eyqSvfm5FD6Zdwg9NYjpPdPus7yXsca8XLKyvVvc4L0FMZ69ZNaivUWAVT0PaKc9bqKEPZWDDj2tQEW9oiWrvZAGgL2Lacw9sf0AvQZXtj2SxFE9OsJRvdatQb2Gv4W9x2uOPVC2iz0oWe69tICEPfOunj12QBC+8kuzPNv237w90yO95pirPQ\/k8TwH0ps9TPdPPaOn1L25Q8U9e+nNvB7Gr7xmxAq960CaPRXl5T22wVk80NShvRM5pT2A6h292qG4PQ\/L6bxRRYW9dBrIvYICnLwYHnY8NAQbvKvwRLwtzRi9HZynvd7XeDyWVtu9ld4SvV+Mmj1gmkC76jhjuyjxRj0Zr6c9xTfCvYM05LwFfpo9DpNoPSG3Wr27x7S9HuOPPVEdIz25jgo8g9rQPfThhj0v5y28mRyMPb8CQLx5Xeq7VQ6HvWO+ljy8zcc62GXfuxOgsLwjYuk7xJfDPE29CLwmTsM9u6YYPTFJaD14N6Y9RxBxvRkP2bx0d3C8bDqrvSS4or0qYB+9QuIfvVIHiL399xa96Ey0PTfUnD3hvk08vUeFvUuNAT0An0a7f+7RvYBahj3Ecm+9+eEBPJjInry7FhQ9QzY0PVokpb1DF4C9Vy2QvFyAKDzWgUi9vZqnvQHwYbwSxqS9Xw+nPQ==",
+      "vectorCoherence" : 0.7
+    }
+  ],
+  "stages" : {
+    "queued" : 1,
+    "ready" : 2
+  },
+  "syncAccounts" : [
+    {
+      "accountHash" : "3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f3f",
+      "engineState" : "AwoRGB8mLTQ7QklQV15lbHN6gYiPlp2kq7K5wMfO1dzj6vH4\/wYNFBsiKTA3PkVMU1phaG92fYSLkpmgp661vA==",
+      "key" : "default",
+      "lastFetchAt" : "2026-11-21T09:00:00Z",
+      "lastSendAt" : "2026-11-21T08:59:00Z",
+      "zoneReady" : true
+    }
+  ],
+  "syncRecords" : [
+    {
+      "baseHashesJSON" : "{\"meta\":\"f799a407d71c3014b2ef25ef2b5a1d2e23deb4a3958b69ed27c99e5e688f89c9\",\"name\":\"b64ccf4a8a4ac7a6312ec36a1cdb6988ac269611ce376d6a903389276916ea64\"}",
+      "entityID" : "F4000000-0000-4000-8000-000000000001",
+      "pendingRaw" : 0,
+      "recordName" : "fd.F4000000-0000-4000-8000-000000000001",
+      "systemFields" : "c3lzdGVtLWZpZWxkczpmZC5GNDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=",
+      "typeRaw" : "Folder",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"fav\":\"771c8092455956dd51c31f48a99bce802cc68e4afd7b5f546635fc2507f9a360\",\"folder\":\"da551450d61d81ddbb0957970a45a137e2365405dd19055bd4b9390654362af0\",\"meta\":\"c0934d1164d32c2ed048d5c54d79bd7c493a89f39b0446fee853b2492972d86b\",\"result\":\"b182f2e8b5b251f954da83dd81de14b9fae7db85ba8cf8fe7f7bfebab0454a29\",\"title\":\"4e9da49fe8bf9bd00b3008ba3b963701c332fea634f575f9ccc143748b19cbac\"}",
+      "entityID" : "A4000000-0000-4000-8000-00000000000A",
+      "pendingRaw" : 0,
+      "recordName" : "rec.A4000000-0000-4000-8000-00000000000A",
+      "systemFields" : "c3lzdGVtLWZpZWxkczpyZWMuQTQwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBB",
+      "typeRaw" : "Recording",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"fav\":\"33a764fb878f64051c11ce5751e4c8c6de8873d42fd307ce70810d39b3cd1450\",\"folder\":\"a4f40ea3205b282b5a3e5ce6d155107384e217d125b0b417c82f9db9be14231c\",\"meta\":\"973f0606a28a343fab4316a7e48ddbe3e8b3bc665fe2be5ab83df2c8cba1ade9\",\"result\":\"6c226cdef4ed7ed5d55131a57621fbf91aedfb874a71017bcc6079e3cde8159c\",\"title\":\"4e9da49fe8bf9bd00b3008ba3b963701c332fea634f575f9ccc143748b19cbac\"}",
+      "entityID" : "A4000000-0000-4000-8000-00000000000B",
+      "pendingRaw" : 0,
+      "recordName" : "rec.A4000000-0000-4000-8000-00000000000B",
+      "systemFields" : "c3lzdGVtLWZpZWxkczpyZWMuQTQwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDAwMDBC",
+      "typeRaw" : "Recording",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"ident\":\"4d2c8b0a0255b25d1cd3bef3a32aab655d0192ae9701c0debbad3165a04343df\",\"label\":\"1f5b8b848fcd73589ad4f4711ebe1f3359b31439d63d46c8c5f139e0da320c33\",\"rejected\":\"a317b4d533791151797a9a9772a2d6a73a7eef58e43fb245ed9d46911a992956\",\"stats\":\"423b04ed1a52887133b88c61a2a073575a5054dcd3ddc4d13900380008fb15d1\"}",
+      "entityID" : "C4000000-0000-4000-8000-00000000A001",
+      "pendingRaw" : 0,
+      "recordName" : "spk.C4000000-0000-4000-8000-00000000A001",
+      "systemFields" : "c3lzdGVtLWZpZWxkczpzcGsuQzQwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBBMDAx",
+      "typeRaw" : "Speaker",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"ident\":\"97e9bc413359afcbb7e97f6e0454f6740cce009bc14a727f025a16027d1b36a0\",\"label\":\"e7e4025b21a50cc679122b45d4b70bad73b3127380902e74c23a5b666463dd78\",\"rejected\":\"a317b4d533791151797a9a9772a2d6a73a7eef58e43fb245ed9d46911a992956\",\"stats\":\"4798f30f1af7a63a2e73099c01a6024add53b4e8379f4d63f5edf042234a3417\"}",
+      "entityID" : "C4000000-0000-4000-8000-00000000A002",
+      "pendingRaw" : 0,
+      "recordName" : "spk.C4000000-0000-4000-8000-00000000A002",
+      "systemFields" : "c3lzdGVtLWZpZWxkczpzcGsuQzQwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBBMDAy",
+      "typeRaw" : "Speaker",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"ident\":\"f1f780f7a325cc9d8b11a5e89441f04ff456cce4ae122acb2e6afc2ab4878a91\",\"label\":\"cdccf3cdeb5ad27e847a26741c14077216585501748a2edd89eae039b25f4891\",\"rejected\":\"a317b4d533791151797a9a9772a2d6a73a7eef58e43fb245ed9d46911a992956\",\"stats\":\"d7ef918cd5570c51d76fac5dfe64ba1414d26e35be670e3fdee3bbf9833f4f55\"}",
+      "entityID" : "C4000000-0000-4000-8000-00000000B001",
+      "pendingRaw" : 0,
+      "recordName" : "spk.C4000000-0000-4000-8000-00000000B001",
+      "systemFields" : "c3lzdGVtLWZpZWxkczpzcGsuQzQwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBCMDAx",
+      "typeRaw" : "Speaker",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"ident\":\"ee6ac5a56dd2c6908ff48bbda47879cf5f95b792d6c1c1dd31b9a57aeeb1f3d7\",\"label\":\"737fc798a35452afac4885132631e90bf528442a3c8c887cbfdb2c03ca3de5b0\",\"rejected\":\"789ae3338cb0a10fa82f2ae9d194c72da69a7ee5cb1b6d0492ccd147e0a49f46\",\"stats\":\"d1b6cdbbc4a126e5504ca1765d9a8c078b64abe1e3a537a8ae8959519a501f38\"}",
+      "entityID" : "C4000000-0000-4000-8000-00000000B002",
+      "pendingRaw" : 0,
+      "recordName" : "spk.C4000000-0000-4000-8000-00000000B002",
+      "systemFields" : "c3lzdGVtLWZpZWxkczpzcGsuQzQwMDAwMDAtMDAwMC00MDAwLTgwMDAtMDAwMDAwMDBCMDAy",
+      "typeRaw" : "Speaker",
+      "unresolvedLinksJSON" : "{\"profileID\":\"B4000000-0000-4000-8000-000000000077\"}",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"body\":\"33cc6e2acd20218439686a9b3a39f15a84c51fb853ab9df8b5319acde4f734b7\"}",
+      "entityID" : "64000000-0000-4000-8000-000000000001",
+      "pendingRaw" : 0,
+      "recordName" : "vg.64000000-0000-4000-8000-000000000001",
+      "systemFields" : "c3lzdGVtLWZpZWxkczp2Zy42NDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=",
+      "typeRaw" : "VoiceGroupLabel",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"body\":\"89e01839b204a75f0869fc2b0b969af46b15db29873648a7cf8148e0309709be\"}",
+      "entityID" : "E4000000-0000-4000-8000-000000000001",
+      "pendingRaw" : 0,
+      "recordName" : "vn.E4000000-0000-4000-8000-000000000001",
+      "systemFields" : "c3lzdGVtLWZpZWxkczp2bi5FNDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=",
+      "typeRaw" : "VoiceNegative",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"auto\":\"5ea013968ac614f534163deeff539b76937451fe47db144ae92435a37ce0586a\",\"colour\":\"53b634a4af9128700e03321169ad92bc89942966f6266386307ad526e7e25c5d\",\"me\":\"0e0769c76ed9d933c69f803b6374df480683227658d005396608d8e3b251cbfd\",\"meta\":\"1cb19e5c39acec42f9ef23208d473f5c266b609a0fe01c82725aaf9391208af2\",\"model\":\"181c5513263bedb3542f1c7b3ae117fda7b59930342439f03d510514176c3848\",\"name\":\"e092242552aed457d46d9a32435e4982f57186e23730c5cf08979071ef1f6b77\"}",
+      "entityID" : "B4000000-0000-4000-8000-000000000001",
+      "pendingRaw" : 0,
+      "recordName" : "vp.B4000000-0000-4000-8000-000000000001",
+      "systemFields" : "c3lzdGVtLWZpZWxkczp2cC5CNDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=",
+      "typeRaw" : "VoiceProfile",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"auto\":\"5ea013968ac614f534163deeff539b76937451fe47db144ae92435a37ce0586a\",\"colour\":\"63ac7f7480719bc46fe8d0f9955fd93d07521477fd58036e5cb0ad7d46438554\",\"me\":\"15698cf28904e9be37d68dee2154b88dac0d889e48f5444769ea2e6288e0ab18\",\"meta\":\"7d820c2a44b91602ad143be1ea4d0b499ca790ddfcb15b8b3092cbce9d38ca08\",\"model\":\"181c5513263bedb3542f1c7b3ae117fda7b59930342439f03d510514176c3848\",\"name\":\"ad6e05872e21feda75e771951b5948078fb89d97b334ec177c7550d6c6cc1d5f\"}",
+      "entityID" : "B4000000-0000-4000-8000-000000000002",
+      "pendingRaw" : 0,
+      "recordName" : "vp.B4000000-0000-4000-8000-000000000002",
+      "systemFields" : "c3lzdGVtLWZpZWxkczp2cC5CNDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDI=",
+      "typeRaw" : "VoiceProfile",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"body\":\"ad724e55a9324ed669db7cdecafc1aef25e9ba9e806aa210f05f99b22d4fef4a\"}",
+      "entityID" : "54000000-0000-4000-8000-000000000001",
+      "pendingRaw" : 0,
+      "recordName" : "vs.54000000-0000-4000-8000-000000000001",
+      "systemFields" : "c3lzdGVtLWZpZWxkczp2cy41NDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDE=",
+      "typeRaw" : "VoiceSample",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"body\":\"c39bfcd7e565f1f78a8cc88a013ee51746380e600a453a4e73d55ba5b95e0cf9\"}",
+      "entityID" : "54000000-0000-4000-8000-000000000002",
+      "pendingRaw" : 0,
+      "recordName" : "vs.54000000-0000-4000-8000-000000000002",
+      "systemFields" : "c3lzdGVtLWZpZWxkczp2cy41NDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDI=",
+      "typeRaw" : "VoiceSample",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"body\":\"c2702612826b860491916241a01014f7409f2009dfa8efa006cb4a5ff4a939f8\",\"~mustMerge\":\"1\"}",
+      "entityID" : "54000000-0000-4000-8000-000000000003",
+      "pendingRaw" : 1,
+      "recordName" : "vs.54000000-0000-4000-8000-000000000003",
+      "systemFields" : "c3lzdGVtLWZpZWxkczp2cy41NDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDM=",
+      "typeRaw" : "VoiceSample",
+      "updatedAt" : "2026-11-21T08:45:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"body\":\"a4bfa9a79341dcafd2fc7dd27b177526f45cb98ffd57f113e242c18218742076\"}",
+      "entityID" : "54000000-0000-4000-8000-000000000004",
+      "pendingRaw" : 0,
+      "recordName" : "vs.54000000-0000-4000-8000-000000000004",
+      "systemFields" : "c3lzdGVtLWZpZWxkczp2cy41NDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwMDQ=",
+      "typeRaw" : "VoiceSample",
+      "updatedAt" : "2026-11-21T08:30:00Z"
+    },
+    {
+      "baseHashesJSON" : "{\"body\":\"ad724e55a9324ed669db7cdecafc1aef25e9ba9e806aa210f05f99b22d4fef4a\"}",
+      "entityID" : "54000000-0000-4000-8000-000000000099",
+      "pendingRaw" : 2,
+      "recordName" : "vs.54000000-0000-4000-8000-000000000099",
+      "systemFields" : "c3lzdGVtLWZpZWxkczp2cy41NDAwMDAwMC0wMDAwLTQwMDAtODAwMC0wMDAwMDAwMDAwOTk=",
+      "typeRaw" : "VoiceSample",
+      "updatedAt" : "2026-11-21T08:50:00Z"
+    }
+  ]
+}

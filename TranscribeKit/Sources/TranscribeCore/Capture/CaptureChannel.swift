@@ -57,12 +57,29 @@ public enum CaptureChannel {
 
 /// How a recording was captured: the hardware and the input route. Log-only (§6.1): it never changes matching.
 /// Stored as JSON in `Recording.captureDetailJSON`; `input` is also copied to each sample's `captureInput`.
+///
+/// `sources` and `outputRoute` (Mac audio, 2026-11-26) are optional and log-only too. Both are nil for a
+/// microphone-only recording, and nil keys are left out of the JSON, so a microphone-only detail encodes byte for
+/// byte as it did before they existed (and builds that do not know them ignore them when decoding).
 public struct CaptureDetail: Codable, Sendable, Equatable {
     /// Values of `input`.
     public enum Input {
         public static let builtInMic = "builtInMic", headsetMic = "headsetMic", bluetoothHFP = "bluetoothHFP"
         public static let usbAudio = "usbAudio", continuity = "continuity", aggregate = "aggregate", virtual = "virtual"
         public static let imported = "imported", unknown = "unknown", fake = "fake"
+        /// Mac audio only (the system output, through a process tap), and the microphone mixed with Mac audio.
+        public static let systemAudio = "systemAudio", micAndSystem = "micAndSystem"
+    }
+
+    /// Values of `sources`: what a recording captured (`CaptureSources.detailValue`). nil means "mic".
+    public enum Sources {
+        public static let mic = "mic", system = "system", both = "both"
+    }
+
+    /// Values of `outputRoute`: where the Mac's sound was playing while Mac audio was recorded (log-only).
+    public enum OutputRoute {
+        public static let builtInSpeaker = "builtInSpeaker", headphones = "headphones", bluetooth = "bluetooth"
+        public static let other = "other"
     }
 
     public var hardwareModel: String          // "iPhone15,4", "Mac15,3"
@@ -70,12 +87,18 @@ public struct CaptureDetail: Codable, Sendable, Equatable {
     public var inputName: String?             // device name (never exported to the matching log)
     public var inputModelUID: String?         // macOS kAudioDevicePropertyModelUID / iOS port uid
     public var routeChanged: Bool             // input changed during the recording
+    public var sources: String?               // one of `Sources`; nil = microphone only (log-only)
+    public var outputRoute: String?           // one of `OutputRoute`; only when Mac audio was recorded (log-only)
 
     public init(hardwareModel: String, input: String?, inputName: String? = nil, inputModelUID: String? = nil,
-                routeChanged: Bool = false) {
+                routeChanged: Bool = false, sources: String? = nil, outputRoute: String? = nil) {
         self.hardwareModel = hardwareModel; self.input = input; self.inputName = inputName
         self.inputModelUID = inputModelUID; self.routeChanged = routeChanged
+        self.sources = sources; self.outputRoute = outputRoute
     }
+
+    /// What the recording captured; a missing or unknown `sources` reads as the microphone.
+    public var captureSources: CaptureSources { CaptureSources(detailValue: sources) }
 
     /// Compact JSON with sorted keys (deterministic, so the same detail always gives the same string).
     public func json() -> String {

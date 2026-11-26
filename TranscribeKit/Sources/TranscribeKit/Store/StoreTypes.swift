@@ -22,6 +22,9 @@ public enum SampleSkipReason: Sendable, Equatable {
     case tooLittleSpeech(seconds: Double)
     case noVector
     case duplicate
+    /// The speaker was heard on both the microphone and Mac audio (`SpeakerSource.mixed`): the name is saved, but
+    /// nothing is learned from that recording.
+    case mixedSource
 }
 public struct NameResult: Sendable, Equatable {
     public var profileID: UUID?

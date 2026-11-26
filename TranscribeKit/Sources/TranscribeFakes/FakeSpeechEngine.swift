@@ -164,6 +164,7 @@ public actor FakeSpeechEngine: SpeechEngine {
     // MARK: Capture
 
     public func startRecording(_ request: RecordingRequest) async throws -> any LiveRecording {
+        guard request.sources == .microphone || systemAudioAvailable else { throw EngineError.sourceUnavailable }
         guard mic == .granted else { throw EngineError.microphoneDenied }
         callCounts["startRecording", default: 0] += 1
         let session = FakeLiveRecording(script: script, speed: speed, request: request)

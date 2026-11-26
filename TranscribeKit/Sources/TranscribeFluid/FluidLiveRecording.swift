@@ -269,6 +269,11 @@ public actor FluidLiveRecording: LiveRecording {
             await end(.mediaServicesReset)
         case .failed(let message):
             await end(.failed(message))
+        case .systemAudioSilent:
+            eventContinuation.yield(.notice(.systemAudioSilent))
+        case .systemAudioLost:
+            // Both mode: the microphone carries on. (A Mac-audio-only source reports `.routeLost` instead.)
+            eventContinuation.yield(.notice(.systemAudioLost))
         }
     }
 

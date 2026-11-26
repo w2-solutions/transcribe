@@ -16,13 +16,29 @@ public struct ProfileEvidence: Sendable, Codable, Equatable {
     /// Nil in v1 traces.
     public var otherChannelTrustedCount: Int?
 
+    // Version 3 (sound-group scoring, decision D3). All nil in v1 and v2 traces and when groups are off.
+    /// The auto score A: the best group score over the groups on the probe's channel with a trusted member.
+    public var autoScore: Float?
+    /// Sound groups of the probe's dimension on the probe's channel.
+    public var groupCount: Int?
+    /// Members of the winning group (the one that gave `autoScore`).
+    public var groupSize: Int?
+    /// Trusted members of the winning group.
+    public var groupTrustedCount: Int?
+    /// Shadow only, never used to decide: A under rule S1, where a one-sample group borrows its second place from
+    /// the rest of the channel, logged so S2 (the rule in use) can be compared on real data.
+    public var singletonBorrowShadow: Float?
+
     public init(profileID: UUID, score: Float, trustedTop: Float?, trustedScore: Float?, trustedCount: Int,
                 untrustedCount: Int, askOnly: Bool, negativeMax: Float?, blocked: Bool, cohortMax: Float?,
-                otherChannelTrustedCount: Int? = nil) {
+                otherChannelTrustedCount: Int? = nil, autoScore: Float? = nil, groupCount: Int? = nil,
+                groupSize: Int? = nil, groupTrustedCount: Int? = nil, singletonBorrowShadow: Float? = nil) {
         self.profileID = profileID; self.score = score; self.trustedTop = trustedTop; self.trustedScore = trustedScore
         self.trustedCount = trustedCount; self.untrustedCount = untrustedCount; self.askOnly = askOnly
         self.negativeMax = negativeMax; self.blocked = blocked; self.cohortMax = cohortMax
         self.otherChannelTrustedCount = otherChannelTrustedCount
+        self.autoScore = autoScore; self.groupCount = groupCount; self.groupSize = groupSize
+        self.groupTrustedCount = groupTrustedCount; self.singletonBorrowShadow = singletonBorrowShadow
     }
 }
 
@@ -39,8 +55,14 @@ public enum TraceKind: String, Sendable, Codable { case auto, ask, unknown }
 ///
 /// Version 2 (§7) adds `probeChannel` and `ProfileEvidence.otherChannelTrustedCount`; both are optional, so v1 JSON
 /// still decodes.
+///
+/// Version 3 (sound groups and Mac audio, 2026-11-26) adds `speakerSource`, `systemShare` and the group fields of
+/// `ProfileEvidence`; all optional and left out of the JSON when nil, so v1 and v2 JSON still decode and a trace
+/// without them encodes as before. The matcher writes version 2 until it fills them (`currentVersion`).
 public struct MatchTrace: Sendable, Codable, Equatable {
     public static let currentVersion = 2
+    /// The version whose fields this type can hold.
+    public static let groupsVersion = 3
 
     public var version: Int
     public var key: SpeakerKey
@@ -60,17 +82,24 @@ public struct MatchTrace: Sendable, Codable, Equatable {
     public var askMin: Float
     /// The capture channel of the probe's recording (v2); nil when unknown and in v1 traces.
     public var probeChannel: String?
+    /// The speaker's `SpeakerSource` raw value ("mic", "system", "mixed") (v3); nil in older traces and for a
+    /// microphone-only recording.
+    public var speakerSource: String?
+    /// The share of the speaker's clean speech heard on Mac audio, rounded to 2 places (v3); nil unless attributed.
+    public var systemShare: Float?
 
     public init(version: Int = MatchTrace.currentVersion, key: SpeakerKey, cleanSeconds: Double, kind: TraceKind,
                 profileID: UUID?, reason: String, score: Float?, runnerUp: Float?, margin: Float?,
                 profiles: [ProfileEvidence], cohortSize: Int, cohortTopMean: Float?, cohortTopStd: Float?,
-                autoLabelMin: Float, autoLabelMargin: Float, askMin: Float, probeChannel: String? = nil) {
+                autoLabelMin: Float, autoLabelMargin: Float, askMin: Float, probeChannel: String? = nil,
+                speakerSource: String? = nil, systemShare: Float? = nil) {
         self.version = version; self.key = key; self.cleanSeconds = cleanSeconds; self.kind = kind
         self.profileID = profileID; self.reason = reason; self.score = score; self.runnerUp = runnerUp
         self.margin = margin; self.profiles = profiles; self.cohortSize = cohortSize
         self.cohortTopMean = cohortTopMean; self.cohortTopStd = cohortTopStd
         self.autoLabelMin = autoLabelMin; self.autoLabelMargin = autoLabelMargin; self.askMin = askMin
         self.probeChannel = probeChannel
+        self.speakerSource = speakerSource; self.systemShare = systemShare
     }
 }
 

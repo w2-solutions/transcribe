@@ -1,5 +1,6 @@
 import CryptoKit
 import Foundation
+import TranscribeCore
 
 /// The record mapping (§8.2): which fields each record type carries, grouped into the units that merge together.
 ///
@@ -212,8 +213,8 @@ extension SyncValue {
     static func floats(_ values: [Float]) -> SyncValue { .bytes(packFloats(values)) }
 
     /// Milliseconds since 1970, rounded to the nearest millisecond (so `Date(ms)` round-trips exactly).
-    static func millis(_ d: Date) -> Int64 { Int64((d.timeIntervalSince1970 * 1000).rounded()) }
-    static func dateFrom(millis: Int64) -> Date { Date(timeIntervalSince1970: Double(millis) / 1000) }
+    static func millis(_ d: Date) -> Int64 { SyncMillis.millis(d) }
+    static func dateFrom(millis: Int64) -> Date { SyncMillis.date(millis: millis) }
 
     static func packFloats(_ values: [Float]) -> Data {
         var data = Data(capacity: values.count * 4)

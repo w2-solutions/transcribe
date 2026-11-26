@@ -417,7 +417,7 @@ public final class NameSpeakerModel {
     public static func note(for result: NameResult?) -> String? {
         switch result?.skipReason {
         case .tooLittleSpeech: "Name saved. Not enough clear speech to remember the voice yet."
-        case .duplicate, .rememberOff, .noVector, nil: nil
+        case .duplicate, .rememberOff, .noVector, .mixedSource, nil: nil
         }
     }
 
