@@ -227,4 +227,58 @@ struct LibraryReaderTests {
         #expect(named.total == 3)
         #expect(named.items.first { $0.id == Seeds.ID.recordingB }?.snippet == nil)
     }
+
+    // MARK: Privacy
+
+    /// Voice sample group labels ("Close", "On speaker") are the user's notes on a voice and stay out of Claude's
+    /// reach: no reply of either tool names one, and searching for one, as words or as a speaker, finds nothing.
+    @Test func groupLabelsNeverReachClaude() async throws {
+        defer { try? FileManager.default.removeItem(at: paths.root) }
+        try seed(.voiceGroups)
+        let context = container.mainContext
+        let label = try #require(try context.fetch(FetchDescriptor<VoiceGroupLabel>()).first)
+        #expect(label.text == "Close")
+        // Words nothing else in the library uses ("close" could be in a transcript).
+        let text = "Quokka balcony"
+        label.text = text
+        try context.save()
+        let forbidden = [text, "Quokka", "quokka", "balcony", label.id.uuidString, label.anchorVectorData.base64EncodedString()]
+
+        let server = MCPServer(version: "1", library: reader, timeZone: { TimeZone(identifier: "Australia/Sydney")! })
+        var replies = [await Self.reply(server, 1, "tools/list")]
+        replies.append(await Self.reply(server, 2, "tools/call", ["name": "list_recordings", "arguments": ["limit": 50]]))
+        for (i, arguments) in [["query": JSONValue.string(text)], ["query": "quokka"], ["speaker": "balcony"]].enumerated() {
+            let reply = await Self.reply(server, Int64(3 + i), "tools/call",
+                                         ["name": "list_recordings", "arguments": .object(arguments)])
+            #expect(reply.hasPrefix("No finished recordings match."), "a search for the label found \(reply)")
+            replies.append(reply)
+        }
+        #expect(try await all(MCPRecordingQuery(terms: ["quokka"])).total == 0)
+        #expect(try await all(MCPRecordingQuery(speaker: "balcony")).total == 0)
+
+        let ids = try await all(MCPRecordingQuery(limit: 50)).items.map(\.id)
+        #expect(Set(ids).isSuperset(of: [Seeds.ID.recordingT1, Seeds.ID.recordingT2]))
+        for (i, id) in ids.enumerated() {
+            replies.append(await Self.reply(server, Int64(10 + i), "tools/call",
+                                            ["name": "get_transcript", "arguments": ["recording_id": .string(id.uuidString)]]))
+        }
+        // Tom's recordings were read (the check is not vacuous): his name is there, his group label is not.
+        #expect(replies.contains { $0.contains("] Tom") })
+        for reply in replies {
+            for word in forbidden { #expect(!reply.contains(word), "a reply contains \(word)") }
+        }
+    }
+
+    /// The text of a JSON-RPC call's result (a tool's first content block, or the whole reply for any other method).
+    static func reply(_ server: MCPServer, _ id: Int64, _ method: String, _ params: JSONValue? = nil) async -> String {
+        var body: [String: JSONValue] = ["jsonrpc": "2.0", "id": .int(id), "method": .string(method)]
+        if let params { body["params"] = params }
+        guard case .message(let data) = await server.handle(JSONValue.object(body).encoded()) else { return "" }
+        let raw = String(decoding: data, as: UTF8.self)
+        if case .array(let content)? = (try? JSONValue.decode(data))?["result"]?["content"],
+           let text = content.first?["text"]?.string {
+            return text + "\n" + raw
+        }
+        return raw
+    }
 }

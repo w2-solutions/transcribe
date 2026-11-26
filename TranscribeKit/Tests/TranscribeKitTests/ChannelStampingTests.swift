@@ -105,6 +105,28 @@ struct ChannelStampingTests {
         #expect(h.store.storedDeviceID() == "some-other-device")   // the plist is never rewritten once present
     }
 
+    /// A seed does not know the run's channel, so its label has none: it takes this device's at launch. A label with
+    /// no text (a placeholder) or with a channel is left alone.
+    @Test func seededLabelTakesLocalChannel() throws {
+        let h = try WP3Harness(channel: CaptureChannel.mac)
+        defer { h.cleanup() }
+        try h.seed(.library)
+        let karan = try #require(try h.profile(named: "Karan"))
+        let seeded = try h.insertLabel(karan, "Close", on: karan.samples, channel: "")
+        let placeholder = try h.insertLabel(karan, "", on: karan.samples, channel: "")
+        let ipad = try h.insertLabel(karan, "Far", on: karan.samples, channel: CaptureChannel.ipad)
+        let editedAt = seeded.editedAt, anchor = seeded.anchorVectorData
+
+        #expect(try h.store.stampCaptureChannels() == 1)
+        #expect(seeded.captureChannel == CaptureChannel.mac && seeded.editedAt == editedAt && seeded.anchorVectorData == anchor)
+        #expect(placeholder.captureChannel == "" && ipad.captureChannel == CaptureChannel.ipad)
+        #expect(!h.context.hasChanges)
+        // It now shows on Karan's group here, and stamping again changes nothing.
+        let ref = try h.groupRef(karan, holding: try #require(karan.samples.first))
+        #expect(ref.channel == CaptureChannel.mac && ref.shownLabelID == seeded.id)
+        #expect(try h.store.stampCaptureChannels() == 0)
+    }
+
     // MARK: New rows
 
     @Test func newRecordingsTakeTheLocalChannelAndKeepTheirDetail() throws {

@@ -85,9 +85,28 @@ public struct SampleCandidate: Sendable, Equatable, Identifiable {
         self.recordingTitle = recordingTitle; self.cleanSeconds = cleanSeconds
     }
 }
+/// One sound group of a voice's samples as the screen drew it, handed back with a label action so the store can check
+/// that the group is still the same (`StoreError.groupChanged` otherwise). Groups are derived and never stored.
+public struct SampleGroupRef: Sendable, Hashable {
+    public let profileID: UUID
+    public let channel: String
+    /// The group's oldest member (`SampleGrouping.Group.key`).
+    public let key: UUID
+    /// Oldest first, as `SampleGrouping.Group.memberIDs`.
+    public let memberIDs: [UUID]
+    /// The label the group showed, nil when it showed none.
+    public let shownLabelID: UUID?
+    public init(profileID: UUID, channel: String, key: UUID, memberIDs: [UUID], shownLabelID: UUID?) {
+        self.profileID = profileID; self.channel = channel; self.key = key
+        self.memberIDs = memberIDs; self.shownLabelID = shownLabelID
+    }
+}
+
 public enum StoreError: Error, Sendable, Equatable {
     case notFound(String)
     case invalidName
     case invariant(String)
     case notImplemented(String)
+    /// The samples or labels of a voice changed since the screen was drawn: the group is not the one the user saw.
+    case groupChanged
 }

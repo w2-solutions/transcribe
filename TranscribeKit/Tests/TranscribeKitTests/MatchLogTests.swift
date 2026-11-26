@@ -48,6 +48,36 @@ struct MatchLogTests {
         #expect(decoded.recordings.filter { $0.id != id }.allSatisfy { $0.speakers.allSatisfy { $0.trace == nil } })
     }
 
+    /// Voice sample group labels are the user's own words about a voice: the log never carries their text, ids or
+    /// anchors, and stays at version 2 (it gains no group fields).
+    @Test func logNeverContainsGroupLabels() throws {
+        let h = try WP3Harness()
+        defer { h.cleanup() }
+        try h.seed(.voiceGroups)
+        let tom = try #require(try h.profile(named: "Tom"))
+        // The seeded "Close" label, renamed to words nothing else in the library uses, and one more saved through the
+        // store on Group 2 (sample 2).
+        let seeded = try #require(try h.labels().first)
+        seeded.text = "Quokka balcony"
+        try h.context.save()
+        try h.store.setGroupLabel(try h.groupRef(tom, holding: tom.sortedSamples[2]), text: "Wombat speakerphone")
+        let labels = try h.labels()
+        #expect(Set(labels.map(\.text)) == ["Quokka balcony", "Wombat speakerphone"])
+
+        let log = try h.store.matchingLog()
+        var forbidden = ["Quokka", "balcony", "Wombat", "speakerphone", "anchor", "groupLabel"]
+        for label in labels {
+            forbidden += [label.text, label.id.uuidString, label.anchorVectorData.base64EncodedString()]
+        }
+        for word in forbidden { #expect(!log.contains(word), "log contains \(word)") }
+
+        let decoded = try MatchLog.decoder().decode(MatchLog.self, from: Data(log.utf8))
+        #expect(decoded.version == 2)
+        // Tom is in the log (the check is not vacuous), with his ten samples counted as before.
+        let logged = try #require(decoded.profiles.first { $0.id == Seeds.ID.tom })
+        #expect(logged.samples.trusted + logged.samples.short + logged.samples.automatic == 10)
+    }
+
     @Test func logListsAtMostFiftyRecordings() throws {
         let h = try WP3Harness()
         defer { h.cleanup() }

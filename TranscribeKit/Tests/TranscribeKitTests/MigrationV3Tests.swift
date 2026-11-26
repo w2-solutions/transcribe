@@ -6,10 +6,11 @@ import TranscribeCore
 @testable import TranscribeFakes
 @testable import TranscribeKit
 
-/// Opens the committed V2 library (`Fixtures/V2Library`, written by `V2FixtureWriter`; the owner's phone runs V2)
-/// and the V1 library under schema V3. Nothing may be lost, the new channel fields start empty, and the one-time
-/// pre-V3 backup is taken exactly once.
-@Suite("Store migration to V3")
+/// Opens the committed V2 library (`Fixtures/V2Library`, written by `V2FixtureWriter`; the owner's phone ran V2)
+/// and the V1 library under the current schema, through V3. Nothing may be lost, the V3 channel fields start empty,
+/// and the one-time backup is taken exactly once. The current version's own checks (V4: no labels, the marker, a
+/// fresh install) are in `MigrationV4Tests`.
+@Suite("Store migration through V3")
 @MainActor
 struct MigrationV3Tests {
     typealias Manifest = V2FixtureWriter.Manifest
@@ -37,13 +38,9 @@ struct MigrationV3Tests {
         return (root, root.appendingPathComponent("Library.store"), manifest)
     }
 
-    static func v3VersionHashes() throws -> [String: Data] {
-        try MigrationTests.versionHashes(of: Schema(versionedSchema: TranscribeSchemaV3.self))
-    }
+    // MARK: V2 → V3 → current
 
-    // MARK: V2 → V3
-
-    @Test func v2FixtureOpensUnderV3() throws {
+    @Test func v2FixtureOpensWithEmptyV3Fields() throws {
         let (root, storeURL, expected) = try copyV2Fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         // The copy really is a V2 store (not one a later schema already touched).
@@ -53,7 +50,7 @@ struct MigrationV3Tests {
             let container = try ModelContainerFactory.make(inMemory: false, url: storeURL)
             let context = container.mainContext
 
-            // Every manifest row round-trips through the current (V3) types.
+            // Every manifest row round-trips through the current types.
             let readBack = try Self.manifest(context)
             #expect(readBack.counts == expected.counts)
             #expect(readBack.stages == expected.stages)
@@ -90,17 +87,17 @@ struct MigrationV3Tests {
             }
         }
 
-        // The store on disk is now a V3 store.
-        #expect(try MigrationTests.versionHashes(at: storeURL) == (try Self.v3VersionHashes()))
+        // The store on disk is now a store of the current schema.
+        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV4Tests.v4VersionHashes()))
         let reopened = try ModelContainerFactory.make(inMemory: false, url: storeURL)
         let again = try Self.manifest(reopened.mainContext)
         #expect(again.recordings == expected.recordings && again.speakers == expected.speakers)
         #expect(try reopened.mainContext.fetch(FetchDescriptor<VoiceSample>()).allSatisfy { $0.captureChannel == CaptureChannel.iphone })
     }
 
-    // MARK: V1 → V3
+    // MARK: V1 → V3 → current
 
-    @Test func v1FixtureOpensUnderV3() throws {
+    @Test func v1FixtureOpensWithEmptyV3Fields() throws {
         let (root, storeURL, m) = try MigrationTests().copyFixture()
         defer { try? FileManager.default.removeItem(at: root) }
         do {
@@ -126,12 +123,13 @@ struct MigrationV3Tests {
             #expect(try store.stampCaptureChannels() == m.counts.recordings + m.counts.samples)
             #expect(try context.fetchCount(FetchDescriptor<VoiceSample>()) == m.counts.samples)
         }
-        #expect(try MigrationTests.versionHashes(at: storeURL) == (try Self.v3VersionHashes()))
+        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV4Tests.v4VersionHashes()))
     }
 
     // MARK: Backup and marker
 
-    @Test func backupIsTakenOnceBeforeTheFirstV3Open() throws {
+    /// A phone that still runs V2 upgrades straight to the current schema: one backup, of the V2 store as it was.
+    @Test func v2StoreIsBackedUpOnceBeforeTheUpgrade() throws {
         let (root, storeURL, _) = try copyV2Fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let fm = FileManager.default
@@ -144,8 +142,9 @@ struct MigrationV3Tests {
 
         let backup = ModelContainerFactory.backupURL(storeURL: storeURL)
         let marker = ModelContainerFactory.markerURL(storeURL: storeURL)
-        #expect(backup.lastPathComponent == "Library.pre-v3-backup.store" && marker.lastPathComponent == "Library.schema-v3")
-        #expect(ModelContainerFactory.currentVersion == 3)
+        let current = ModelContainerFactory.currentVersion
+        #expect(backup.lastPathComponent == "Library.pre-v\(current)-backup.store" && marker.lastPathComponent == "Library.schema-v\(current)")
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("Library.schema-v3").path))
         #expect(!fm.fileExists(atPath: backup.path) && !fm.fileExists(atPath: marker.path))
 
         do {
@@ -157,10 +156,10 @@ struct MigrationV3Tests {
         #expect(fm.fileExists(atPath: ModelContainerFactory.backupURL(storeURL: storeURL, suffix: "-shm").path))
         // The backup is the V2 store as it was, still openable by a V2 build.
         #expect(try MigrationTests.versionHashes(at: backup) == (try V2FixtureWriter.v2VersionHashes()))
-        #expect(try String(contentsOf: marker, encoding: .utf8) == "3.0.0\n")
+        #expect(try String(contentsOf: marker, encoding: .utf8) == "\(current).0.0\n")
         let backupAfterFirst = try Data(contentsOf: backup)
 
-        // Opening again (now a V3 store) takes no new backup.
+        // Opening again (now a store of the current schema) takes no new backup.
         do {
             let container = try ModelContainerFactory.make(inMemory: false, url: storeURL)
             #expect(try container.mainContext.fetchCount(FetchDescriptor<Recording>()) == 6)
@@ -171,22 +170,9 @@ struct MigrationV3Tests {
         #expect(try Data(contentsOf: v2Backup) == Data("old v1 backup".utf8))
     }
 
-    @Test func freshInstallTakesNoBackup() throws {
-        let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("v3-fresh-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fm.removeItem(at: root) }
-        let paths = AppPaths(root: root)
-        try paths.prepare()
-        do { _ = try ModelContainerFactory.make(inMemory: false, url: paths.storeURL) }
-        #expect(fm.fileExists(atPath: ModelContainerFactory.markerURL(storeURL: paths.storeURL).path))
-        #expect(!fm.fileExists(atPath: ModelContainerFactory.backupURL(storeURL: paths.storeURL).path))
-        #expect(!fm.fileExists(atPath: ModelContainerFactory.backupURL(storeURL: paths.storeURL, suffix: "-wal").path))
-        #expect(try MigrationTests.versionHashes(at: paths.storeURL) == (try Self.v3VersionHashes()))
-    }
-
     // MARK: Manifest read with the current types
 
-    /// The same rows `V2FixtureWriter.readManifest` reads with the V2 types, read through the current (V3) aliases.
+    /// The same rows `V2FixtureWriter.readManifest` reads with the V2 types, read through the current aliases.
     static func manifest(_ context: ModelContext) throws -> Manifest {
         let recordings = try context.fetch(FetchDescriptor<Recording>()).sorted { $0.id.uuidString < $1.id.uuidString }
         let speakers = try context.fetch(FetchDescriptor<RecordingSpeaker>()).sorted { $0.id.uuidString < $1.id.uuidString }
