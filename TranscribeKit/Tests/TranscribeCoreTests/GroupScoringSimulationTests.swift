@@ -14,13 +14,21 @@ struct GroupScoringSimulationTests {
     /// A sibling's cosine to each trusted sample is N(0.38, 0.07), independently (the model of
     /// `siblingFalseAutoRateAtTheCap`). With no runner-up, the rate is how often the auto score reaches 0.55.
     /// Groups are imposed (the model has no sample-to-sample cosines): `sizes` lists the group sizes.
-    private func independentRate(sizes: [Int], trials: Int = 20_000, seed: UInt64 = 1) -> (today: Double, groups: Double, shadow: Double) {
+    ///
+    /// `today` is the matcher before groups with today's cap: it never holds more than `todayCap` (12) samples per
+    /// (profile, channel), so a library over 12 is scored on 12 of them (review 2026-11-26: the earlier table compared
+    /// 20 singletons against a groupless score over 20 samples, a library only D4's ceiling makes). `uncapped` is that
+    /// groupless score over every sample, the hypothetical "groups off with the ceiling of 20".
+    private func independentRate(sizes: [Int], todayCap: Int = 12, trials: Int = 20_000,
+                                 seed: UInt64 = 1) -> (today: Double, groups: Double, shadow: Double, uncapped: Double) {
         var rng = SplitMix64(seed: seed)
-        var today = 0, grouped = 0, shadow = 0
+        var today = 0, grouped = 0, shadow = 0, uncapped = 0
         for _ in 0..<trials {
             let cosines = sizes.map { n in (0..<n).map { _ in 0.38 + 0.07 * TV.gaussian(&rng) } }
             let all = cosines.flatMap { $0 }
-            if let w = VoiceMatcher.pairScore(trusted: all, untrusted: [], topK: 2), atLeast(w, 0.55) { today += 1 }
+            if let w = VoiceMatcher.pairScore(trusted: Array(all.prefix(todayCap)), untrusted: [], topK: 2),
+               atLeast(w, 0.55) { today += 1 }
+            if let w = VoiceMatcher.pairScore(trusted: all, untrusted: [], topK: 2), atLeast(w, 0.55) { uncapped += 1 }
             let a = cosines.compactMap { VoiceMatcher.pairScore(trusted: $0, untrusted: [], topK: 2) }.max()!
             if atLeast(a, 0.55) { grouped += 1 }
             // S1: a one-sample group borrows its second place from the rest.
@@ -31,7 +39,7 @@ struct GroupScoringSimulationTests {
             if atLeast(s1, 0.55) { shadow += 1 }
         }
         let t = Double(trials)
-        return (Double(today) / t, Double(grouped) / t, Double(shadow) / t)
+        return (Double(today) / t, Double(grouped) / t, Double(shadow) / t, Double(uncapped) / t)
     }
 
     @Test func independentCosinesModel() {
@@ -42,18 +50,21 @@ struct GroupScoringSimulationTests {
             ("12 singletons", Array(repeating: 1, count: 12)),
             ("20 singletons (ceiling)", Array(repeating: 1, count: 20)),
         ]
-        var results: [String: (today: Double, groups: Double, shadow: Double)] = [:]
+        var results: [String: (today: Double, groups: Double, shadow: Double, uncapped: Double)] = [:]
         for (name, sizes) in rows {
             let r = independentRate(sizes: sizes)
             results[name] = r
-            print(String(format: "SIMULATION independent %@: today %.4f, groups (S2) %.4f, S1 shadow %.4f",
-                         name, r.today, r.groups, r.shadow))
+            print(String(format: "SIMULATION independent %@: today (at most 12 samples) %.4f, groups (S2) %.4f, S1 shadow %.4f, groupless over all %d samples %.4f",
+                         name, r.today, r.groups, r.shadow, sizes.reduce(0, +), r.uncapped))
         }
-        // One group of 12 is exactly today's score; S1 is never looser than today.
+        // One group of 12 is exactly today's score; S1 is never looser than the groupless score over the same samples.
         #expect(results["1 group of 12"]!.today == results["1 group of 12"]!.groups)
-        for (_, r) in results { #expect(r.shadow <= r.today + 1e-9) }
-        // Today's rate at the cap (about 0.014, as the existing simulation says).
+        for (_, r) in results { #expect(r.shadow <= r.uncapped + 1e-9) }
+        // Today's rate at the cap (about 0.014, as the existing simulation says), and today never holds 20 samples:
+        // its rate for a person with 20 singletons is the rate at 12.
         #expect(abs(results["1 group of 12"]!.today - 0.014) < 0.005)
+        #expect(abs(results["20 singletons (ceiling)"]!.today - 0.014) < 0.005)
+        #expect(results["20 singletons (ceiling)"]!.uncapped > results["20 singletons (ceiling)"]!.today)
         // S2's worst cases: about 1 − Φ(2.43)^n per probe with no runner-up (n singletons).
         #expect(abs(results["12 singletons"]!.groups - 0.087) < 0.01)
         #expect(abs(results["20 singletons (ceiling)"]!.groups - 0.141) < 0.012)
@@ -126,14 +137,16 @@ struct GroupScoringSimulationTests {
                                  needsResample: false, sampleIDs: samples.indices.map { TV.uuid(0x5000 + salt * 0x100 + $0) },
                                  addedAtMillis: samples.indices.map { Int64($0) })
             }
-            var profiles = [candidate(TV.liamID, samples, salt: 0)]
-            if setting == .named {
-                profiles.append(candidate(TV.karanID, (0..<2).map { _ in Voices.voice(siblingIdentity, environments[0], &rng) },
-                                          salt: 1))
-            }
+            let namedSibling = setting == .named
+                ? candidate(TV.karanID, (0..<2).map { _ in Voices.voice(siblingIdentity, environments[0], &rng) }, salt: 1)
+                : nil
             for groups in [false, true] {
                 var policy = MatchPolicy.default
                 policy.groupScoring = groups
+                // Today's matcher never holds more than 12 samples per (profile, channel): over 12 it is scored on the
+                // first 12 (those include the probes' environment 0). With groups, the ceiling of 20 keeps them all.
+                let held = groups ? samples : Array(samples.prefix(12))
+                let profiles = [candidate(TV.liamID, held, salt: 0)] + (namedSibling.map { [$0] } ?? [])
                 for (key, vector) in [("S", siblingProbe), ("P", personProbe), ("L", personLastProbe)] {
                     let probe = SpeakerProbe(key: key, vector: vector, cleanSeconds: 30, rejectedProfileIDs: [], channel: "mac")
                     let d = VoiceMatcher.decide(probes: [probe], profiles: profiles, modelKey: "sim", policy: policy,
@@ -163,14 +176,18 @@ struct GroupScoringSimulationTests {
         ("20 environments x 1 (ceiling)", Array(repeating: 1, count: 20)),
     ]
 
-    /// The full table takes minutes in a Debug build, so it runs only with `TRANSCRIBE_SIMULATIONS=full`; by default
-    /// a short run checks that the model still works.
+    /// The full table takes minutes in a Debug build, so it runs only with `TRANSCRIBE_SIMULATIONS=full`. By default a
+    /// shorter run (fixed seeds) covers one environment and 12 environments × 1, with the sibling unnamed and named,
+    /// and bounds the rates loosely, so a regression either way fails `swift test` (review 2026-11-26). The named
+    /// sibling here wins its own probe outright, so the symmetric runner-up itself is pinned by
+    /// `GroupScoringTests.theRunnerUpIsSymmetric` and `theRunnerUpIsSymmetricOverRandomScores`.
     @Test func environmentModel() {
         let full = ProcessInfo.processInfo.environment["TRANSCRIBE_SIMULATIONS"] == "full"
-        let trials = full ? 1_000 : 40
-        let layouts = full ? Self.layouts : [Self.layouts[0], Self.layouts[3]]
-        for (i, (name, layout)) in layouts.enumerated() {
-            for (j, setting) in SiblingSetting.allCases.enumerated() where full || setting == .unknown {
+        let trials = full ? 1_000 : 200
+        let picked = full ? Array(Self.layouts.indices) : [0, 3]
+        for i in picked {
+            let (name, layout) = Self.layouts[i]
+            for (j, setting) in SiblingSetting.allCases.enumerated() where full || setting != .cohort {
                 let r = simulate(perEnvironment: layout, sibling: setting, trials: trials, seed: UInt64(100 + i * 10 + j))
                 print(String(format: "SIMULATION environments %@, sibling %@ (%d trials): sibling auto-labelled as P today %.4f groups %.4f, asked today %.4f groups %.4f; P in environment 1 auto today %.4f groups %.4f; P in the last environment auto today %.4f groups %.4f",
                              name, setting.rawValue, trials,
@@ -183,6 +200,11 @@ struct GroupScoringSimulationTests {
                     // The symmetric runner-up: a named sibling's own score stops P's one-sample groups too.
                     #expect(r.sibling[true]!.autoRate <= r.sibling[false]!.autoRate + 0.01)
                 }
+                // Loose bounds (the full table: at most 3.4% for an unnamed sibling, 0% named, 99.3–100% for P).
+                #expect(r.sibling[true]!.autoRate <= 0.06, "\(name), \(setting.rawValue): sibling auto with groups")
+                #expect(r.sibling[false]!.autoRate <= 0.06, "\(name), \(setting.rawValue): sibling auto without groups")
+                #expect(r.person[true]!.autoRate >= 0.95, "\(name), \(setting.rawValue): P auto with groups")
+                #expect(r.person[false]!.autoRate >= 0.95, "\(name), \(setting.rawValue): P auto without groups")
             }
         }
     }

@@ -116,6 +116,23 @@ struct StreamAlignerTests {
         #expect(c.mic == chunk(1_600, 0.1) && c.system == chunk(1_600, 0))
     }
 
+    /// Review 2026-11-26: Mac audio that comes back after it was lost is placed by its host time again.
+    @Test func aRestoredStreamIsPlacedByItsHostTimeAgain() {
+        var a = StreamAligner()
+        var c = Collected()
+        c.add(a.push(.mic, chunk(800, 0.1), hostSeconds: 10.0))
+        c.add(a.push(.system, chunk(800, 0.2), hostSeconds: 10.0))
+        c.add(a.markLost(.system))
+        c.add(a.push(.mic, chunk(800, 0.1), hostSeconds: 10.05))   // 10.05–10.10: system filled with zeros
+        c.add(a.markRestored(.system))
+        #expect(!a.isLost(.system))
+        // Mac audio is back from 10.15 (a 50 ms gap after the zeros): the gap is filled, then its audio follows.
+        c.add(a.push(.system, chunk(800, 0.3), hostSeconds: 10.15))
+        c.add(a.push(.mic, chunk(1_600, 0.1), hostSeconds: 10.10))
+        #expect(c.mic == chunk(3_200, 0.1))
+        #expect(c.system == chunk(800, 0.2) + chunk(1_600, 0) + chunk(800, 0.3))
+    }
+
     @Test func aPauseLeavesNoZeros() {
         var a = StreamAligner()
         var c = Collected()

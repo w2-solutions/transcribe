@@ -25,8 +25,14 @@ enum MergePolicy {
         case keepLocalJoinSource
     }
 
-    /// The stored `captureSource` after joining two sides (nil reads as the microphone and stays nil when both are).
+    /// The stored `captureSource` after joining two sides. A missing value (nil) is unknown, not the microphone: a
+    /// speaker of a recording that captured Mac audio always stores its source ("mic" included), and every speaker of
+    /// a microphone-only recording stores nil, so nil against a value only comes from an older build (0.3.3 and
+    /// earlier drop the field) or a device that fetched the speaker before it upgraded. The known side is kept then;
+    /// only two values are joined.
     static func joinedSource(local: String?, server: String?) -> String? {
+        guard let local else { return server }
+        guard let server else { return local }
         let l = SpeakerSource(stored: local), s = SpeakerSource(stored: server)
         let joined = SpeakerSource.joined(l, s)
         return joined == l ? local : joined.rawValue

@@ -97,7 +97,8 @@ public final class RecorderController {
         var suspended = false
         do {
             try paths.prepare()
-            try store.createRecording(id: id, createdAt: now, audioFileName: fileName, source: .microphone)
+            try store.createRecording(id: id, createdAt: now, audioFileName: fileName, source: .microphone,
+                                      captureSources: sources)
             created = true
             await coordinator.suspendForCapture()
             suspended = true

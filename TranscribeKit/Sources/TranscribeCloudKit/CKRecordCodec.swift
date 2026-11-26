@@ -102,6 +102,7 @@ public struct CKRecordCodec: Sendable {
         let ck = record.systemFields.flatMap { Self.record(systemFields: $0, expecting: ckID) }
             ?? CKRecord(recordType: record.id.type.rawValue, recordID: ckID)
         let kinds = Self.kinds(record.id.type)
+        let added = SyncSchema.addedFields(record.id.type)
         for (name, value) in record.fields.sorted(by: { $0.key < $1.key }) {
             if name == SyncSchema.versionField {
                 ck[name] = Self.plainObject(value)
@@ -110,6 +111,12 @@ public struct CKRecordCodec: Sendable {
             switch value {
             case .asset(let data):
                 ck[name] = try writeAsset(data, recordName: record.id.recordName)
+            case .null where added.contains(name):
+                // A field added after its group was first agreed (V5 `captureSource`) is never sent as a clear:
+                // setting nil puts the key in `changedKeys()` and the save would delete the server's value. A device
+                // upgraded from a build without the field holds nil for records it fetched back then, so sending
+                // nil would wipe the source another device recorded. Nothing legitimately clears such a field.
+                continue
             case .null where kinds[name] == .asset:
                 ck[name] = nil
             default:

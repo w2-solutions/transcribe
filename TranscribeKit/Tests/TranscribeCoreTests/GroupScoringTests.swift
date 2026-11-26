@@ -175,13 +175,58 @@ struct GroupScoringTests {
         let liam2 = candidate([all[1], all[2]])
         let karan = candidate([all[3], all[4], all[5]], id: TV.karanID, name: "Karan", salt: 1)
         let (d, t) = try one(probe(all[0]), [liam2, karan])
-        #expect(d.isAsk && t.reason == "margin" && t.profileID == TV.liamID)
+        // Review 2026-11-26: W alone (against the groupless runner-up 0.38) would auto-label, so the trace says grouping
+        // caused the ask ("groupScore"), not an ordinary margin.
+        #expect(d.isAsk && t.reason == "groupScore" && t.profileID == TV.liamID)
         #expect(near(t.runnerUp, 0.66) && near(t.score, 0.73))
         let k = try #require(t.profiles.first { $0.profileID == TV.karanID })
         #expect(approx(k.score, 0.38) && near(k.groupBestScore, 0.66))
 
         let (off, offTrace) = try one(probe(all[0]), [liam2, karan], policy: groupsOff)
         #expect(off.isAuto && near(offTrace.runnerUp, 0.38))
+    }
+
+    /// The symmetric runner-up over random scores of `theRunnerUpIsSymmetric`'s shape (review 2026-11-26: the default
+    /// simulations never exercise it, because a named sibling there wins its own probe outright). Liam: one group of
+    /// two at a1, a2 → A = W = (a1 + a2) / 2. Karan: a far pair at k1, k2 and a sample alone at g → W_K = (g + max k) / 2,
+    /// G_K = g. With groups the runner-up is g; without, W_K.
+    @Test func theRunnerUpIsSymmetricOverRandomScores() throws {
+        var rng = SplitMix64(seed: 0x5E11)
+        var checked = 0, groupCaused = 0
+        for _ in 0..<200 {
+            let a1 = Double.random(in: 0.55...0.78, using: &rng), a2 = Double.random(in: 0.55...0.78, using: &rng)
+            let k1 = Double.random(in: 0.05...0.2, using: &rng), k2 = Double.random(in: 0.05...0.2, using: &rng)
+            let g = Double.random(in: 0.35...0.66, using: &rng)
+            let a = (a1 + a2) / 2, wK = (g + Swift.max(k1, k2)) / 2
+            // Skip draws within rounding of a threshold.
+            guard abs(a - 0.55) > 0.01, abs(a - g - 0.10) > 0.01, abs(a - wK - 0.10) > 0.01 else { continue }
+            let all = GV.vectors(6) { i, j in
+                switch (i, j) {
+                case (0, 1): return a1
+                case (0, 2): return a2
+                case (1, 2), (3, 4): return 0.8
+                case (0, 3): return k1
+                case (0, 4): return k2
+                case (0, 5): return g
+                default: return 0.2
+                }
+            }
+            let liam2 = candidate([all[1], all[2]])
+            let karan = candidate([all[3], all[4], all[5]], id: TV.karanID, name: "Karan", salt: 1)
+            let (d, t) = try one(probe(all[0]), [liam2, karan])
+            let (off, _) = try one(probe(all[0]), [liam2, karan], policy: groupsOff)
+            let groupsAuto = a >= 0.55 && a - g >= 0.10
+            let wholeAuto = a >= 0.55 && a - wK >= 0.10
+            #expect(d.isAuto == groupsAuto, "a \(a), g \(g), W_K \(wK)")
+            #expect(off.isAuto == wholeAuto, "a \(a), W_K \(wK)")
+            #expect(near(t.runnerUp, Float(g)), "runner-up \(String(describing: t.runnerUp)) against g \(g)")
+            if !groupsAuto && wholeAuto {
+                #expect(t.reason == "groupScore")
+                groupCaused += 1
+            }
+            checked += 1
+        }
+        #expect(checked > 120 && groupCaused > 10)
     }
 
     @Test func aNegativeAtOrAboveTheAutoScoreAsks() throws {

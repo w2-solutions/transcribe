@@ -25,6 +25,8 @@ enum CaptureSourceEvent: Sendable, Equatable {
     case systemAudioSilent
     /// Mac audio stopped and could not be restarted. A Both source carries on with the microphone.
     case systemAudioLost
+    /// Mac audio came back after `systemAudioLost` (rebuilt after a later device change, a retry, or a resume).
+    case systemAudioRestored
 }
 
 /// The latest level of each stream of a source that captures two (the microphone and Mac audio), 0...1 like

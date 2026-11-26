@@ -17,7 +17,7 @@ import TranscribeCore
 /// Mac audio (`request.sources`): in a Both recording each tick carries the microphone's level and Mac audio's
 /// (`CaptureSource.streamLevels()`), and the stems the source wrote come back in `CapturedAudio.stems`. Mac audio lost
 /// is a notice in a Both recording (the microphone carries on) and a pause (`.routeLost`) when Mac audio is all there
-/// is. The capture detail always names what was captured (`sources`, `input`); a microphone recording's detail is
+/// is; a Mac-audio-only recording whose resume fails stays paused that way. The capture detail always names what was captured (`sources`, `input`); a microphone recording's detail is
 /// left exactly as the microphone reports it.
 public actor FluidLiveRecording: LiveRecording {
     public nonisolated let events: AsyncStream<RecordingEvent>
@@ -149,6 +149,16 @@ public actor FluidLiveRecording: LiveRecording {
         do {
             try await source.resume()
         } catch {
+            if sources == .macAudio {
+                // Mac audio is all this recording has and its output is not back yet: it stays paused (Mac audio
+                // stopped), with nothing lost, so the user can resume again once the output is back.
+                log.error("Mac audio did not resume; staying paused: \(FluidErrorMapping.describe(error), privacy: .public)")
+                await source.pause()
+                guard isPausedState, !isStopping else { return }
+                state = .paused(.routeLost)
+                eventContinuation.yield(.paused(.routeLost))
+                return
+            }
             await end(.failed(FluidErrorMapping.describe(error)))
             return
         }
@@ -319,6 +329,10 @@ public actor FluidLiveRecording: LiveRecording {
                 // Both: the microphone carries on.
                 eventContinuation.yield(.notice(.systemAudioLost))
             }
+        case .systemAudioRestored:
+            // Both: Mac audio is back, the lost note goes. Mac audio only: it comes back only through `resume()`,
+            // which has resumed the recording itself.
+            if sources == .both { eventContinuation.yield(.notice(.systemAudioRestored)) }
         }
     }
 

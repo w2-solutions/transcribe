@@ -6,14 +6,16 @@ import TranscribeKit
 /// Shared wording for the recording status capsule (screen 2) and the minimised pill (screen 1).
 enum RecordingStatus {
     /// "Recording", "Paused", "Paused · call in progress", …
-    static func title(_ state: RecorderController.State) -> String {
+    /// `sources` is what the recording captures: a Mac-audio-only recording paused for a lost route lost Mac audio,
+    /// not the microphone.
+    static func title(_ state: RecorderController.State, sources: CaptureSources = .microphone) -> String {
         switch state {
         case .idle, .stopping: "Saving"
         case .starting: "Starting"
         case .recording: "Recording"
         case .paused(.user): "Paused"
         case .paused(.interruption): "Paused · call in progress"
-        case .paused(.routeLost): "Paused · microphone disconnected"
+        case .paused(.routeLost): RecordingSourceCopy.pausedRouteLost(sources)
         }
     }
 
@@ -42,8 +44,9 @@ enum RecordingStatus {
     }
 
     /// VoiceOver: "Recording, 0 minutes 14 seconds".
-    static func accessibilityLabel(_ state: RecorderController.State, elapsed: TimeInterval) -> String {
-        "\(title(state)), \(DisplayFormat.spokenDuration(elapsed))"
+    static func accessibilityLabel(_ state: RecorderController.State, elapsed: TimeInterval,
+                                   sources: CaptureSources = .microphone) -> String {
+        "\(title(state, sources: sources)), \(DisplayFormat.spokenDuration(elapsed))"
     }
 }
 

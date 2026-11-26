@@ -195,6 +195,28 @@ struct CKRecordCodecTests {
         #expect(update.changedKeys().contains("turnCount"))
     }
 
+    /// Review 2026-11-26: a V5 device that fetched a speaker while it was on 0.3.3 holds nil for `captureSource`.
+    /// Its next edit projects the whole record with `captureSource: .null`; that must not clear the server's value
+    /// (setting nil on a record rebuilt from system fields puts the key in `changedKeys()`, which deletes it).
+    @Test func aNullCaptureSourceIsNeverSentAsAClear() throws {
+        defer { try? FileManager.default.removeItem(at: outgoing) }
+        let id = SyncRecordID(type: .speaker, entityID: UUID())
+        let saved = try codec.encode(SyncRecord(id: id, fields: ["key": .string("S2"), "captureSource": .string("system"),
+                                                                 "sv": .int(1)]))
+        let update = try codec.encode(SyncRecord(id: id, fields: ["key": .string("S2"), "label": .string("named"),
+                                                                  "captureSource": .null, "nameSnapshot": .null,
+                                                                  "sv": .int(1)],
+                                                 systemFields: CKRecordCodec.systemFields(saved)))
+        #expect(!update.changedKeys().contains("captureSource"))
+        #expect(update.changedKeys().contains("label"))
+        // Other nulls still clear (a speaker's name snapshot, for example).
+        #expect(update.changedKeys().contains("nameSnapshot"))
+        // A value is still sent.
+        let set = try codec.encode(SyncRecord(id: id, fields: ["captureSource": .string("mixed")],
+                                              systemFields: CKRecordCodec.systemFields(saved)))
+        #expect(set.changedKeys().contains("captureSource"))
+    }
+
     @Test func theSchemaSeedFillsCaptureSource() {
         let speaker = CloudSchemaSeeder.records().first { $0.id.type == .speaker }
         #expect(speaker?.fields["captureSource"] == .string("seed"))

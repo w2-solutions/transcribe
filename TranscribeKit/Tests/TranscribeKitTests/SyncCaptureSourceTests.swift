@@ -106,12 +106,14 @@ struct SyncCaptureSourceTests {
         _ = id
     }
 
-    @Test func aRecordWithoutTheFieldReadsAsTheMicrophone() async throws {
+    /// An older build re-creating S2's record from scratch (it never knew the field, as after re-joining when the iCloud
+    /// copy was removed): the server lacks the source, but a device that knows it keeps it and sends it back
+    /// (review 2026-11-26: absent is unknown, never "cleared").
+    @Test func aRecordWithoutTheFieldNeverClearsAKnownSource() async throws {
         let t = try await TwoDevices.make()
         defer { t.cleanup() }
         let call = try t.b.recordCall()
         await t.settleBoth()
-        // An older build re-creating S2's record from scratch (it never knew the field): A reads it as the microphone.
         let s2 = try #require(t.b.recording(call)?.speaker("S2"))
         let name = SyncRecordID(type: .speaker, entityID: s2.id).recordName
         let server = try #require(await t.cloud.record(account: "account-1", recordName: name))
@@ -119,9 +121,87 @@ struct SyncCaptureSourceTests {
         fields.removeValue(forKey: "captureSource")
         fields["turnCount"] = .int(3)
         await t.cloud.inject(account: "account-1", SyncRecord(id: server.id, fields: fields))
+        await t.settleBoth()
+        for d in t.devices {
+            let speaker = try #require(d.recording(call)?.speaker("S2"))
+            #expect(speaker.captureSource == "system", "\(d.name)")
+            #expect(speaker.turnCount == 3, "\(d.name)")
+        }
+        let back = try #require(await t.cloud.record(account: "account-1", recordName: name))
+        #expect(back.fields["captureSource"] == .string("system"))
+        expectConverged(t.devices)
+    }
+
+    /// Review 2026-11-26: a device that fetched the speaker while on 0.3.3 holds nil after its upgrade, with a base that
+    /// agrees (nothing is fetched again). Its next edit of the speaker leaves the null source out of the save
+    /// (`CKRecordCodec.encode`; `FakeCloud` keeps the server's value the same way), so the server keeps "system" and the
+    /// Mac that recorded it has nothing to merge. The stale device takes the source only when it fetches the record
+    /// again: here from the change feed, which in `FakeCloud` returns a device's own saves (whether CloudKit's does is
+    /// not checked; otherwise it waits until another device changes the record).
+    @Test func aStaleDeviceEditingTheSpeakerNeverClearsItsSource() async throws {
+        let t = try await TwoDevices.make()
+        defer { t.cleanup() }
+        let call = try t.b.recordCall()   // B is the Mac
+        await t.settleBoth()
+        // A as if it had fetched S2 on 0.3.3 and then upgraded: nil, and a base hash that agrees with nil.
+        let s2 = try #require(t.a.recording(call)?.speaker("S2"))
+        let id = SyncRecordID(type: .speaker, entityID: s2.id)
+        s2.captureSource = nil
+        let row = try #require(t.a.stateRow(id))
+        var base = row.baseHashes
+        base[SyncSchema.Group.stats] = RecordProjector.hashes(.speaker(s2))[SyncSchema.Group.stats]
+        row.baseHashes = base
+        try t.a.context.save()
+        #expect(t.a.pending == 0)
+        // A edits the speaker's label group and sends it; the server keeps the source.
+        _ = try t.a.store.nameSpeaker(recordingID: call, key: "S2", as: .newPerson(name: "Tom"), remember: false)
         await t.a.sync.syncNow()
-        #expect(t.a.recording(call)?.speaker("S2")?.captureSource == nil)
-        #expect(t.a.recording(call)?.speaker("S2")?.source == .mic)
+        let onServer = try #require(await t.cloud.record(account: "account-1", recordName: id.recordName))
+        #expect(onServer.fields["captureSource"] == .string("system"))
+        #expect(onServer.fields["nameSnapshot"] == .string("Tom"))
+        // B (the Mac) takes the name and has no stats change to merge or send back.
+        let before = await t.cloud.sequence(account: "account-1")
+        await t.b.sync.syncNow()
+        #expect(t.b.recording(call)?.speaker("S2")?.captureSource == "system")
+        #expect(t.b.recording(call)?.speaker("S2")?.nameSnapshot == "Tom")
+        #expect(await t.cloud.sequence(account: "account-1") == before)
+        await t.settleBoth()
+        for d in t.devices {
+            #expect(d.recording(call)?.speaker("S2")?.captureSource == "system", "\(d.name)")
+            #expect(d.recording(call)?.speaker("S2")?.nameSnapshot == "Tom", "\(d.name)")
+        }
+        expectConverged(t.devices)
+    }
+
+    /// Rejoining after the iCloud copy was removed (review 2026-11-26): an older build uploads S2 first as a new record
+    /// without the source; the Mac's own create then conflicts with an empty base, both sides "changed" stats, and the
+    /// join keeps the known side (system), never mixed.
+    @Test func aRejoinAgainstARecordWithoutTheFieldKeepsTheSource() async throws {
+        let t = try await TwoDevices.make()
+        defer { t.cleanup() }
+        let call = try t.b.recordCall()
+        await t.settleBoth()
+        let s2 = try #require(t.b.recording(call)?.speaker("S2"))
+        let id = SyncRecordID(type: .speaker, entityID: s2.id)
+        let server = try #require(await t.cloud.record(account: "account-1", recordName: id.recordName))
+        // The zone is gone and an older build has uploaded S2 again without the field (and with other counts).
+        var fields = server.fields
+        fields.removeValue(forKey: "captureSource")
+        fields["turnCount"] = .int(5)
+        await t.cloud.inject(account: "account-1", SyncRecord(id: id, fields: fields))
+        // B forgot its state for S2, as after re-joining: no system fields, no base.
+        let row = try #require(t.b.stateRow(id))
+        row.systemFields = nil
+        row.baseHashes = [:]
+        row.pending = .save
+        try t.b.context.save()
+        await t.b.sync.syncNow()
+        let back = try #require(await t.cloud.record(account: "account-1", recordName: id.recordName))
+        #expect(back.fields["captureSource"] == .string("system"))
+        #expect(t.b.recording(call)?.speaker("S2")?.captureSource == "system")
+        await t.settleBoth()
+        for d in t.devices { #expect(d.recording(call)?.speaker("S2")?.captureSource == "system", "\(d.name)") }
+        expectConverged(t.devices)
     }
 
     @Test func mergePolicyJoinsSourcesWhenBothSidesChangedStats() {
@@ -133,9 +213,12 @@ struct SyncCaptureSourceTests {
                                            base: base, server: base)
         #expect(localOnly["stats"] == .keepLocal)
         #expect(MergePolicy.joinedSource(local: nil, server: nil) == nil)
-        #expect(MergePolicy.joinedSource(local: nil, server: "mic") == nil)           // both the microphone: unchanged
+        #expect(MergePolicy.joinedSource(local: nil, server: "mic") == "mic")         // the known side
         #expect(MergePolicy.joinedSource(local: "system", server: "system") == "system")
-        #expect(MergePolicy.joinedSource(local: nil, server: "system") == "mixed")
+        // nil is unknown (an older build or a stale copy), never the microphone: the known side is kept.
+        #expect(MergePolicy.joinedSource(local: nil, server: "system") == "system")
+        #expect(MergePolicy.joinedSource(local: "system", server: nil) == "system")
+        #expect(MergePolicy.joinedSource(local: "mic", server: "system") == "mixed")
         #expect(MergePolicy.joinedSource(local: "mixed", server: "mic") == "mixed")
     }
 }

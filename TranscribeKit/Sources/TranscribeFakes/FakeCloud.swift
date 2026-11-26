@@ -193,11 +193,12 @@ public actor FakeCloud {
                     SyncRecord(id: record.id, fields: existing.fields, systemFields: Self.systemFields(existing.tag))))
                 continue
             }
+            let fields = Self.saving(record, over: existing?.fields)
             db.nextTag += 1
-            db.records[name] = Stored(fields: record.fields, tag: db.nextTag)
+            db.records[name] = Stored(fields: fields, tag: db.nextTag)
             db.seq += 1
             db.changed[name] = db.seq
-            result.saved.append(SyncRecord(id: record.id, fields: record.fields, systemFields: Self.systemFields(db.nextTag)))
+            result.saved.append(SyncRecord(id: record.id, fields: fields, systemFields: Self.systemFields(db.nextTag)))
         }
         for id in deletes {
             if db.records.removeValue(forKey: id.recordName) != nil {
@@ -208,6 +209,17 @@ public actor FakeCloud {
         }
         databases[account] = db
         return result
+    }
+
+    /// The fields a save leaves on the server, as CloudKit and `CKRecordCodec.encode` do: a field added after its
+    /// group was agreed (`SyncSchema.addedFields`) is never sent while null, so the server keeps the value it had
+    /// (review 2026-11-26). Every other field is sent with each save and replaces the server's.
+    static func saving(_ record: SyncRecord, over existing: [String: SyncValue]?) -> [String: SyncValue] {
+        var fields = record.fields
+        for name in SyncSchema.addedFields(record.id.type) where (fields[name] ?? .null) == .null {
+            if let kept = existing?[name], kept != .null { fields[name] = kept } else { fields.removeValue(forKey: name) }
+        }
+        return fields
     }
 
     static func systemFields(_ tag: Int) -> Data { Data("tag:\(tag)".utf8) }

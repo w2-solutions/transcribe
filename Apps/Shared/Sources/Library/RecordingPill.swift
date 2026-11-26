@@ -31,7 +31,7 @@ struct RecordingPill: View {
         .buttonStyle(.plain)
         .glassEffect(.regular.interactive(), in: .capsule)
         .frame(minHeight: DS.Space.hit)
-        .accessibilityLabel(RecordingStatus.accessibilityLabel(recorder.state, elapsed: recorder.elapsed))
+        .accessibilityLabel(RecordingStatus.accessibilityLabel(recorder.state, elapsed: recorder.elapsed, sources: recorder.sources))
         .accessibilityHint("Returns to the recording")
         .accessibilityIdentifier(AX.Library.recordingPill)
     }

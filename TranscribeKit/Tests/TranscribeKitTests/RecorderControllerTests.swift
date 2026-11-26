@@ -39,6 +39,7 @@ final class ScriptedCaptureEngine: SpeechEngine, @unchecked Sendable {
     var session: ScriptedLiveRecording?
     init(base: FakeSpeechEngine, failStop: Bool) { self.base = base; self.failStop = failStop }
     var info: EngineInfo { base.info }
+    var systemAudioAvailable: Bool { true }
     func modelStatus() async -> ModelStatus { await base.modelStatus() }
     func prepareModels() async throws { try await base.prepareModels() }
     func microphonePermission() async -> MicPermission { .granted }
@@ -148,6 +149,33 @@ struct RecorderControllerTests {
         let row = try #require(try rig.recording(id))
         #expect(row.stage == .queued && abs(row.duration - 4) < 0.01)
         await #expect(throws: EngineError.self) { try await rig.recorder.stop() }   // "Not recording"
+    }
+
+    /// Review 2026-11-26: what a recording captures is saved with its row, so a Both or Mac-audio-only capture
+    /// salvaged after a failed stop (or a crash) is still processed as what it captured, not as the microphone.
+    @Test(arguments: [CaptureSources.both, .macAudio])
+    func aSalvagedCaptureKeepsItsSources(_ sources: CaptureSources) async throws {
+        let (rig, _) = try makeScriptedRig(failStop: true)
+        defer { rig.cleanUp() }
+        let id = try await rig.recorder.start(sources: sources)
+        // Saved before capture ends.
+        #expect(LibraryStore.captureSources(of: try #require(try rig.recording(id))) == sources)
+        await #expect(throws: EngineError.self) { try await rig.recorder.stop() }
+        let row = try #require(try rig.recording(id))
+        #expect(row.stage == .queued)
+        #expect(LibraryStore.captureSources(of: row) == sources)
+        #expect(try rig.store.snapshot(of: id).captureSources == sources)
+        let detail = try #require(CaptureDetail.decode(row.captureDetailJSON))
+        #expect(detail.input == sources.detailInput)
+    }
+
+    /// A microphone recording's row gets no provisional detail (its capture detail stays as the microphone reports it).
+    @Test func aMicrophoneRowHasNoProvisionalDetail() async throws {
+        let (rig, _) = try makeScriptedRig(failStop: true)
+        defer { rig.cleanUp() }
+        let id = try await rig.recorder.start()
+        #expect(try #require(try rig.recording(id)).captureDetailJSON == nil)
+        await #expect(throws: EngineError.self) { try await rig.recorder.stop() }
     }
 
     /// Polls the main actor until `condition` holds (the fake ticks in real time).

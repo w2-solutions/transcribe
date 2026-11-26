@@ -426,7 +426,8 @@ public actor FluidSpeechEngine: SpeechEngine {
         switch sources {
         case .microphone: return MicrophoneCapture()
         case .macAudio: return SystemAudioCapture()
-        case .both: return MixedCaptureSource(mic: MicrophoneCapture(), system: SystemAudioCapture(), stems: stems)
+        case .both: return MixedCaptureSource(mic: MicrophoneCapture(), system: SystemAudioCapture(keepsTryingAfterFailedStart: true),
+                                              stems: stems)
         }
         #else
         return MicrophoneCapture()

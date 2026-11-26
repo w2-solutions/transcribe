@@ -63,7 +63,8 @@ public enum TraceKind: String, Sendable, Codable { case auto, ask, unknown }
 /// - ask: `"downgraded"`, `"mixedSource"` (the probe is ask-only: heard on both the microphone and Mac audio),
 ///   `"otherChannel"` (no trusted sample on the probe's channel, but some on another), `"askOnly"` (no trusted sample
 ///   at all), `"autoLabelOff"`, `"negativeNear"` (the auto score passed but a negative is at least as close),
-///   `"groupScore"` (the whole score W would have auto-labelled, the auto score A does not), `"belowAuto"`, `"margin"`
+///   `"groupScore"` (the matcher without groups would have auto-labelled: W passes against the runner-up it used, the
+///   cohort and other profiles' W; with groups, A or the symmetric runner-up stops it), `"belowAuto"`, `"margin"`
 ///   (with groups, both on A);
 /// - unknown: `"noVector"`, `"tooShort"`, `"noEligibleProfiles"`, `"blocked"` (the top profile was blocked and
 ///   nothing else reached ask), `"taken"` (every profile that reached ask was taken), `"lowScore"`.

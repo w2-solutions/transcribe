@@ -70,6 +70,8 @@ public enum RecordingNotice: Sendable, Equatable {
     case systemAudioSilent
     /// Mac audio stopped and could not be restarted. In a Both recording the microphone carries on.
     case systemAudioLost
+    /// Mac audio came back after `systemAudioLost` (a later device change or a retry rebuilt it): the lost note goes.
+    case systemAudioRestored
 }
 
 public enum RecordingEvent: Sendable, Equatable {

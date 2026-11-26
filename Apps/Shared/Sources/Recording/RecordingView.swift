@@ -117,7 +117,7 @@ struct RecordingView: View {
         HStack(spacing: 9) {
             PulsingRecordDot(isPulsing: RecordingStatus.isLive(recorder.state))
                 .frame(width: 8, height: 8)
-            Text(RecordingStatus.title(recorder.state))
+            Text(RecordingStatus.title(recorder.state, sources: recorder.sources))
                 .scaledFont(size: 14, weight: .semibold, relativeTo: .subheadline)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -132,7 +132,7 @@ struct RecordingView: View {
         .frame(minHeight: 36)
         .floatingGlass(Capsule())
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(RecordingStatus.accessibilityLabel(recorder.state, elapsed: recorder.elapsed))
+        .accessibilityLabel(RecordingStatus.accessibilityLabel(recorder.state, elapsed: recorder.elapsed, sources: recorder.sources))
         .accessibilityIdentifier(AX.Recording.statusCapsule)
     }
 

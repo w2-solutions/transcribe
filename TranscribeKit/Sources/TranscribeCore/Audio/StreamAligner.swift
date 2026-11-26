@@ -17,7 +17,7 @@ import Foundation
 ///
 /// A stream more than `maxLagFrames` (500 ms) behind the other is filled with zeros up to it, so one stream that
 /// stalls or stops never holds the other back; audio it sends later for that stretch is dropped as early. A stream
-/// marked lost is filled at once, on every push.
+/// marked lost is filled at once, on every push, until `markRestored`.
 ///
 /// Output is the stretch both streams now cover, as two arrays of equal length (`mic`, `system`), in order. Nothing
 /// is ever emitted twice or out of order. `rebase()` (a pause) and `finish()` (stop) pad the shorter stream with zeros
@@ -152,6 +152,14 @@ public struct StreamAligner: Sendable {
     public mutating func markLost(_ stream: CaptureStream) -> Output {
         lost[Self.index(stream)] = true
         if stream == .system { held = []; heldFrames = 0 }
+        return fillLagging()
+    }
+
+    /// `stream` came back after `markLost` (Mac audio rebuilt after a device change). It was filled with zeros up to
+    /// the other stream, so its next stamped chunk is placed by its host time against the same anchor, as after any
+    /// gap. Returns what both streams now cover.
+    public mutating func markRestored(_ stream: CaptureStream) -> Output {
+        lost[Self.index(stream)] = false
         return fillLagging()
     }
 

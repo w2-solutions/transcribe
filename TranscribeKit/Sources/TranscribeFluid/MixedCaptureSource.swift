@@ -14,9 +14,12 @@ import TranscribeCore
 ///
 /// - The microphone starts first (so the tap can exclude this process's own audio object). If it cannot start, the
 ///   recording does not start. If Mac audio cannot start, the recording goes on with the microphone and delivers
-///   `.systemAudioLost` at once.
-/// - Mac audio lost later (`.systemAudioLost`, or its own route lost or failure) is filled with zeros from then on, and
-///   the event is passed on once; the microphone carries on. `.systemAudioSilent` is passed on. The microphone's own
+///   `.systemAudioLost` at once; Mac audio (built with `keepsTryingAfterFailedStart`) keeps trying to join, as after
+///   a failed rebuild.
+/// - Mac audio lost later (`.systemAudioLost`, or its own route lost or failure) is filled with zeros, and the event
+///   is passed on once; the microphone carries on. Mac audio keeps trying to come back (`SystemAudioCapture` rebuilds
+///   on the next device change, retries, and on resume); when it does (`.systemAudioRestored`) it is placed on the
+///   timeline by its host time again and the event is passed on. `.systemAudioSilent` is passed on. The microphone's own
 ///   events are passed on as they are (an interruption or a lost microphone pauses the whole recording).
 /// - A pause pauses both; on resume the timeline is anchored again, so the pause leaves no zeros.
 /// - `streamLevels()` gives each stream's level (the recording window's two meters); `captureDetail()` the
@@ -105,7 +108,8 @@ actor MixedCaptureSource: CaptureSource {
     func pause() async {
         guard started, !stopped else { return }
         await mic.pause()
-        if !systemLost { await system.pause() }
+        // Lost or not: a lost Mac audio stops trying to come back while the recording is paused.
+        await system.pause()
     }
 
     func resume() async throws {
@@ -113,7 +117,7 @@ actor MixedCaptureSource: CaptureSource {
         // Queued behind everything delivered before the pause, so the pause never becomes zeros.
         itemContinuation.yield(.rebase)
         try await mic.resume()
-        guard !systemLost else { return }
+        // A lost Mac audio is tried again too; when it comes back it reports `.systemAudioRestored` itself.
         do {
             try await system.resume()
         } catch {
@@ -174,6 +178,12 @@ actor MixedCaptureSource: CaptureSource {
                 systemLost = true
                 emit(aligner.markLost(.system))
                 deliver?(.event(.systemAudioLost))
+            case .systemAudioRestored:
+                guard systemLost else { return }
+                systemLost = false
+                log.notice("Mac audio came back")
+                emit(aligner.markRestored(.system))
+                deliver?(.event(.systemAudioRestored))
             case .interrupted, .interruptionEnded:
                 break   // only the microphone's session is interrupted
             }

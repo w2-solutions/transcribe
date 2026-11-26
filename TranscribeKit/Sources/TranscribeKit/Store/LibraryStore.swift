@@ -316,10 +316,19 @@ public final class LibraryStore: LibraryStoring {
 
     // MARK: Recording lifecycle
 
-    public func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws {
+    public func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource,
+                                captureSources: CaptureSources) throws {
         let recording = Recording(id: id, createdAt: createdAt, audioFileName: audioFileName, source: source)
         context.insert(recording)
         recording.captureChannel = localChannel   // imports too: imported audio counts as heard on this device (D9)
+        if captureSources != .microphone {
+            // Provisional: what was captured, before `finishCapture` writes the full detail. A capture salvaged
+            // after a crash or a failed stop never reaches `finishCapture`, and without this would be processed as
+            // a microphone recording (stems ignored, no sources, mixed speakers auto-labelled).
+            recording.captureDetailJSON = CaptureDetail(hardwareModel: CaptureChannel.hardwareModel,
+                                                        input: captureSources.detailInput,
+                                                        sources: captureSources.detailValue).json()
+        }
         try context.save()
     }
 

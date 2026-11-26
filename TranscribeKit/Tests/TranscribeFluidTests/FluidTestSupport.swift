@@ -13,8 +13,11 @@ actor ScriptedCaptureSource: CaptureSource {
     private var deliver: (@Sendable (CaptureInput) -> Void)?
     private var paused = false
     private let failStart: Bool
+    private var failResume = false
 
     init(failStart: Bool = false) { self.failStart = failStart }
+
+    func setFailResume(_ fail: Bool) { failResume = fail }
 
     func start(_ deliver: @escaping @Sendable (CaptureInput) -> Void) async throws {
         calls.append("start")
@@ -23,7 +26,11 @@ actor ScriptedCaptureSource: CaptureSource {
     }
 
     func pause() async { calls.append("pause"); paused = true }
-    func resume() async throws { calls.append("resume"); paused = false }
+    func resume() async throws {
+        calls.append("resume")
+        if failResume { throw EngineError.failed("Could not resume Mac audio") }
+        paused = false
+    }
     func stop() async { calls.append("stop"); deliver = nil }
 
     /// Delivers samples unless paused or stopped. Returns whether they were delivered.

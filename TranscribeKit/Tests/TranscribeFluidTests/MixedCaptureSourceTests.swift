@@ -92,6 +92,41 @@ struct MixedCaptureSourceTests {
         #expect(systemStem.count == 16_000 && near(Array(systemStem[8_000...]), 0))
     }
 
+    /// Review 2026-11-26: Mac audio that comes back after it was lost (a later device change rebuilt it) is mixed in
+    /// again, placed by its host time; the event is passed on.
+    @Test func macAudioThatComesBackIsMixedInAgain() async throws {
+        let rig = try makeRig()
+        try await rig.mixed.start(rig.log.sink())
+        await interleave(rig, mic: 0.25, micFrom: 10.0, system: 0.5, systemFrom: 10.0, seconds: 0.5)
+        await rig.system.send(event: .systemAudioLost)
+        for k in 0..<5 { await rig.mic.send([Float](repeating: 0.25, count: 1_600), host: 10.5 + 0.1 * Double(k)) }
+        await rig.system.send(event: .systemAudioRestored)
+        #expect(await eventually { await !rig.mixed.isSystemLost })
+        await interleave(rig, mic: 0.25, micFrom: 11.0, system: 0.5, systemFrom: 11.0, seconds: 0.5)
+        await rig.mixed.stop()
+
+        #expect(rig.log.events == [.systemAudioLost, .systemAudioRestored])
+        let audio = rig.log.audio
+        #expect(audio.count == 24_000)
+        #expect(near(Array(audio[0..<8_000]), 0.75) && near(Array(audio[8_000..<16_000]), 0.25)
+                && near(Array(audio[16_000...]), 0.75))
+        let systemStem = try TestAudio.readSamples(rig.stems.system)
+        #expect(systemStem.count == 24_000 && near(Array(systemStem[8_000..<16_000]), 0) && near(Array(systemStem[16_000...]), 0.5))
+    }
+
+    /// A lost Mac audio is still paused with the recording (so it stops trying to come back) and tried again on resume.
+    @Test func aLostMacAudioIsPausedAndResumedWithTheRecording() async throws {
+        let rig = try makeRig()
+        try await rig.mixed.start(rig.log.sink())
+        await rig.system.send(event: .systemAudioLost)
+        #expect(await eventually { await rig.mixed.isSystemLost })
+        await rig.mixed.pause()
+        try await rig.mixed.resume()
+        await rig.mixed.stop()
+        #expect(await rig.system.calls == ["start", "pause", "resume", "stop"])
+        #expect(rig.log.events == [.systemAudioLost])
+    }
+
     @Test func macAudioThatCannotStartLeavesAMicrophoneRecording() async throws {
         let rig = try makeRig(system: StampedScriptedSource(failStart: true))
         try await rig.mixed.start(rig.log.sink())
@@ -219,6 +254,57 @@ struct FluidLiveRecordingMacAudioTests {
             #expect(await source.calls.contains("pause") == (sources == .macAudio))
             // The scripted source reports no detail: the recording still names what it captured.
             #expect(audio.detail?.sources == sources.detailValue && audio.detail?.input == sources.detailInput)
+        }
+    }
+
+    /// Review 2026-11-26: Mac audio back in a Both recording clears the lost note; in Mac audio only it comes back
+    /// through `resume()`, so nothing more is said.
+    @Test func macAudioBackClearsTheLostNoteInBoth() async throws {
+        for sources in [CaptureSources.both, .macAudio] {
+            let url = try TestAudio.temporaryDirectory().appendingPathComponent("rec.wav")
+            let source = ScriptedCaptureSource()
+            let request = RecordingRequest(audioURL: url, liveText: false, language: .automatic, sources: sources)
+            let recording = FluidLiveRecording(request: request, source: source, liveModels: { nil })
+            let events = collectEvents(recording.events)
+            try await recording.start()
+            if sources == .both { await source.send(event: .systemAudioLost) }
+            await source.send(event: .systemAudioRestored)
+            await source.send([Float](repeating: 0.1, count: 1_600))
+            #expect(await eventually { await recording.capturedDuration >= 0.1 })
+            _ = try await recording.stop()
+            let notices = await events.value.filter { if case .notice = $0 { true } else { false } }
+            let expected: [RecordingEvent] = sources == .both ? [.notice(.systemAudioLost), .notice(.systemAudioRestored)] : []
+            #expect(notices == expected, "\(sources)")
+        }
+    }
+
+    /// Review 2026-11-26: a Mac-audio-only recording whose resume fails (the output is not back) stays paused with
+    /// "Mac audio stopped" and can be resumed again; any other recording still ends.
+    @Test func aMacAudioOnlyResumeThatFailsStaysPaused() async throws {
+        for sources in [CaptureSources.macAudio, .microphone] {
+            let url = try TestAudio.temporaryDirectory().appendingPathComponent("rec.wav")
+            let source = ScriptedCaptureSource()
+            let request = RecordingRequest(audioURL: url, liveText: false, language: .automatic, sources: sources)
+            let recording = FluidLiveRecording(request: request, source: source, liveModels: { nil })
+            let events = collectEvents(recording.events)
+            try await recording.start()
+            await recording.pause()
+            await source.setFailResume(true)
+            await recording.resume()
+            if sources == .macAudio {
+                // Paused again, so a lost Mac audio stops retrying until the user resumes.
+                #expect(await source.calls == ["start", "pause", "resume", "pause"])
+                await source.setFailResume(false)
+                await recording.resume()
+                await source.send([Float](repeating: 0.1, count: 1_600))
+                #expect(await eventually { await recording.capturedDuration >= 0.1 })
+            }
+            _ = try? await recording.stop()
+            let states = await events.value.filter { if case .tick = $0 { false } else { true } }
+            let expected: [RecordingEvent] = sources == .macAudio
+                ? [.liveTextUnavailable(.modelsNotReady), .paused(.user), .paused(.routeLost), .resumed]
+                : [.liveTextUnavailable(.modelsNotReady), .paused(.user), .endedBySystem(.failed("Could not resume Mac audio"))]
+            #expect(states == expected, "\(sources)")
         }
     }
 

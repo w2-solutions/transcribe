@@ -63,6 +63,11 @@ struct RecordingSourceCopyTests {
         #expect(RecordingSourceCopy.note(.systemAudioSilent, sources: .both) == RecordingSourceCopy.silentNote)
         #expect(RecordingSourceCopy.note(.systemAudioSilent, sources: .macAudio) == RecordingSourceCopy.silentNote)
         #expect(RecordingSourceCopy.note(.systemAudioLost, sources: .both) == "Mac audio stopped. Recording the microphone only.")
+        // Review 2026-11-26: a Mac-audio-only recording paused for a lost route never blames the microphone.
+        #expect(RecordingSourceCopy.note(.systemAudioRestored, sources: .both) == nil)   // Mac audio back: the note goes
+        #expect(RecordingSourceCopy.pausedRouteLost(.macAudio) == "Paused · Mac audio stopped")
+        #expect(RecordingSourceCopy.pausedRouteLost(.microphone) == "Paused · microphone disconnected")
+        #expect(RecordingSourceCopy.pausedRouteLost(.both) == "Paused · microphone disconnected")
         // Mac audio only: losing it pauses the recording, which the status says; no note claims the microphone carries on.
         #expect(RecordingSourceCopy.note(.systemAudioLost, sources: .macAudio) == nil)
     }

@@ -203,13 +203,20 @@ public enum VoiceMatcher {
 
         // Score per probe over each profile, used for the runner-up (taken and blocked profiles included): W, or the
         // larger of W and G for a profile scored per group, so the runner-up is as strict as the auto score.
-        var scoresByProbe: [SpeakerKey: [(id: UUID, score: Float)]] = [:]
+        var scoresByProbe: [SpeakerKey: [(id: UUID, score: Float, whole: Float)]] = [:]
         for t in triples {
-            scoresByProbe[t.probeKey, default: []].append((t.profile.id, Swift.max(t.score, t.evidence.groupBestScore ?? t.score)))
+            scoresByProbe[t.probeKey, default: []].append((t.profile.id, Swift.max(t.score, t.evidence.groupBestScore ?? t.score),
+                                                            t.score))
         }
 
         func runnerUp(_ t: Triple) -> Float {
             let others = scoresByProbe[t.probeKey, default: []].filter { $0.id != t.profile.id }.map(\.score)
+            return Swift.max(0, others.max() ?? 0, t.evidence.cohortMax ?? 0)
+        }
+        // The runner-up the matcher without groups used (other profiles' W only): for the "groupScore" reason, so an
+        // ask that only the symmetric runner-up caused is logged as caused by grouping, not as an ordinary margin.
+        func wholeRunnerUp(_ t: Triple) -> Float {
+            let others = scoresByProbe[t.probeKey, default: []].filter { $0.id != t.profile.id }.map(\.whole)
             return Swift.max(0, others.max() ?? 0, t.evidence.cohortMax ?? 0)
         }
         let probeAskOnly = Dictionary(probes.map { ($0.key, $0.askOnly) }, uniquingKeysWith: { first, _ in first })
@@ -237,7 +244,8 @@ public enum VoiceMatcher {
                 pending[t.probeKey]?.complete(.auto, profileID: t.profile.id, reason: "auto",
                                               score: auto, runnerUp: second, margin: autoMargin)
             } else if atLeast(best, policy.askMin) {
-                let wholeWouldAuto = atLeast(best, policy.autoLabelMin) && atLeast(margin, policy.autoLabelMargin)
+                let wholeWouldAuto = atLeast(best, policy.autoLabelMin)
+                    && atLeast(best - wholeRunnerUp(t), policy.autoLabelMargin)
                 let reason = downgraded ? "downgraded"
                     : mixed ? "mixedSource"
                     : t.evidence.askOnly ? ((t.evidence.otherChannelTrustedCount ?? 0) > 0 ? "otherChannel" : "askOnly")

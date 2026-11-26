@@ -64,13 +64,19 @@ public enum RecordingSourceCopy {
     /// Mac audio stopped mid-recording; in Both mode the microphone carries on.
     public static let lostNote = "Mac audio stopped. Recording the microphone only."
 
+    /// The status of a recording paused because its input went away: a Mac-audio-only recording pauses when Mac audio
+    /// stops (the output device went away and the tap could not be rebuilt), and uses no microphone at all.
+    public static func pausedRouteLost(_ sources: CaptureSources) -> String {
+        sources == .macAudio ? "Paused · Mac audio stopped" : "Paused · microphone disconnected"
+    }
+
     /// The note for a recording notice, by what the recording captures. A lost Mac audio stream in Mac-audio-only mode
     /// pauses the recording instead (the status says so), so it has no note.
     public static func note(_ notice: RecordingNotice?, sources: CaptureSources) -> String? {
         switch notice {
         case .systemAudioSilent?: silentNote
         case .systemAudioLost?: sources == .both ? lostNote : nil
-        case nil: nil
+        case .systemAudioRestored?, nil: nil
         }
     }
 
