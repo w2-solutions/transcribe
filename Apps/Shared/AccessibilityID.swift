@@ -178,6 +178,14 @@ enum AX {
         static func sampleOrigin(_ i: Int) -> String { "voiceDetail.sample.\(i).origin" }      // "Named by you" …
         static func sampleRemove(_ i: Int) -> String { "voiceDetail.sample.\(i).remove" }      // context-menu item
         static let removeSampleConfirm = "voiceDetail.removeSampleConfirm"
+        // Voice sample groups (§7). `n` is the group's 0-based position within its channel.
+        static let samplesNote = "voiceDetail.samplesNote"                                      // grouping note / default note
+        static func group(_ channel: String, _ n: Int) -> String { "voiceDetail.group.\(channel).\(n)" }   // "Close · 3"
+        static func groupPlay(_ channel: String, _ n: Int) -> String { group(channel, n) + ".play" }
+        static func groupSubtitle(_ channel: String, _ n: Int) -> String { group(channel, n) + ".subtitle" }
+        static func groupLabelButton(_ channel: String, _ n: Int) -> String { group(channel, n) + ".label" }   // "Label" / "Edit"
+        static func ungrouped(_ channel: String) -> String { "voiceDetail.ungrouped.\(channel)" }             // "Not grouped · 2"
+        enum GroupLabel { static let field = "voiceDetail.groupLabel.field"; static let save = "voiceDetail.groupLabel.save"; static let remove = "voiceDetail.groupLabel.remove"; static let cancel = "voiceDetail.groupLabel.cancel" }
         enum Edit { static let sheet = "voiceEdit.sheet"; static let nameField = "voiceEdit.nameField"; static let isMeToggle = "voiceEdit.isMeToggle"; static let saveButton = "voiceEdit.saveButton"; static let cancelButton = "voiceEdit.cancelButton" }
         enum Merge { static let sheet = "voiceMerge.sheet"; static func target(_ slug: String) -> String { "voiceMerge.target.\(slug)" }; static let confirm = "voiceMerge.confirm"; static let cancelButton = "voiceMerge.cancelButton" }
         enum AddSample { static let sheet = "voiceAddSample.sheet"; static func candidate(_ i: Int) -> String { "voiceAddSample.candidate.\(i)" }; static let cancelButton = "voiceAddSample.cancelButton"; static let emptyState = "voiceAddSample.emptyState" }

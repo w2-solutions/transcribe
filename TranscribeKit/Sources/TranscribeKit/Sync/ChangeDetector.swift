@@ -107,7 +107,7 @@ final class ChangeDetector {
             for e in try projector.all(.recording) { entities[e.recordID] = e }
         }
         if deleteTypes.contains(.recording) { deleteTypes.insert(.speaker) }
-        if deleteTypes.contains(.profile) { deleteTypes.formUnion([.sample, .negative]) }
+        if deleteTypes.contains(.profile) { deleteTypes.formUnion([.sample, .negative, .groupLabel]) }
         discardCollected()
 
         var outcome = Outcome()

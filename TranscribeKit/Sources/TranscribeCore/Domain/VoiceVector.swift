@@ -56,6 +56,43 @@ public struct VoiceVector: Sendable, Hashable {
         self.init(raw: raw, expectedDimension: expectedDimension)
     }
 
+    /// Values already normalised; used only to read back `packed(_:)` bytes bit for bit.
+    private init(normalised values: [Float]) { self.values = values }
+
+    /// Several vectors back to back, each as `packed`, in the given order (a group label's anchor).
+    public static func packed(_ vectors: [VoiceVector]) -> Data {
+        var data = Data(capacity: vectors.reduce(0) { $0 + $1.dimension * 4 })
+        for v in vectors { data.append(v.packed) }
+        return data
+    }
+
+    /// Reads `packed(_:)` bytes back as vectors of `dimension`.
+    ///
+    /// Each vector keeps the exact values it was packed with, so it is bit-for-bit equal to the vector that was
+    /// packed (same `packed` bytes). `init(packed:)` cannot promise that: it normalises again, and normalising a unit
+    /// vector a second time changes the last bit of some values. Empty when the bytes are empty, `dimension` is not
+    /// positive, the bytes do not divide into whole vectors, or any vector is not finite with unit length (within 1e-4).
+    public static func unpacked(_ data: Data, dimension: Int) -> [VoiceVector] {
+        guard dimension > 0, !data.isEmpty, data.count % (dimension * 4) == 0 else { return [] }
+        let bytes = [UInt8](data)
+        var result: [VoiceVector] = []
+        result.reserveCapacity(bytes.count / (dimension * 4))
+        var i = 0
+        while i < bytes.count {
+            var values: [Float] = []
+            values.reserveCapacity(dimension)
+            for _ in 0..<dimension {
+                let bits = UInt32(bytes[i]) | UInt32(bytes[i + 1]) << 8 | UInt32(bytes[i + 2]) << 16 | UInt32(bytes[i + 3]) << 24
+                values.append(Float(bitPattern: bits)); i += 4
+            }
+            guard values.allSatisfy({ $0.isFinite }) else { return [] }
+            let norm = values.reduce(Float(0)) { $0 + $1 * $1 }.squareRoot()
+            guard abs(norm - 1) <= 1e-4 else { return [] }
+            result.append(VoiceVector(normalised: values))
+        }
+        return result
+    }
+
     /// Duration-weighted mean, re-normalised. Nil if empty or dimensions differ.
     public static func weightedMean(_ items: [(vector: VoiceVector, weight: Double)]) -> VoiceVector? {
         guard let d = items.first?.vector.dimension, items.allSatisfy({ $0.vector.dimension == d }) else { return nil }

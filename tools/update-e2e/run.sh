@@ -425,13 +425,11 @@ else
   build "$NEW_V" "$NEW_B"
   [ "$FAILS" = 0 ] || fatal "the builds are not as expected"
 
-  # 4. The update DMG (as release-mac.sh makes it: UDZO, the app and an Applications link), and the delta from the
-  # old build (as CI makes it), both signed the CI way.
+  # 4. The update DMG (as release-mac.sh makes it, with make-dmg.sh: UDZO, the app, an Applications link and the
+  # styled window), and the delta from the old build (as CI makes it), both signed the CI way.
   step "DMG of $NEW_V and the delta from $OLD_V, signed with sign-mac-release.sh --test"
-  ln -s /Applications "$E2E/build-$NEW_V/Applications"
-  hdiutil create -quiet -volname Transcribe -srcfolder "$E2E/build-$NEW_V" -format UDZO -ov \
-    "$E2E/Transcribe-$NEW_V-TEST.dmg" || fatal "hdiutil create"
-  rm "$E2E/build-$NEW_V/Applications"
+  "$ROOT/scripts/make-dmg.sh" "$E2E/build-$NEW_V/Transcribe.app" "$E2E/Transcribe-$NEW_V-TEST.dmg" >/dev/null ||
+    fatal "make-dmg.sh"
   mkdir -p "$E2E/dist"
   BINARY_DELTA="$E2E/dd/SourcePackages/artifacts/sparkle/Sparkle/bin/BinaryDelta" "$ROOT/scripts/make-mac-delta.sh" \
     "$E2E/build-$OLD_V/Transcribe.app" "$E2E/Transcribe-$NEW_V-TEST.dmg" "$E2E/dist" || fatal "make-mac-delta.sh"

@@ -17,6 +17,7 @@ struct VoiceDetailView: View {
     @State private var sheet: VoiceDetailSheet?
     @State private var confirmForget = false
     @State private var pendingRemoval: UUID?
+    @State private var labelEditor: GroupLabelEditor?
     @State private var showAllAppearances = false
     @State private var toastText: String?
     @State private var errorText: String?
@@ -146,26 +147,40 @@ struct VoiceDetailView: View {
     // MARK: Samples
 
     private func samplesCard(_ profile: VoiceProfile, samples: [VoiceSample], recordingsByID: [UUID: Recording]) -> some View {
-        VStack(alignment: .leading, spacing: 0) {
+        // Grouped by the device that heard each sample once more than one device has (each microphone hears a voice a
+        // little differently), and within a device by sound (voice sample groups §7). Row indexes stay global, in
+        // `sortedSamples` order.
+        let model = VoiceSampleGroups.build(profile: profile, recordingsByID: recordingsByID, localChannel: localChannel,
+                                            paths: env.paths)
+        let items = Self.cardItems(model, sampleIDs: samples.map(\.id))
+        return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
                 Text("Voice samples").font(.subheadline.weight(.semibold)).foregroundStyle(DS.Colour.ink)
                     .accessibilityAddTraits(.isHeader)
-                Text("More samples make recognition more reliable.").font(DS.Typo.meta).foregroundStyle(DS.Colour.secondary)
+                Text(model.showsNote ? VoiceSampleGroups.groupedNote : VoiceSampleGroups.defaultNote)
+                    .font(DS.Typo.meta)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityIdentifier(AX.VoiceDetail.samplesNote)
             }
             .padding(EdgeInsets(top: 14, leading: 16, bottom: 6, trailing: 16))
 
-            // Grouped by the device that heard each sample (§7) once more than one device has: each microphone hears
-            // a voice a little differently. Row indexes stay global, in `sortedSamples` order.
-            let groups = Self.sampleGroups(samples, localChannel: localChannel)
-            let showsHeaders = groups.count > 1 || groups.contains { $0.channel != localChannel }
-            ForEach(groups) { group in
-                if showsHeaders {
-                    sampleGroupHeader(group)
-                }
-                ForEach(Array(group.items.enumerated()), id: \.element.sample.id) { j, item in
-                    if j > 0 || (!showsHeaders && item.index > 0) { divider(inset: 72) }
-                    sampleRow(item.sample, index: item.index, slot: profile.colourSlot,
-                              recording: item.sample.sourceRecordingID.flatMap { recordingsByID[$0] })
+            ForEach(items) { item in
+                switch item.kind {
+                case .channel(let section):
+                    channelHeader(section)
+                case .group(let group, let channel):
+                    if item.dividerAbove { divider(inset: 16) }
+                    groupHeader(group, channel: channel, clipStates: model.clipStates)
+                case .ungrouped(let section):
+                    if item.dividerAbove { divider(inset: 16) }
+                    ungroupedHeader(section)
+                case .sample(let i):
+                    if item.dividerAbove { divider(inset: 72) }
+                    let sample = samples[i]
+                    sampleRow(sample, index: i, slot: profile.colourSlot,
+                              recording: sample.sourceRecordingID.flatMap { recordingsByID[$0] },
+                              state: model.clipStates[sample.id] ?? .noClip)
                 }
             }
 
@@ -198,42 +213,67 @@ struct VoiceDetailView: View {
         } message: {
             Text("\(profile.name) may be recognised less reliably.")
         }
+        .groupLabelAlert(editor: $labelEditor, voiceName: profile.name,
+                         onSave: { editor, text in saveGroupLabel(editor, text: text) },
+                         onRemove: { editor in removeGroupLabel(editor) })
     }
 
     /// This device's capture channel (the fake engine and UI tests may set it).
     private var localChannel: String { env.config.channel ?? CaptureChannel.current }
 
-    struct SampleGroup: Identifiable {
-        let channel: String
-        var items: [(index: Int, sample: VoiceSample)]
-        var id: String { channel }
+    /// One line of the samples card. The card is flattened so each line knows whether a sample row sits right above it:
+    /// rows are divided from each other (inset 72) and a group or "Not grouped" header from the rows before it (inset 16);
+    /// nothing is drawn between a header and its first row, as under today's channel headers.
+    struct SampleCardItem: Identifiable {
+        enum Kind {
+            case channel(ChannelSection)
+            case group(GroupSection, channel: String)
+            case ungrouped(ChannelSection)
+            case sample(Int)
+        }
+        let id: String
+        let kind: Kind
+        let dividerAbove: Bool
     }
 
-    /// Samples by capture channel: this device's first, then the others by size. A sample with no channel is this
-    /// device's (the launch stamp gives it one).
-    static func sampleGroups(_ samples: [VoiceSample], localChannel: String) -> [SampleGroup] {
-        var groups: [String: SampleGroup] = [:]
-        for (i, sample) in samples.enumerated() {
-            let channel = sample.captureChannel ?? localChannel
-            groups[channel, default: SampleGroup(channel: channel, items: [])].items.append((i, sample))
+    /// The card's lines in order: per channel its header (when `showsChannelHeaders`), each group's header (when
+    /// `showsHeader`) and rows, then "Not grouped" and its rows. `sampleIDs` are the `sortedSamples` ids.
+    static func cardItems(_ model: VoiceSampleGroupsView, sampleIDs: [UUID]) -> [SampleCardItem] {
+        var items: [SampleCardItem] = []
+        var afterRow = false
+        func add(_ id: String, _ kind: SampleCardItem.Kind, isRow: Bool) {
+            items.append(SampleCardItem(id: id, kind: kind, dividerAbove: afterRow))
+            afterRow = isRow
         }
-        return groups.values.sorted { a, b in
-            if (a.channel == localChannel) != (b.channel == localChannel) { return a.channel == localChannel }
-            if a.items.count != b.items.count { return a.items.count > b.items.count }
-            return a.channel < b.channel
+        func addRows(_ indexes: [Int]) {
+            for i in indexes where sampleIDs.indices.contains(i) { add("sample.\(sampleIDs[i])", .sample(i), isRow: true) }
         }
+        for section in model.channels {
+            if model.showsChannelHeaders {
+                add("channel.\(section.channel)", .channel(section), isRow: false)
+            }
+            for group in section.groups {
+                if group.showsHeader { add("group.\(group.id)", .group(group, channel: section.channel), isRow: false) }
+                addRows(group.sampleIndexes)
+            }
+            if !section.ungroupedIndexes.isEmpty {
+                add("ungrouped.\(section.channel)", .ungrouped(section), isRow: false)
+                addRows(section.ungroupedIndexes)
+            }
+        }
+        return items
     }
 
     /// "On this Mac · 2" / "On your iPhone · 3"
-    private func sampleGroupHeader(_ group: SampleGroup) -> some View {
-        let platform = DevicePlatform(channel: group.channel)
+    private func channelHeader(_ section: ChannelSection) -> some View {
+        let platform = DevicePlatform(channel: section.channel)
         let place: String = {
             guard let platform else { return "On another device" }
-            return group.channel == localChannel ? "On this \(platform.noun)" : "On your \(platform.noun)"
+            return section.channel == localChannel ? "On this \(platform.noun)" : "On your \(platform.noun)"
         }()
-        let text = "\(place) · \(group.items.count)"
+        let text = "\(place) · \(section.sampleCount)"
         return HStack(spacing: 6) {
-            Image(systemName: AudioElsewhereBanner.symbol(group.channel))
+            Image(systemName: AudioElsewhereBanner.symbol(section.channel))
                 .font(.system(size: 12, weight: .semibold))
                 .accessibilityHidden(true)
             Text(text)
@@ -245,14 +285,58 @@ struct VoiceDetailView: View {
         .accessibilityAddTraits(.isHeader)
         .accessibilityLabel(text)
         .accessibilityValue(text)
-        .accessibilityIdentifier(AX.Voices.sampleGroup(group.channel))
+        .accessibilityIdentifier(AX.Voices.sampleGroup(section.channel))
     }
 
-    private func sampleRow(_ sample: VoiceSample, index i: Int, slot: Int, recording: Recording?) -> some View {
+    /// "Close · 3" with its play button and Label/Edit link.
+    private func groupHeader(_ group: GroupSection, channel: String, clipStates: [UUID: SampleClipState]) -> some View {
+        let isPlaying = env.player.playingClipID.map { id in group.ref.memberIDs.contains { $0.uuidString == id } } == true
+        return SampleGroupHeader(
+            title: group.title, count: group.sampleIndexes.count, subtitle: group.subtitle, isLabelled: group.isLabelled,
+            isPlaying: isPlaying, canPlay: group.playSampleID != nil, id: AX.VoiceDetail.group(channel, group.position),
+            onPlay: { playGroup(group, isPlaying: isPlaying, clipStates: clipStates) },
+            onLabel: {
+                labelEditor = GroupLabelEditor(ref: group.ref, text: group.isLabelled ? group.title : "",
+                                               isLabelled: group.isLabelled)
+            })
+    }
+
+    /// Plays a clip of the group (its first representative that can play here), or stops one of its clips.
+    private func playGroup(_ group: GroupSection, isPlaying: Bool, clipStates: [UUID: SampleClipState]) {
+        if isPlaying { env.player.stop(); return }
+        guard let id = group.playSampleID, case .playable(let fileName, let range)? = clipStates[id] else { return }
+        env.player.playClip(url: env.paths.audioURL(fileName: fileName), range: range, id: id.uuidString)
+    }
+
+    /// "Not grouped · 2" over a channel's samples that cannot be grouped, with why.
+    private func ungroupedHeader(_ section: ChannelSection) -> some View {
+        let text = "Not grouped · \(section.ungroupedIndexes.count)"
+        return VStack(alignment: .leading, spacing: 2) {
+            Text(text)
+                .font(DS.Typo.chip)
+                .fontWeight(.medium)
+                .foregroundStyle(DS.Colour.secondary)
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityLabel(text)
+                .accessibilityValue(text)
+                .accessibilityIdentifier(AX.VoiceDetail.ungrouped(section.channel))
+            if let subtitle = section.ungroupedSubtitle {
+                Text(subtitle)
+                    .font(DS.Typo.meta)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        // Lines up with the group titles (past the group header's 32 pt play button).
+        .padding(EdgeInsets(top: 4, leading: 60, bottom: 4, trailing: 16))
+        .frame(maxWidth: .infinity, minHeight: 44, alignment: .leading)
+    }
+
+    private func sampleRow(_ sample: VoiceSample, index i: Int, slot: Int, recording: Recording?,
+                           state: SampleClipState) -> some View {
         let clipID = sample.id.uuidString
         let range = sample.clipRange
-        let url = recording.map { env.paths.audioURL(fileName: $0.audioFileName) }
-        let isAvailable = range != nil && url.map { FileManager.default.fileExists(atPath: $0.path) } == true
+        let caption = state.caption(env.copy)
         let isPlaying = env.player.playingClipID == clipID
         let quote = sample.quote ?? "Voice sample \(i + 1)"
         // Whole seconds, rounded to nearest: a 2.95 s clip reads "0:03" (DisplayFormat rounds down).
@@ -262,18 +346,21 @@ struct VoiceDetailView: View {
             return VoicesListModel.clipPeaks(recording.peaks, duration: recording.duration, range: range, count: 27)
         }()
         let play = {
-            guard isAvailable, let url, let range else { return }
-            if isPlaying { env.player.stop() } else { env.player.playClip(url: url, range: range, id: clipID) }
+            guard case .playable(let fileName, let range) = state else { return }
+            if isPlaying {
+                env.player.stop()
+            } else {
+                env.player.playClip(url: env.paths.audioURL(fileName: fileName), range: range, id: clipID)
+            }
         }
         return VStack(spacing: 0) {
             SampleRow(quote: quote, duration: duration, slot: slot, peaks: peaks, isPlaying: isPlaying,
-                      isAvailable: isAvailable, action: play)
+                      unavailableCaption: caption, action: play)
                 .contentShape(Rectangle())
                 .onTapGesture(perform: play)
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(isAvailable
-                    ? "\(isPlaying ? "Pause" : "Play") sample: \(quote), \(DisplayFormat.spokenDuration(duration))"
-                    : "Sample: \(quote). \(recording == nil ? "Recording deleted" : "Audio is on another device")")
+                .accessibilityLabel(caption.map { "Sample: \(quote). \($0)." }
+                    ?? "\(isPlaying ? "Pause" : "Play") sample: \(quote), \(DisplayFormat.spokenDuration(duration))")
                 .accessibilityAddTraits(.isButton)
                 .accessibilityAction { play() }
                 .accessibilityAction(named: "Remove sample") { pendingRemoval = sample.id }
@@ -453,6 +540,26 @@ struct VoiceDetailView: View {
         }
     }
 
+    private func saveGroupLabel(_ editor: GroupLabelEditor, text: String) {
+        do { try env.store.setGroupLabel(editor.ref, text: text) } catch { groupLabelFailed(error) }
+    }
+
+    private func removeGroupLabel(_ editor: GroupLabelEditor) {
+        do { try env.store.removeGroupLabel(editor.ref) } catch { groupLabelFailed(error) }
+    }
+
+    /// A group that changed under the alert (a sample added, removed or synced) is not an error: say so and let the
+    /// user try again on the group as it is now.
+    private func groupLabelFailed(_ error: any Error) {
+        if case StoreError.groupChanged = error {
+            showToast(Self.groupChangedText)
+        } else {
+            errorText = Self.describe(error)
+        }
+    }
+
+    static let groupChangedText = "These samples just changed. Try again."
+
     private func showToast(_ text: String) {
         toastText = nil
         Task {
@@ -511,8 +618,66 @@ struct VoiceDetailView: View {
         case StoreError.notFound: "That voice no longer exists."
         case StoreError.notImplemented: "This isn't available yet."
         case StoreError.invariant(let text): text
+        case StoreError.groupChanged: groupChangedText
         default: error.localizedDescription
         }
+    }
+}
+
+/// The sound group being labelled: the ref captured when Label or Edit was pressed (the store checks it is still the
+/// group drawn), and the label it showed then.
+struct GroupLabelEditor: Identifiable, Equatable {
+    let id = UUID()
+    let ref: SampleGroupRef
+    /// The shown label's text, "" for an unlabelled group.
+    let text: String
+    let isLabelled: Bool
+}
+
+extension View {
+    /// "Label this group" (voice sample groups §7), in the pattern of `folderNameAlert`: the label field (cut to
+    /// `GroupLabelText.maxLength` while typing), Save, Remove Label (only when the group is labelled) and Cancel.
+    func groupLabelAlert(editor: Binding<GroupLabelEditor?>, voiceName: String,
+                         onSave: @escaping (GroupLabelEditor, String) -> Void,
+                         onRemove: @escaping (GroupLabelEditor) -> Void) -> some View {
+        modifier(GroupLabelAlert(editor: editor, voiceName: voiceName, onSave: onSave, onRemove: onRemove))
+    }
+}
+
+private struct GroupLabelAlert: ViewModifier {
+    @Binding var editor: GroupLabelEditor?
+    let voiceName: String
+    let onSave: (GroupLabelEditor, String) -> Void
+    let onRemove: (GroupLabelEditor) -> Void
+    @State private var text = ""
+
+    func body(content: Content) -> some View {
+        content
+            .alert("Label this group", isPresented: Binding(get: { editor != nil }, set: { if !$0 { editor = nil } })) {
+                TextField("Label", text: $text)
+                    .inputCapitalization(.sentences)
+                    .accessibilityIdentifier(AX.VoiceDetail.GroupLabel.field)
+                Button("Save") {
+                    if let current = editor { onSave(current, text) }
+                    editor = nil
+                }
+                .accessibilityIdentifier(AX.VoiceDetail.GroupLabel.save)
+                if editor?.isLabelled == true {
+                    Button("Remove Label", role: .destructive) {
+                        if let current = editor { onRemove(current) }
+                        editor = nil
+                    }
+                    .accessibilityIdentifier(AX.VoiceDetail.GroupLabel.remove)
+                }
+                Button("Cancel", role: .cancel) { editor = nil }
+                    .accessibilityIdentifier(AX.VoiceDetail.GroupLabel.cancel)
+            } message: {
+                Text("A name just for you, like Close, Far or On speaker. It doesn't change how \(voiceName) is recognised.")
+            }
+            .onChange(of: editor?.id) { _, _ in text = editor?.text ?? "" }
+            .onChange(of: text) { _, new in
+                if new.count > GroupLabelText.maxLength { text = String(new.prefix(GroupLabelText.maxLength)) }
+            }
     }
 }
 

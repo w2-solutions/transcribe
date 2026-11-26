@@ -33,8 +33,9 @@ public enum SyntheticVoices {
     /// Bases and variants are orthonormal, so the cosine of two mixes is the sum of the products of their shared
     /// weights (people and setting); distinct residual variants contribute nothing.
     ///
-    /// Variants in use (keep each test's residual unique): 1–7, 11, 12, 20–25 (seeds, scripts and sync scenarios), 30–43,
-    /// 44–49 (stage-2 tests), 50–55; 56–63 are setting axes.
+    /// Variants in use (keep each test's residual unique): 1–7, 11, 12, 20–25 (seeds, scripts and sync scenarios),
+    /// 8–10, 13–19 (the `voiceGroups` seed: Tom's ten samples), 26, 27 (its Tom speakers), 30–43, 44–49 (stage-2
+    /// tests; 30–47 also the group label tests), 50–55; 56–63 are setting axes (57–59 Tom's three settings).
     public static func mix(_ people: [(SyntheticPerson, Float)], setting: (axis: Int, weight: Float)? = nil,
                            variant: Int) -> VoiceVector {
         precondition((0..<settingAxes.lowerBound).contains(variant), "variant must be below the setting axes")

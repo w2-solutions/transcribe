@@ -6,7 +6,7 @@ import Foundation
 /// `SyncRecordState.typeRaw`, so it must never change.
 public enum SyncRecordType: String, CaseIterable, Sendable, Codable {
     case recording = "Recording", speaker = "Speaker", profile = "VoiceProfile", sample = "VoiceSample",
-         negative = "VoiceNegative", folder = "Folder"
+         negative = "VoiceNegative", folder = "Folder", groupLabel = "VoiceGroupLabel"
 
     /// The record-name prefix: "<prefix>.<UUID>".
     public var prefix: String {
@@ -17,11 +17,12 @@ public enum SyncRecordType: String, CaseIterable, Sendable, Codable {
         case .sample: "vs"
         case .negative: "vn"
         case .folder: "fd"
+        case .groupLabel: "vg"
         }
     }
 
     /// Order in which fetched records are applied, so a link's target usually arrives before the record that names
-    /// it (folders and profiles first, then recordings, their speakers, then samples and negatives).
+    /// it (folders and profiles first, then recordings, their speakers, then samples, negatives and group labels).
     public var applyOrder: Int {
         switch self {
         case .folder: 0
@@ -30,6 +31,7 @@ public enum SyncRecordType: String, CaseIterable, Sendable, Codable {
         case .speaker: 3
         case .sample: 4
         case .negative: 5
+        case .groupLabel: 6
         }
     }
 
@@ -145,9 +147,9 @@ public enum ZoneDeletionReason: String, Sendable, Codable {
     case deleted, purged, encryptedDataReset
 }
 
-// MARK: - Typed accessors on the V3 sync models
+// MARK: - Typed accessors on the sync models (current schema)
 
-public extension TranscribeSchemaV3.SyncRecordState {
+public extension TranscribeSchemaV4.SyncRecordState {
     var pending: SyncPending {
         get { SyncPending(rawValue: pendingRaw) ?? .none }
         set { pendingRaw = newValue.rawValue }
@@ -198,7 +200,7 @@ public extension TranscribeSchemaV3.SyncRecordState {
     }
 }
 
-public extension TranscribeSchemaV3.SyncAccountState {
+public extension TranscribeSchemaV4.SyncAccountState {
     var pausedReason: SyncPauseReason? {
         get { pausedReasonRaw.flatMap(SyncPauseReason.init(rawValue:)) }
         set { pausedReasonRaw = newValue?.rawValue }

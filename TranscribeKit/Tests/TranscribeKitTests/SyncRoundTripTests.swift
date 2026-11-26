@@ -43,6 +43,13 @@ extension SyncSuites {
             sample.clipStart = 0.1
             sample.clipEnd = 2.25
             sample.captureInput = "usbAudio"
+            // A group label on that sample, with sub-millisecond dates.
+            let label = VoiceGroupLabel(text: "Close ✓", createdAt: Date(timeIntervalSince1970: 1_763_500_002.000_4),
+                                        embeddingModelKey: EmbeddingModelID.fake.key, captureChannel: d.channel,
+                                        anchors: [try #require(sample.vector)])
+            d.context.insert(label)
+            label.editedAt = Date(timeIntervalSince1970: 1_763_500_062.999_6)
+            label.profile = sample.profile
             // A recording with no transcript, title or folder.
             let r3 = try d.record([])
             _ = try d.store.finishWithoutMatching(id: r3, document: nil, noSpeech: true)

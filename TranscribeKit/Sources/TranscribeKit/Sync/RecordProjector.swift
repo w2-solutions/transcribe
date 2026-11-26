@@ -6,7 +6,7 @@ import TranscribeCore
 @MainActor
 enum SyncEntity {
     case recording(Recording), speaker(RecordingSpeaker), profile(VoiceProfile), sample(VoiceSample)
-    case negative(VoiceNegative), folder(Folder)
+    case negative(VoiceNegative), folder(Folder), groupLabel(VoiceGroupLabel)
 
     var recordID: SyncRecordID {
         switch self {
@@ -16,6 +16,7 @@ enum SyncEntity {
         case .sample(let s): SyncRecordID(type: .sample, entityID: s.id)
         case .negative(let n): SyncRecordID(type: .negative, entityID: n.id)
         case .folder(let f): SyncRecordID(type: .folder, entityID: f.id)
+        case .groupLabel(let l): SyncRecordID(type: .groupLabel, entityID: l.id)
         }
     }
 
@@ -27,6 +28,7 @@ enum SyncEntity {
         case .sample(let m): m
         case .negative(let m): m
         case .folder(let m): m
+        case .groupLabel(let m): m
         }
     }
 
@@ -40,7 +42,7 @@ enum SyncEntity {
     }
 
     /// Syncable rule (§8.2): a recording only at `.ready`, a speaker only when its recording is. Every profile, sample,
-    /// negative and folder is syncable. Rows that are not syncable are frozen: nothing is sent for them.
+    /// negative, folder and group label is syncable. Rows that are not syncable are frozen: nothing is sent for them.
     var isSyncable: Bool {
         switch self {
         case .recording(let r): r.stage == .ready
@@ -78,6 +80,8 @@ struct RecordProjector {
             return first(FetchDescriptor<VoiceNegative>(predicate: #Predicate { $0.id == uuid })).map(SyncEntity.negative)
         case .folder:
             return first(FetchDescriptor<Folder>(predicate: #Predicate { $0.id == uuid })).map(SyncEntity.folder)
+        case .groupLabel:
+            return first(FetchDescriptor<VoiceGroupLabel>(predicate: #Predicate { $0.id == uuid })).map(SyncEntity.groupLabel)
         }
     }
 
@@ -96,6 +100,7 @@ struct RecordProjector {
         case .sample: try context.fetch(FetchDescriptor<VoiceSample>()).map(SyncEntity.sample)
         case .negative: try context.fetch(FetchDescriptor<VoiceNegative>()).map(SyncEntity.negative)
         case .folder: try context.fetch(FetchDescriptor<Folder>()).map(SyncEntity.folder)
+        case .groupLabel: try context.fetch(FetchDescriptor<VoiceGroupLabel>()).map(SyncEntity.groupLabel)
         }
     }
 
@@ -108,6 +113,7 @@ struct RecordProjector {
         case .sample: Set(try context.fetch(FetchDescriptor<VoiceSample>()).map(\.id))
         case .negative: Set(try context.fetch(FetchDescriptor<VoiceNegative>()).map(\.id))
         case .folder: Set(try context.fetch(FetchDescriptor<Folder>()).map(\.id))
+        case .groupLabel: Set(try context.fetch(FetchDescriptor<VoiceGroupLabel>()).map(\.id))
         }
     }
 
@@ -120,6 +126,7 @@ struct RecordProjector {
         case let s as VoiceSample: .sample(s)
         case let n as VoiceNegative: .negative(n)
         case let f as Folder: .folder(f)
+        case let l as VoiceGroupLabel: .groupLabel(l)
         default: nil
         }
     }
@@ -133,6 +140,7 @@ struct RecordProjector {
         case "VoiceSample": .sample
         case "VoiceNegative": .negative
         case "Folder": .folder
+        case "VoiceGroupLabel": .groupLabel
         default: nil
         }
     }
@@ -196,6 +204,13 @@ struct RecordProjector {
                  "captureInput": .string(n.captureInput)]
         case .folder(let fd):
             f = ["name": .string(fd.name), "createdAt": .date(fd.createdAt)]
+        case .groupLabel(let l):
+            // The anchor travels as its stored bytes, never decoded and packed again: the resolver compares it with
+            // the samples' vectors bit for bit, and a sample's `vector` travels as its stored bytes too.
+            f = ["profileID": link("profileID", l.profile?.id), "text": .string(l.text),
+                 "createdAt": .date(l.createdAt), "editedAt": .date(l.editedAt),
+                 "embeddingModelKey": .string(l.embeddingModelKey), "captureChannel": .string(l.captureChannel),
+                 "anchor": .bytes(l.anchorVectorData), "anchorDimension": .int(l.anchorDimension)]
         }
         f[SyncSchema.versionField] = .int(SyncSchema.version)
         return f
