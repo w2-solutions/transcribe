@@ -1,0 +1,3 @@
+Voice samples are now grouped by how they sound. On a person's voice page, their samples from close to the microphone, from far away and through a loudspeaker show as separate groups, so you can tell which is which. Play any sample to hear it, and give a group a label if you like. Labels sync with iCloud when sync is on.
+
+Transcribe upgrades its library the first time this version opens. Earlier versions cannot open the library afterwards.
