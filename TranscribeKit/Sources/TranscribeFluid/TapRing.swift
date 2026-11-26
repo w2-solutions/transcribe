@@ -205,6 +205,23 @@ enum TapBufferLayout {
     }
 }
 
+/// The format Mac audio's IO block delivers (2026-11-27): the tap's sample layout at the rate the aggregate runs at. The
+/// aggregate runs at its main sub-device's (the output's) rate, which is not always the tap's own: a Bluetooth headset
+/// in call mode runs at 16 kHz while `kAudioTapPropertyFormat` still says 48 kHz. The tap stream's virtual format wins,
+/// then the aggregate's nominal rate, then the tap's.
+enum TapStreamFormat {
+    static func ioFormat(tap: AudioStreamBasicDescription, streamFormat: AudioStreamBasicDescription?,
+                         aggregateRate: Float64?) -> AudioStreamBasicDescription {
+        var io = tap
+        if let rate = streamFormat?.mSampleRate, rate > 0 {
+            io.mSampleRate = rate
+        } else if let aggregateRate, aggregateRate > 0 {
+            io.mSampleRate = aggregateRate
+        }
+        return io
+    }
+}
+
 /// Whether a paused Mac audio capture can restart its aggregate as it was (review 2026-11-26): only when nothing
 /// changed while it was paused. A change notice that arrived during the pause, another default output, a different
 /// tap format, or an aggregate that is gone all mean a rebuild.

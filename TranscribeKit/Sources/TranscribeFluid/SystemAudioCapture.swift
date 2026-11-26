@@ -71,6 +71,8 @@ actor SystemAudioCapture: StampedCaptureSource {
     private var builtOutputUID: String?
     private var builtFormat: AudioStreamBasicDescription?
     private var builtLayout: [UInt32] = []
+    /// The tap's first buffer among the aggregate's inputs when it was built.
+    private var builtFirst = 0
     private var builtStreams: [AudioObjectID] = []
     private var layoutRebuilds = 0
     private var tapDescription: CATapDescription?
@@ -135,7 +137,7 @@ actor SystemAudioCapture: StampedCaptureSource {
             let inPlace = procID != nil && aggregateID != kAudioObjectUnknown && TapResumePlan.canResumeInPlace(
                 changedWhilePaused: state.changedWhilePaused, aggregateAlive: Self.isAlive(aggregateID),
                 builtOutputUID: builtOutputUID, currentOutputUID: Self.defaultOutputDevice().flatMap(Self.outputUID),
-                builtFormat: builtFormat, currentFormat: tapID == kAudioObjectUnknown ? nil : Self.tapFormat(tapID))
+                builtFormat: builtFormat, currentFormat: currentIOFormat())
             if inPlace, let procID, AudioDeviceStart(aggregateID, procID) == noErr {
                 // Restarted as it was.
             } else {
@@ -264,13 +266,12 @@ actor SystemAudioCapture: StampedCaptureSource {
         aggregateID = aggregate
 
         guard let tapASBD = Self.tapFormat(tapID) else { throw EngineError.failed("Unsupported Mac audio format") }
-        var asbd = tapASBD
-        guard let format = AVAudioFormat(streamDescription: &asbd), let converter = TapConverter(inputFormat: format)
-        else { throw EngineError.failed("Unsupported Mac audio format") }
+        let interleaved = tapASBD.mFormatFlags & kAudioFormatFlagIsNonInterleaved == 0
+        let tapChannels = Swift.max(1, tapASBD.mChannelsPerFrame)
 
         // The tap's buffers among the aggregate's inputs (the output device may add its own microphone streams). A
         // new aggregate can report no inputs for a moment: read once more before giving up.
-        let tapBuffers = format.isInterleaved ? 1 : Int(format.channelCount)
+        let tapBuffers = interleaved ? 1 : Int(tapChannels)
         // Read again too when the output has inputs of its own and they are not listed yet.
         let subLayout = Self.inputLayout(outputID)
         var layout = Self.inputLayout(aggregate)
@@ -282,16 +283,27 @@ actor SystemAudioCapture: StampedCaptureSource {
         guard let placement = TapBufferLayout.place(
             channelsPerBuffer: layout, aggregateStreams: streams, subDeviceStreams: Set(Self.inputStreams(outputID)),
             subDeviceLayout: subLayout, terminalTypes: streams.count == layout.count ? streams.map(Self.terminalType) : [],
-            tapBuffers: tapBuffers, tapChannelsPerBuffer: format.isInterleaved ? format.channelCount : 1)
+            tapBuffers: tapBuffers, tapChannelsPerBuffer: interleaved ? tapChannels : 1)
         else {
             throw EngineError.failed("Could not start recording Mac audio (unexpected input layout \(layout.count))")
         }
         let first = placement.first
+
+        // The IO block gets the tap's samples at the aggregate's rate, which is the output device's: a Bluetooth
+        // headset in call mode runs at 16 kHz while the tap still says 48 kHz (found 2026-11-27 with Bose headphones:
+        // read as 48 kHz, every 40 ms chunk shrank to a third and the aligner filled the rest with zeros).
+        let streamASBD = streams.count == layout.count && first < streams.count ? Self.virtualFormat(streams[first]) : nil
+        let aggregateRate = Self.nominalSampleRate(aggregate)
+        var ioASBD = TapStreamFormat.ioFormat(tap: tapASBD, streamFormat: streamASBD, aggregateRate: aggregateRate)
+        log.notice("Mac audio rates: tap \(tapASBD.mSampleRate, privacy: .public) Hz, tap stream \(streamASBD?.mSampleRate ?? 0, privacy: .public) Hz, aggregate \(aggregateRate ?? 0, privacy: .public) Hz; converting from \(ioASBD.mSampleRate, privacy: .public) Hz")
+        guard let format = AVAudioFormat(streamDescription: &ioASBD), let converter = TapConverter(inputFormat: format)
+        else { throw EngineError.failed("Unsupported Mac audio format") }
+
         if layout.count > tapBuffers {
             log.notice("The sound output has \(layout.count - tapBuffers, privacy: .public) input streams of its own; recording only the tap's at \(first, privacy: .public) of \(layout, privacy: .public)\(placement.certain ? "" : " (by the composition's order)", privacy: .public)")
         }
 
-        let bytesPerFrame = Int(tapASBD.mBytesPerFrame)
+        let bytesPerFrame = Int(ioASBD.mBytesPerFrame)
         let maxFrames = Swift.max(8_192, 4 * Int(Self.uint32(aggregate, kAudioDevicePropertyBufferFrameSize) ?? 0))
         let ring = TapRing(slotCount: 128, bufferCount: tapBuffers, bytesPerBuffer: Swift.max(1, bytesPerFrame) * maxFrames,
                            expectedBufferCount: layout.count)
@@ -315,7 +327,8 @@ actor SystemAudioCapture: StampedCaptureSource {
         status = AudioDeviceStart(aggregate, proc)
         guard status == noErr else { throw EngineError.failed("Could not start recording Mac audio (start \(status))") }
         builtOutputUID = outputUID
-        builtFormat = tapASBD
+        builtFormat = ioASBD
+        builtFirst = first
         builtLayout = layout
         builtStreams = streams
         addAggregateListeners()
@@ -369,6 +382,13 @@ actor SystemAudioCapture: StampedCaptureSource {
                     kind: .aggregate) { await $0.inputStreamsChanged() }
         addListener(aggregateID, kAudioDevicePropertyStreams, scope: kAudioObjectPropertyScopeInput,
                     kind: .aggregate) { await $0.inputStreamsChanged() }
+        // The output switching rate (a Bluetooth headset going into or out of call mode when a microphone starts).
+        addListener(aggregateID, kAudioDevicePropertyNominalSampleRate, kind: .aggregate) { await $0.ioFormatMayHaveChanged() }
+        if builtFirst < builtStreams.count {
+            addListener(builtStreams[builtFirst], kAudioStreamPropertyVirtualFormat, kind: .aggregate) {
+                await $0.ioFormatMayHaveChanged()
+            }
+        }
     }
 
     private func addListener(_ object: AudioObjectID, _ selector: AudioObjectPropertySelector,
@@ -412,6 +432,23 @@ actor SystemAudioCapture: StampedCaptureSource {
         guard aggregateID != kAudioObjectUnknown, !builtLayout.isEmpty else { return }
         guard Self.inputLayout(aggregateID) != builtLayout || Self.inputStreams(aggregateID) != builtStreams else { return }
         await configurationChanged()
+    }
+
+    /// The aggregate's rate or the tap stream's format may have changed: rebuild only when the IO format differs from
+    /// what the converter was built for (a new aggregate may notify while it settles).
+    private func ioFormatMayHaveChanged() async {
+        guard aggregateID != kAudioObjectUnknown, let builtFormat, let current = currentIOFormat(),
+              !TapResumePlan.sameFormat(builtFormat, current) else { return }
+        log.notice("Mac audio's rate changed from \(builtFormat.mSampleRate, privacy: .public) to \(current.mSampleRate, privacy: .public) Hz")
+        await configurationChanged()
+    }
+
+    /// The format the IO block delivers now: the tap's sample layout at the tap stream's (else the aggregate's) rate.
+    private func currentIOFormat() -> AudioStreamBasicDescription? {
+        guard tapID != kAudioObjectUnknown, let tap = Self.tapFormat(tapID) else { return nil }
+        let stream = builtFirst < builtStreams.count ? Self.virtualFormat(builtStreams[builtFirst]) : nil
+        let rate = aggregateID == kAudioObjectUnknown ? nil : Self.nominalSampleRate(aggregateID)
+        return TapStreamFormat.ioFormat(tap: tap, streamFormat: stream, aggregateRate: rate)
     }
 
     /// The IO block saw an input list of another length than the aggregate was built with.
@@ -556,6 +593,23 @@ actor SystemAudioCapture: StampedCaptureSource {
         for (i, on) in usage.enumerated() { flags[i] = on ? 1 : 0 }
         var addr = address(kAudioDevicePropertyIOProcStreamUsage, scope: kAudioObjectPropertyScopeInput)
         return AudioObjectSetPropertyData(device, &addr, 0, nil, UInt32(size), raw)
+    }
+
+    /// A stream's virtual format (`kAudioStreamPropertyVirtualFormat`).
+    static func virtualFormat(_ stream: AudioObjectID) -> AudioStreamBasicDescription? {
+        var addr = address(kAudioStreamPropertyVirtualFormat)
+        var asbd = AudioStreamBasicDescription()
+        var size = UInt32(MemoryLayout<AudioStreamBasicDescription>.size)
+        guard AudioObjectGetPropertyData(stream, &addr, 0, nil, &size, &asbd) == noErr, asbd.mSampleRate > 0 else { return nil }
+        return asbd
+    }
+
+    static func nominalSampleRate(_ device: AudioObjectID) -> Float64? {
+        var addr = address(kAudioDevicePropertyNominalSampleRate)
+        var rate = Float64(0)
+        var size = UInt32(MemoryLayout<Float64>.size)
+        guard AudioObjectGetPropertyData(device, &addr, 0, nil, &size, &rate) == noErr, rate > 0 else { return nil }
+        return rate
     }
 
     static func tapFormat(_ tap: AudioObjectID) -> AudioStreamBasicDescription? {

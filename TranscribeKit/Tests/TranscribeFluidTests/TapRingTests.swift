@@ -191,6 +191,22 @@ struct TapRingTests {
         #expect(place([], sub: []) == .init(first: 0, certain: true))               // built-in speakers: no inputs
     }
 
+    /// 2026-11-27, Bose headphones in call mode: the tap said 48 kHz while the aggregate ran at 16 kHz, so every chunk
+    /// was converted as a third of its length. The IO format takes the stream's rate, else the aggregate's.
+    @Test func theIOFormatUsesTheRateTheAggregateRunsAt() {
+        var tap = AudioStreamBasicDescription()
+        tap.mSampleRate = 48_000; tap.mFormatID = kAudioFormatLinearPCM
+        tap.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
+        tap.mBytesPerPacket = 4; tap.mFramesPerPacket = 1; tap.mBytesPerFrame = 4; tap.mChannelsPerFrame = 1; tap.mBitsPerChannel = 32
+        var stream = tap; stream.mSampleRate = 16_000
+        #expect(TapStreamFormat.ioFormat(tap: tap, streamFormat: stream, aggregateRate: 24_000).mSampleRate == 16_000)
+        #expect(TapStreamFormat.ioFormat(tap: tap, streamFormat: nil, aggregateRate: 16_000).mSampleRate == 16_000)
+        #expect(TapStreamFormat.ioFormat(tap: tap, streamFormat: nil, aggregateRate: nil).mSampleRate == 48_000)
+        let io = TapStreamFormat.ioFormat(tap: tap, streamFormat: stream, aggregateRate: nil)
+        #expect(io.mBytesPerFrame == 4 && io.mChannelsPerFrame == 1 && io.mFormatFlags == tap.mFormatFlags)
+        #expect(!TapResumePlan.sameFormat(tap, io))      // a rate change means a rebuild, not a restart in place
+    }
+
     @Test func anUnexpectedLayoutIsRefused() {
         // More buffers than the output device and the tap account for.
         #expect(TapBufferLayout.firstTapIndex(channelsPerBuffer: [1, 1, 1], subDeviceLayout: [1], tapBuffers: 1,
