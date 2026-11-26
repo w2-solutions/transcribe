@@ -53,7 +53,7 @@ struct ChannelAwareMatcherTests {
     func foreignTrustedOnlyAsks(score: Float, asks: Bool) throws {
         let karan = Self.profile(TV.karanID, "Karan", axes: [TV.karanAxis, TV.karanAxis], channels: [Self.phone, Self.phone])
         let (d, t) = try Self.run(Self.probe([TV.karanAxis: score], on: Self.mac), [karan])
-        #expect(t.probeChannel == Self.mac && t.version == 2)
+        #expect(t.probeChannel == Self.mac && t.version == MatchTrace.currentVersion)
         let e = try #require(t.profiles.first)
         #expect(e.trustedCount == 0 && e.otherChannelTrustedCount == 2 && e.untrustedCount == 2 && e.askOnly)
         #expect(e.trustedScore == nil && e.trustedTop == nil && approx(e.score, score))
@@ -225,8 +225,12 @@ struct ChannelAwareMatcherTests {
 
     @Test func traceV2RoundTripsAndV1StillDecodes() throws {
         let karan = Self.profile(TV.karanID, "Karan", axes: [TV.karanAxis], channels: [Self.phone])
-        let (_, t) = try Self.run(Self.probe([TV.karanAxis: 0.8], on: Self.mac), [karan])
-        #expect(MatchTrace.currentVersion == 2 && t.version == 2)
+        // With groups off the matcher writes v2, the version these fields arrived in; with groups on, v3.
+        var groupsOff = MatchPolicy.default
+        groupsOff.groupScoring = false
+        let (_, t) = try Self.run(Self.probe([TV.karanAxis: 0.8], on: Self.mac), [karan], policy: groupsOff)
+        #expect(MatchTrace.channelsVersion == 2 && t.version == 2)
+        #expect(try Self.run(Self.probe([TV.karanAxis: 0.8], on: Self.mac), [karan]).1.version == MatchTrace.groupsVersion)
         let data = try JSONEncoder().encode(t)
         #expect(try JSONDecoder().decode(MatchTrace.self, from: data) == t)
         let json = try #require(String(data: data, encoding: .utf8))

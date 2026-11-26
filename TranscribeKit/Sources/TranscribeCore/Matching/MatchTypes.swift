@@ -31,8 +31,9 @@ public struct MatchPolicy: Sendable, Equatable {
     /// Trace only: cohort score statistics over the top N cosines, once the cohort has at least this many vectors.
     public var cohortStatsTopN = 20
     public var cohortStatsMinCount = 30
-    /// Score auto-labelling per sound group (decision D3; `SampleGrouping` at `groupJoinCosine`). false reproduces the
-    /// matcher from before groups exactly.
+    /// Score auto-labelling per sound group (decision D3; `SampleGrouping` at `groupJoinCosine`) and keep every sound
+    /// group when curating samples (decision D4). false reproduces the matcher and the curator from before groups
+    /// exactly. Only candidates that carry `sampleIDs` are scored per group.
     public var groupScoring = true
     /// The join value for grouping inside the matcher and the curator: the screen's value, one source of truth.
     public var groupJoinCosine: Float = SampleGroupPolicy.default.joinCosine
@@ -55,7 +56,7 @@ public struct ProfileCandidate: Sendable, Equatable {
     public let autoLabel: Bool
     public let needsResample: Bool
     /// Same count as `samples` when set: each sample's id, for sound grouping (canonical order and group keys).
-    /// nil (legacy callers and fixtures): every sample is its own group.
+    /// nil (legacy callers and fixtures): the profile is scored without groups, exactly as before groups.
     public let sampleIDs: [UUID]?
     /// Same count as `samples` when set: each sample's `addedAt` in `SyncMillis`, for group keys. nil: unknown.
     public let addedAtMillis: [Int64]?
@@ -162,6 +163,21 @@ public struct SampleInsertResult: Sendable, Equatable {
     public var evicted: [UUID]
     public var added: Bool              // false when skipped as a near-duplicate
     public init(keep: [CuratedSample], evicted: [UUID], added: Bool) { self.keep = keep; self.evicted = evicted; self.added = added }
+}
+
+/// The result of `SampleCurator.insertMany` (a merge).
+public struct SampleMergeResult: Sendable, Equatable {
+    /// The full resulting set: the existing samples left, in input order, then the kept incoming ones.
+    public var keep: [CuratedSample]
+    /// Existing samples evicted.
+    public var evicted: [UUID]
+    /// Incoming samples kept, in canonical order (`addedAtMillis`, then id).
+    public var addedIDs: [UUID]
+    /// Incoming samples not kept: near-duplicates, or evicted by the cap.
+    public var skippedIDs: [UUID]
+    public init(keep: [CuratedSample], evicted: [UUID], addedIDs: [UUID], skippedIDs: [UUID]) {
+        self.keep = keep; self.evicted = evicted; self.addedIDs = addedIDs; self.skippedIDs = skippedIDs
+    }
 }
 
 public struct ColourRequest: Sendable, Equatable {
