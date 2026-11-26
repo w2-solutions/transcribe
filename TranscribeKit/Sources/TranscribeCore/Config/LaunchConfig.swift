@@ -92,8 +92,9 @@ public struct LaunchConfig: Sendable, Equatable {
     /// (`TRANSCRIBE_UPDATE_AVAILABLE=9.9.9`, digits and dots). Read only with the fake engine or `-uiTesting`, like
     /// `channel`; the Mac app honours it only in DEBUG builds, never starts Sparkle for it and never saves it.
     public var updateAvailable: String?
-    /// What to record from for this session (`TRANSCRIBE_SOURCE`), as if picked in Settings → Recording; nil leaves
-    /// the saved choice. Read only with the fake engine or `-uiTesting`, like `channel`, and never saved.
+    /// What to record from (`TRANSCRIBE_SOURCE`), as if picked in Settings → Recording; nil leaves the saved choice.
+    /// Read only with the fake engine or `-uiTesting`, like `channel`; the app applies it only in UI tests, whose
+    /// settings are a fresh suite of their own, so it never changes this Mac's defaults.
     public var source: CaptureSources?
     /// How the fake engine's Mac audio behaves (`TRANSCRIBE_MAC_AUDIO`; default `granted`). Read only with the fake
     /// engine or `-uiTesting`; the real engine ignores it.

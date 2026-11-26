@@ -216,10 +216,14 @@ struct RecorderControllerTests {
         let pausedAt = recorder.elapsed
         try await Task.sleep(for: .milliseconds(400))
         #expect(recorder.elapsed == pausedAt)
+        let resumedAt = Date()
         await recorder.resume()
         #expect(await wait { recorder.elapsed >= pausedAt + 0.15 })
-        // Wall time ≥ 0.2 + 0.52 + 0.15 s, but elapsed only counts the unpaused part.
-        #expect(recorder.elapsed < pausedAt + 0.4)
+        // Wall time ≥ 0.2 + 0.52 + 0.15 s, but elapsed only counts the unpaused part: at most the wall time since
+        // resuming plus one 50 ms tick, never the 0.52 s pause. (Measured against the wall time, not a fixed 0.4 s, so
+        // a busy machine that polls late cannot fail it.)
+        let sinceResume = Date().timeIntervalSince(resumedAt)
+        #expect(recorder.elapsed < pausedAt + sinceResume + 0.1)
         await recorder.discard()
     }
 

@@ -389,10 +389,10 @@ struct MixedRecordingStoreTests {
         #expect(call.input == CaptureDetail.Input.micAndSystem)
         #expect(call.speakers.map(\.source) == ["mic", "system"])
         let tom = try #require(log.profiles.first { $0.id == Seeds.ID.tom })
-        // Close, Far, On speaker and the call on this device; the iPad's pair.
-        #expect(tom.groupSizesByChannel?[Self.mac] == [3, 3, 2, 2] && tom.groupSizesByChannel?[CaptureChannel.ipad] == [2])
-        #expect(tom.trustedGroupsByChannel?[Self.mac] == 4)
-        #expect(tom.macAudioByChannel == [Self.mac: 2])
+        // Close, Far, On speaker, the Teams call and the Zoom call on this device; the iPad's pair.
+        #expect(tom.groupSizesByChannel?[Self.mac] == [3, 3, 2, 2, 1] && tom.groupSizesByChannel?[CaptureChannel.ipad] == [2])
+        #expect(tom.trustedGroupsByChannel?[Self.mac] == 5)
+        #expect(tom.macAudioByChannel == [Self.mac: 3])
         // Microphone-only recordings carry no sources.
         let a = try #require(log.recordings.first { $0.id == Seeds.ID.recordingA })
         #expect(a.sources == nil && a.outputRoute == nil && a.speakers.allSatisfy { $0.source == nil })
@@ -418,6 +418,10 @@ struct MixedRecordingStoreTests {
         let resolved = GroupLabelResolver.resolve(groups: groups, memberVectors: vectors, labels: GroupingInput.anchors(tom))
         let teams = try #require(groups.first { resolved.placed[$0.key] == Seeds.ID.teamsLabel })
         #expect(Set(teams.memberIDs) == Set(Seeds.ID.tomCallSamples))
-        #expect(groups.filter { $0.channel == Self.mac }.count == 4)
+        #expect(groups.filter { $0.channel == Self.mac }.count == 5)
+        // The Zoom sample is a group of its own, unlabelled, and also heard through Mac audio.
+        let zoom = try #require(groups.first { $0.memberIDs == [Seeds.ID.tomZoomSample] })
+        #expect(resolved.placed[zoom.key] == nil)
+        #expect(tom.samples.first { $0.id == Seeds.ID.tomZoomSample }?.captureInput == CaptureDetail.Input.systemAudio)
     }
 }

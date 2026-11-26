@@ -56,9 +56,7 @@ import TranscribeFakes
             let environment = ProcessInfo.processInfo.environment
             Platform.outputRouteOverride = environment["TRANSCRIBE_OUTPUT_ROUTE"].flatMap { $0.isEmpty ? nil : $0 }
             if config.uiTesting {
-                if let source = environment["TRANSCRIBE_SOURCE"].flatMap(CaptureSources.init(rawValue:)) {
-                    env.settings.recordingSource = source
-                }
+                if let source = config.source { env.settings.recordingSource = source }
                 if let explained = environment["TRANSCRIBE_MAC_AUDIO_EXPLAINED"] {
                     env.settings.macAudioExplained = ["1", "yes", "true", "on"].contains(explained.lowercased())
                 }

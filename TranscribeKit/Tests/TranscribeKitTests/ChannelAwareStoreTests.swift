@@ -92,28 +92,31 @@ struct ChannelAwareStoreTests {
         #expect(!h.store.insertSample(into: karan, vector: SyntheticVoices.base(.karan), modelKey: EmbeddingModelID.fake.key,
                                       origin: .confirmed, speechSeconds: 12, sourceRecordingID: nil, sourceSpeakerID: nil,
                                       clip: nil, quote: nil, channel: Self.mac, input: nil))
-        for v in 0..<14 {   // distinct voices near Karan (pairwise cosine 0.25): the iPhone set fills past its cap
+        // Distinct voices near Karan (pairwise cosine 0.25): each is a sound group of its own with a confirmed sample,
+        // so curation keeps them all up to the ceiling (decision D4) and the iPhone set fills past it.
+        let ceiling = MatchPolicy.default.sampleCeilingPerChannel
+        for v in 0..<ceiling {
             h.store.insertSample(into: karan, vector: SyntheticVoices.vector(near: .karan, cosine: 0.5, variant: 30 + v),
                                  modelKey: EmbeddingModelID.fake.key, origin: .confirmed, speechSeconds: 12,
                                  sourceRecordingID: nil, sourceSpeakerID: nil, clip: nil, quote: nil,
                                  channel: Self.phone, input: CaptureDetail.Input.builtInMic)
         }
         try h.context.save()
-        #expect(samples(karan, on: Self.phone).count == MatchPolicy.default.maxSamplesPerProfile)
+        #expect(samples(karan, on: Self.phone).count == ceiling)
         #expect(Set(samples(karan, on: Self.mac).map(\.id)) == macBefore)
-        #expect(karan.samples.count == MatchPolicy.default.maxSamplesPerProfile + 2)
-        #expect(try h.count(VoiceSample.self) == 3 + MatchPolicy.default.maxSamplesPerProfile + 2)   // Liam's 3 untouched
+        #expect(karan.samples.count == ceiling + 2)
+        #expect(try h.count(VoiceSample.self) == 3 + ceiling + 2)   // Liam's 3 untouched
 
-        // Filling the Mac set evicts only Mac samples, and keeps the earliest named one.
+        // Filling the Mac set past the ceiling evicts only Mac samples, and keeps the earliest named one.
         let earliestNamed = try #require(karan.sortedSamples.first { $0.origin == .named && $0.captureChannel == Self.mac })
         let phoneBefore = Set(samples(karan, on: Self.phone).map(\.id))
-        for v in 0..<12 {
-            h.store.insertSample(into: karan, vector: SyntheticVoices.vector(near: .karan, cosine: 0.5, variant: 45 + v),
+        for v in 0..<(ceiling - 1) {
+            h.store.insertSample(into: karan, vector: SyntheticVoices.vector(near: .karan, cosine: 0.5, variant: 50 + v),
                                  modelKey: EmbeddingModelID.fake.key, origin: .confirmed, speechSeconds: 12,
                                  sourceRecordingID: nil, sourceSpeakerID: nil, clip: nil, quote: nil, channel: Self.mac, input: nil)
         }
         try h.context.save()
-        #expect(samples(karan, on: Self.mac).count == MatchPolicy.default.maxSamplesPerProfile)
+        #expect(samples(karan, on: Self.mac).count == ceiling)
         #expect(samples(karan, on: Self.mac).contains { $0.id == earliestNamed.id })
         #expect(Set(samples(karan, on: Self.phone).map(\.id)) == phoneBefore)
     }
@@ -172,13 +175,17 @@ struct ChannelAwareStoreTests {
         _ = try h.store.confirmSuggestion(recordingID: id1, key: "S1")
         #expect(samples(liam, on: Self.mac).map(\.origin) == [.confirmed])
 
-        // 2. A clear Mac recording (0.9 to the iPhone samples, 0.54 to the Mac one): (0.54 + 0.9) / 2 = 0.72 auto-labels,
-        //    but the Mac trusted score is 0.54, under 0.70, so no automatic sample. Before channels it would be 0.9.
+        // 2. A clear Mac recording (0.9 to the iPhone samples, 0.54 to the Mac one). The whole score W is
+        //    (0.54 + 0.9) / 2 = 0.72, but auto-labelling is decided per sound group on the Mac only (decision D3): the
+        //    one Mac sample scores alone, 0.54, under 0.55, so the app asks ("groupScore") and stores no automatic
+        //    sample. (Before groups W auto-labelled; before channels the score would be 0.9.)
         let (_, s2) = try record(h, SyntheticVoices.vector(near: .liam, cosine: 0.9, variant: 41), on: Self.mac, at: 2)
-        #expect(s2.label == .autoLabelled && s2.profile?.id == liam.id)
+        #expect(s2.label == .suggested && s2.suggestedProfileID == liam.id)
         #expect(abs((s2.matchScore ?? 0) - 0.72) < 1e-4)
+        #expect(try trace(s2).reason == "groupScore")
         let liamEvidence = try #require(try trace(s2).profiles.first { $0.profileID == liam.id })
         #expect(abs((liamEvidence.trustedScore ?? 0) - 0.54) < 1e-4 && liamEvidence.otherChannelTrustedCount == 3)
+        #expect(abs((liamEvidence.autoScore ?? 0) - 0.54) < 1e-4)
         #expect(!liam.samples.contains { $0.sourceSpeakerID == s2.id })
 
         // 3. The same clear voice on the iPhone: trusted score 0.9, so the automatic sample is stored there.
@@ -218,6 +225,40 @@ struct ChannelAwareStoreTests {
         #expect(samples(karan, on: Self.mac).count == 2)
         let movedNegative = try #require(karan.negatives.first)
         #expect(movedNegative.captureChannel == Self.phone && movedNegative.captureInput == CaptureDetail.Input.headsetMic)
+    }
+
+    /// A merge goes through `SampleCurator.insertMany` per channel (decision D4): both profiles' sound groups keep
+    /// members. Karan has 12 phone samples in one setting (0.85 to each other); K2 has 6 in two other settings. 18 is
+    /// over the soft cap of 12, so 6 go, all from the largest group, Karan's own.
+    @Test func mergeKeepsBothProfilesSoundGroups() throws {
+        let h = try WP3Harness(channel: Self.mac)
+        defer { h.cleanup() }
+        try h.seed(.library)
+        let karan = try #require(try h.profile(named: "Karan"))
+        let source = VoiceProfile(name: "K2", colourSlot: 4, embeddingModelKey: EmbeddingModelID.fake.key, now: Seeds.Dates.d)
+        h.context.insert(source)
+        func add(_ p: VoiceProfile, axis: Int, variant: Int, quote: String, minute: Int) {
+            let sample = VoiceSample(vector: SyntheticVoices.mix([(.karan, 0.6)], setting: (axis, 0.7), variant: variant),
+                                     embeddingModelKey: EmbeddingModelID.fake.key, origin: .confirmed,
+                                     addedAt: Seeds.Dates.d.addingTimeInterval(Double(minute) * 60), speechSeconds: 12)
+            h.context.insert(sample)
+            sample.captureChannel = Self.phone
+            sample.quote = quote
+            sample.profile = p
+        }
+        for k in 0..<12 { add(karan, axis: 57, variant: 30 + k, quote: "room", minute: k) }
+        for k in 0..<3 { add(source, axis: 58, variant: 42 + k, quote: "car", minute: 20 + k) }
+        for k in 0..<3 { add(source, axis: 59, variant: 45 + k, quote: "call", minute: 30 + k) }
+        try h.context.save()
+
+        try h.store.mergeProfiles(source: source.id, into: karan.id)
+        let phone = samples(karan, on: Self.phone)
+        #expect(phone.count == MatchPolicy.default.maxSamplesPerProfile)
+        #expect(phone.filter { $0.quote == "car" }.count == 3 && phone.filter { $0.quote == "call" }.count == 3)
+        #expect(phone.filter { $0.quote == "room" }.count == 6)
+        // Copies keep their date; the Mac samples are untouched.
+        #expect(phone.filter { $0.quote == "car" }.map(\.addedAt).sorted().first == Seeds.Dates.d.addingTimeInterval(20 * 60))
+        #expect(samples(karan, on: Self.mac).count == 2)
     }
 
     // MARK: Seed and ask context
@@ -312,7 +353,8 @@ struct ChannelAwareStoreTests {
         #expect(liam.samplesByChannel == [Self.mac: 1, Self.phone: 2] && liam.trustedByChannel == [Self.mac: 1, Self.phone: 2])
         let row = try #require(log.recordings.first { $0.id == id })
         #expect(row.channel == Self.mac && row.input == CaptureDetail.Input.builtInMic)
-        #expect(row.speakers.first?.trace?.probeChannel == Self.mac && row.speakers.first?.trace?.version == 2)
+        // Matched per sound group, so the trace is v3 (`MatchTrace.groupsVersion`); every v2 key is still there.
+        #expect(row.speakers.first?.trace?.probeChannel == Self.mac && row.speakers.first?.trace?.version == MatchTrace.groupsVersion)
         #expect(row.speakers.first?.trace?.reason == "otherChannel")
         let seeded = try #require(log.recordings.first { $0.id == Seeds.ID.recordingA })
         #expect(seeded.channel == Self.phone && seeded.input == nil)

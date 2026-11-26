@@ -155,17 +155,7 @@ public final class LibraryStore: LibraryStoring {
     func insertSample(into profile: VoiceProfile, vector: VoiceVector, modelKey: String, origin: SampleOrigin,
                       speechSeconds: Double, sourceRecordingID: UUID?, sourceSpeakerID: UUID?,
                       clip: TimeRange?, quote: String?, channel: String?, input: String?) -> Bool {
-        let live = profile.samples.filter { $0.embeddingModelKey == profile.embeddingModelKey }
-        if live.isEmpty && profile.embeddingModelKey != modelKey {
-            // A profile with no usable samples (all removed, or a model change) re-enrols on the new model.
-            // Its negatives and group labels were measured on the old model too, so they go with the samples.
-            for stale in profile.samples { context.delete(stale) }
-            profile.samples.removeAll()
-            for stale in profile.negatives { context.delete(stale) }
-            profile.negatives.removeAll()
-            deleteGroupLabels(of: profile)
-            profile.embeddingModelKey = modelKey
-        }
+        reenrolIfEmpty(profile, on: modelKey)
         guard profile.embeddingModelKey == modelKey else { return false }
         let existing: [CuratedSample] = profile.samples.compactMap { s in
             guard s.embeddingModelKey == modelKey, s.captureChannel == channel,
@@ -191,6 +181,71 @@ public final class LibraryStore: LibraryStoring {
         profile.samples.removeAll { evicted.contains($0.id) && $0.id != sample.id }
         profile.needsResample = false
         return true
+    }
+
+    /// A profile with no usable samples (all removed, or a model change) re-enrols on `modelKey`.
+    /// Its negatives and group labels were measured on the old model too, so they go with the samples.
+    func reenrolIfEmpty(_ profile: VoiceProfile, on modelKey: String) {
+        let live = profile.samples.filter { $0.embeddingModelKey == profile.embeddingModelKey }
+        guard live.isEmpty && profile.embeddingModelKey != modelKey else { return }
+        for stale in profile.samples { context.delete(stale) }
+        profile.samples.removeAll()
+        for stale in profile.negatives { context.delete(stale) }
+        profile.negatives.removeAll()
+        deleteGroupLabels(of: profile)
+        profile.embeddingModelKey = modelKey
+    }
+
+    /// Copies `samples` (of another profile) into `profile` through `SampleCurator.insertMany`, once per
+    /// (channel, dimension), so curation keeps both profiles' sound groups (decision D4). Each copy keeps its origin,
+    /// channel, input, clip, quote, date and stored vector bytes (a copied group label anchor finds it bit for bit);
+    /// it gets a new id. The first sample's model re-enrols an empty profile, as a one-at-a-time insert would.
+    func insertMerged(_ samples: [VoiceSample], into profile: VoiceProfile) {
+        guard let first = samples.first else { return }
+        reenrolIfEmpty(profile, on: first.embeddingModelKey)
+        let modelKey = profile.embeddingModelKey
+        struct Bucket: Hashable { let channel: String?; let dimension: Int }
+        var incoming: [Bucket: [(CuratedSample, VoiceSample)]] = [:]
+        for sample in samples where sample.embeddingModelKey == modelKey {
+            guard let decoded = sample.vector else { continue }
+            let v = VoiceVector.unpacked(sample.vectorData, dimension: decoded.dimension).first ?? decoded
+            let c = CuratedSample(id: UUID(), vector: v, origin: sample.origin, addedAt: sample.addedAt,
+                                  speechSeconds: sample.speechSeconds)
+            incoming[Bucket(channel: sample.captureChannel, dimension: v.dimension), default: []].append((c, sample))
+        }
+        let buckets = incoming.keys.sorted {
+            ($0.channel ?? "", $0.dimension) < ($1.channel ?? "", $1.dimension)
+        }
+        var addedAny = false
+        for bucket in buckets {
+            let items = incoming[bucket] ?? []
+            let existing: [CuratedSample] = profile.samples.compactMap { s in
+                guard s.embeddingModelKey == modelKey, s.captureChannel == bucket.channel,
+                      let v = s.vector, v.dimension == bucket.dimension else { return nil }
+                return CuratedSample(id: s.id, vector: v, origin: s.origin, addedAt: s.addedAt, speechSeconds: s.speechSeconds)
+            }
+            let result = SampleCurator.insertMany(items.map(\.0), into: existing, policy: policy)
+            let byID = Dictionary(uniqueKeysWithValues: items.map { ($0.0.id, $0) })
+            for id in result.addedIDs {
+                guard let (c, from) = byID[id] else { continue }
+                addedAny = true
+                let sample = VoiceSample(id: c.id, vector: c.vector, embeddingModelKey: modelKey, origin: c.origin,
+                                         addedAt: c.addedAt, speechSeconds: c.speechSeconds)
+                context.insert(sample)
+                sample.sourceRecordingID = from.sourceRecordingID
+                sample.sourceSpeakerID = from.sourceSpeakerID
+                sample.clipStart = from.clipStart
+                sample.clipEnd = from.clipEnd
+                sample.quote = from.quote
+                sample.captureChannel = from.captureChannel
+                sample.captureInput = from.captureInput
+                sample.profile = profile
+            }
+            let evicted = Set(result.evicted)
+            for s in profile.samples where evicted.contains(s.id) { context.delete(s) }
+            profile.samples.removeAll { evicted.contains($0.id) }
+        }
+        if addedAny { profile.needsResample = false }
     }
 
     /// Adds a sample taken from a recording speaker (clip and quote from its first listen clip).
@@ -430,11 +485,13 @@ public final class LibraryStore: LibraryStoring {
                 // An automatic sample needs the profile's trusted samples alone to match strongly (§1.7), measured
                 // before the insert, so an automatic sample never vouches for the next one. Only trusted samples
                 // heard on this recording's channel count (§7).
+                // Scored per sound group, the trusted score is measured in the winning group and the voice must
+                // join that group's centroid (decision D3).
                 if s.source != .mixed, let vector = s.vector, let key = s.embeddingModelKey, key == p.embeddingModelKey,
                    SampleCurator.shouldAddAutomaticSample(
                        decision: decision,
-                       trustedScore: VoiceMatcher.evidence(vector, against: Self.candidate(p, policy: policy),
-                                                           probeChannel: r.captureChannel, policy: policy)?.trustedScore,
+                       evidence: VoiceMatcher.evidence(vector, against: Self.candidate(p, policy: policy),
+                                                       probeChannel: r.captureChannel, policy: policy),
                        coherence: s.coherence, cleanSeconds: s.cleanSeconds, policy: policy) {
                     let clip = firstClip(for: s.key, in: r)
                     insertSample(into: p, vector: vector, modelKey: key, origin: .strongMatch, speechSeconds: s.cleanSeconds,
@@ -896,21 +953,10 @@ public final class LibraryStore: LibraryStoring {
                 if !s.rejectedProfileIDs.contains(dst.id) { s.rejectedProfileIDs.append(dst.id) }
             }
         }
-        // TODO(integration, after T2): insert through `SampleCurator.insertMany` once per channel over the union, so
-        // group-preserving curation protects both profiles' sound groups (plan §2.5 step 6). Today each sample goes
-        // through the one-at-a-time insert.
-        // Samples keep their origin and channel, so trust survives the merge on the channel it was earned on.
-        // They also keep their stored bytes: `sample.vector` normalises again, and packing that would change the last
-        // bits of some values, so copied group label anchors would no longer find their samples bit for bit.
-        for sample in src.sortedSamples {
-            guard let decoded = sample.vector else { continue }
-            let v = VoiceVector.unpacked(sample.vectorData, dimension: decoded.dimension).first ?? decoded
-            insertSample(into: dst, vector: v, modelKey: sample.embeddingModelKey, origin: sample.origin,
-                         speechSeconds: sample.speechSeconds, sourceRecordingID: sample.sourceRecordingID,
-                         sourceSpeakerID: sample.sourceSpeakerID, clip: sample.clipRange, quote: sample.quote,
-                         channel: sample.captureChannel, input: sample.captureInput)
-        }
-        // After the samples: the loop can re-enrol dst on src's model, and labels follow dst's model as it is now.
+        // Samples keep their origin and channel, so trust survives the merge on the channel it was earned on, and go in
+        // through `insertMany` once per channel, so curation keeps both profiles' sound groups (plan §2.5 step 6).
+        insertMerged(src.sortedSamples, into: dst)
+        // After the samples: the insert can re-enrol dst on src's model, and labels follow dst's model as it is now.
         copyGroupLabels(from: src, into: dst)
         try mergeNegatives(from: src, into: dst)
         if src.isMe { dst.isMe = true }

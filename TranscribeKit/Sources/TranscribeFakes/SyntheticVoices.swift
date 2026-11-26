@@ -38,8 +38,8 @@ public enum SyntheticVoices {
     /// 8–10, 13–19 (the `voiceGroups` seed: Tom's ten samples), 26, 27 (its Tom speakers), 30–43, 44–49 (stage-2
     /// tests; 30–47 also the group label tests), 50–52, 55; 28, 29 (the `callVoices` script), 53, 54 (the
     /// `voiceGroupsCalls` seed: Tom's two call samples), 64 (`callVoices`' mixed voice), 65 (the `voiceGroupsCalls`
-    /// call speaker); 56–63 are setting axes (57–59 Tom's three settings, 60 his Teams calls), so residual variants are
-    /// 0–55 and 64–71.
+    /// call speaker), 66 (its Zoom sample); 56–63 are setting axes (57–59 Tom's three settings, 60 his Teams calls, 61 his
+    /// Zoom call), so residual variants are 0–55 and 64–71.
     public static func mix(_ people: [(SyntheticPerson, Float)], setting: (axis: Int, weight: Float)? = nil,
                            variant: Int) -> VoiceVector {
         precondition((0..<maxVariants).contains(variant) && !settingAxes.contains(variant),

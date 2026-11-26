@@ -89,25 +89,27 @@ struct MacAudioFakeTests {
         let rig = try rigs.makeRig(speed: .frozen, macAudio: .silent)
         defer { rig.cleanUp() }
         _ = try await rig.recorder.start(sources: .both)
-        #expect(await rigs.wait { rig.recorder.notice == .systemAudioSilent })
+        #expect(await rigs.wait(timeout: 10) { rig.recorder.notice == .systemAudioSilent })
         #expect(rig.recorder.systemLevels.count == RecorderController.levelHistory)
         #expect(rig.recorder.systemLevels.allSatisfy { $0 == 0 })
         #expect(rig.recorder.state == .recording)
         await rig.recorder.discard()
     }
 
+    /// Frozen speed sends the notice on the first tick; the waits allow 10 s because a full parallel `swift test`
+    /// can hold the main actor for seconds (a 3 s wait failed there once).
     @Test func lostMacAudioIsANoticeInBothAndAPauseAlone() async throws {
         let both = try rigs.makeRig(speed: .frozen, macAudio: .lost)
         defer { both.cleanUp() }
         _ = try await both.recorder.start(sources: .both)
-        #expect(await rigs.wait { both.recorder.notice == .systemAudioLost })
+        #expect(await rigs.wait(timeout: 10) { both.recorder.notice == .systemAudioLost })
         #expect(both.recorder.state == .recording)
         await both.recorder.discard()
 
         let alone = try rigs.makeRig(speed: .frozen, macAudio: .lost)
         defer { alone.cleanUp() }
         _ = try await alone.recorder.start(sources: .macAudio)
-        #expect(await rigs.wait { alone.recorder.state == .paused(.routeLost) })
+        #expect(await rigs.wait(timeout: 10) { alone.recorder.state == .paused(.routeLost) })
         #expect(alone.recorder.notice == nil)
         await alone.recorder.resume()
         #expect(await rigs.wait { alone.recorder.state == .recording })
@@ -179,6 +181,21 @@ struct MacAudioFakeTests {
             if lo < hi { for i in lo..<hi { heard[i] = true } }
         }
         #expect(zip(heard, zip(mic, system)).allSatisfy { $0.0 || ($0.1.0 == 0 && $0.1.1 == 0) })
+    }
+
+    /// The fake Both recording writes the same stems as `SyntheticAudio.writeStems` (both use
+    /// `FakeScript.stemSegments`), so the real attribution finds `callVoices`' three sources in them.
+    @Test func callVoicesStemsAttributeEachSpeaker() async throws {
+        let script = FakeScript.named(.callVoices)
+        let (request, dir) = try request(sources: .both)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let audio = try await FakeLiveRecording(script: script, speed: .instant, request: request).stop()
+        let stems = try #require(audio.stems)
+        let levels = try SourceAttribution.levels(ofWAV: stems.system)
+        let spans = Dictionary(grouping: script.segments, by: \.speakerKey).mapValues { $0.map(\.range) }
+        let result = SourceAttribution.attribute(speakers: spans, levels: levels)
+        #expect(result.mapValues(\.source) == script.speakerSources)
+        #expect(script.speakerSources == ["S1": .mic, "S2": .system, "S3": .mixed])
     }
 
     @Test func silentMacAudioLeavesTheSystemStemEmpty() async throws {

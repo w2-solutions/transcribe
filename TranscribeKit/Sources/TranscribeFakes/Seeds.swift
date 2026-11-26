@@ -41,6 +41,8 @@ public enum Seeds {
         public static let tomCallSamples: [UUID] = ["A", "B"].map {
             UUID(uuidString: "C0000000-0000-4000-8000-00000000000\($0)")!
         }
+        /// Tom's one sample from an earlier Zoom call heard through Mac audio, whose recording was deleted.
+        public static let tomZoomSample = UUID(uuidString: "C0000000-0000-4000-8000-00000000000C")!
         /// The seeded "Teams" label on Tom's call group.
         public static let teamsLabel = UUID(uuidString: "D0000000-0000-4000-8000-000000000002")!
     }
@@ -88,7 +90,7 @@ public enum Seeds {
         case .processingHeld: (1, 2, 5)
         case .failedProcessing: (1, 0, 0)
         case .voiceGroups: (5, 3, 15)
-        case .voiceGroupsCalls: (6, 3, 17)
+        case .voiceGroupsCalls: (6, 3, 18)
         }
     }
 
@@ -366,7 +368,9 @@ struct SeedBuilder {
     /// from it carry `captureInput` systemAudio. They sound alike (setting axis 60, 0.85 to each other) and unlike
     /// his room groups (0.36), so on this device Tom has four groups: Close, Far, On speaker and the call, which has the
     /// saved label "Teams". Like the "Close" label, the recording, the samples and the label get this device's channel
-    /// at the launch stamp (decision D2: Mac audio is not a channel of its own).
+    /// at the launch stamp (decision D2: Mac audio is not a channel of its own). A fifth group, unlabelled, is one
+    /// sample from an earlier Zoom call heard through Mac audio (setting axis 61), whose recording was deleted: so two
+    /// groups are heard through Mac audio, one labelled and one not.
     mutating func tomCallGroup() throws {
         guard let tom else { return }
         let r = try makeRecording(id: Seeds.ID.recordingT3, createdAt: Seeds.Dates.t3, turns: SeedContent.conversationB,
@@ -398,6 +402,12 @@ struct SeedBuilder {
             sample.captureInput = CaptureDetail.Input.systemAudio
             samples.append(sample)
         }
+        let zoom = addSample(to: tom, id: Seeds.ID.tomZoomSample,
+                             vector: SyntheticVoices.mix([(.stranger, 0.6)], setting: (61, 0.7), variant: 66),
+                             origin: .confirmed, added: Seeds.Dates.date(17, 13, 5), seconds: 10.4,
+                             recording: Seeds.ID.goneRecording, key: "S2", clip: TimeRange(start: 1.0, end: 4.4),
+                             quote: "Sorry, my camera's off.")
+        zoom.captureInput = CaptureDetail.Input.systemAudio
         let anchors = samples.sorted { $0.id.uuidString < $1.id.uuidString }.compactMap(\.vector)
         let label = VoiceGroupLabel(id: Seeds.ID.teamsLabel, text: "Teams", createdAt: Seeds.Dates.date(17, 13, 30),
                                     embeddingModelKey: Self.modelKey, captureChannel: "", anchors: anchors)

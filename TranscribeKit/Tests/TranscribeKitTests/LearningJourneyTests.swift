@@ -25,7 +25,10 @@ struct LearningJourneyTests {
         try JSONDecoder().decode(MatchTrace.self, from: try #require(s.matchTraceData))
     }
 
-    @Test func carKaranLearnsInTwoSteps() throws {
+    /// With sound groups (decision D3), the car is a group of its own: naming Karan there once is enough for the next
+    /// car recording to be auto-labelled. Before groups the car sample had to borrow its second place from Karan's
+    /// room samples, (0.6125 + 0.35) / 2 = 0.48125, so the app asked once more.
+    @Test func carKaranLearnsInOneStep() throws {
         let h = try WP3Harness()
         defer { h.cleanup() }
         try h.seed(.library)
@@ -40,18 +43,21 @@ struct LearningJourneyTests {
         let corrected = try #require(karan.samples.first { $0.sourceSpeakerID == s1.id })
         #expect(corrected.origin == .corrected && corrected.isTrusted)
 
-        // 2. Next car recording: (0.6125 + 0.35) / 2 = 0.48125, so the app asks. Yes → a confirmed sample.
-        let (id2, s2) = try record(h, Self.car(2), at: 2)
-        #expect(s2.label == .suggested && s2.suggestedProfileID == karan.id)
-        #expect(abs((s2.matchScore ?? 0) - 0.48125) < 1e-4)
-        _ = try h.store.confirmSuggestion(recordingID: id2, key: "S1")
-        #expect(karan.samples.first { $0.sourceSpeakerID == s2.id }?.origin == .confirmed)
+        // 2. Next car recording: the car group (one trusted sample) scores its own cosine, 0.6125, clear of everyone:
+        //    auto-labelled. The whole score W is still 0.48125.
+        let (_, s2) = try record(h, Self.car(2), at: 2)
+        #expect(s2.label == .autoLabelled && s2.profile?.id == karan.id)
+        #expect(abs((s2.matchScore ?? 0) - 0.6125) < 1e-4 && abs((s2.matchMargin ?? 0) - 0.6125) < 1e-4)
+        let evidence = try #require(try trace(s2).profiles.first { $0.profileID == karan.id })
+        #expect(abs((evidence.score ?? 0) - 0.48125) < 1e-4 && abs((evidence.autoScore ?? 0) - 0.6125) < 1e-4)
+        #expect(evidence.groupSize == 1)
+        // Its trusted score is the channel's top two trusted, (0.6125 + 0.35) / 2, under 0.70: no automatic sample.
+        #expect(!karan.samples.contains { $0.sourceSpeakerID == s2.id })
 
-        // 3. Third car recording: both car samples agree at 0.6125, clear of everyone: auto-labelled.
+        // 3. Third car recording: the same.
         let (_, s3) = try record(h, Self.car(3), at: 3)
         #expect(s3.label == .autoLabelled && s3.profile?.id == karan.id)
-        #expect(abs((s3.matchScore ?? 0) - 0.6125) < 1e-4 && abs((s3.matchMargin ?? 0) - 0.6125) < 1e-4)
-        // Its trusted score (0.6125) is under 0.70, so it stores no automatic sample.
+        #expect(abs((s3.matchScore ?? 0) - 0.6125) < 1e-4)
         #expect(!karan.samples.contains { $0.sourceSpeakerID == s3.id })
     }
 
@@ -78,12 +84,14 @@ struct LearningJourneyTests {
         #expect(confirmed.origin == .confirmed && confirmed.isTrusted && confirmed.captureChannel == CaptureChannel.mac)
         #expect(karan.samples.filter { $0.captureChannel == CaptureChannel.iphone }.count == 2)
 
-        // 3. The next Mac recording: the Mac sample (0.64) takes first place, an iPhone one (0.8) second: 0.72, auto.
+        // 3. The next Mac recording: the Mac sample is a sound group of its own and scores alone, 0.64: auto. (The
+        //    whole score W is 0.72: the Mac sample first, an iPhone one (0.8) second; W still decides asking.)
         let (_, s2) = try record(h, SyntheticVoices.vector(near: .karan, cosine: 0.8, variant: 37), at: 2)
         #expect(s2.label == .autoLabelled && s2.profile?.id == karan.id)
-        #expect(abs((s2.matchScore ?? 0) - 0.72) < 1e-4)
+        #expect(abs((s2.matchScore ?? 0) - 0.64) < 1e-4)
         let evidence = try #require(try trace(s2).profiles.first { $0.profileID == karan.id })
         #expect(evidence.trustedCount == 1 && evidence.otherChannelTrustedCount == 1)
+        #expect(abs((evidence.score ?? 0) - 0.72) < 1e-4 && abs((evidence.autoScore ?? 0) - 0.64) < 1e-4)
     }
 
     @Test func aStrangerInTheSameCarIsNotAsked() throws {
