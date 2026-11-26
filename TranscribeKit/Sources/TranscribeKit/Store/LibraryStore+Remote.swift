@@ -9,8 +9,11 @@ extension LibraryStore {
     // MARK: Insert
 
     /// A bare local entity for a record that has no local row yet. The caller then applies every group.
-    /// A new recording is ready (only ready recordings sync), has its audio named "<id>.wav" (the file is on the
-    /// device that recorded it) and no unseen result.
+    /// A new recording is ready (only ready recordings sync), has its audio named "<id>.wav" and no unseen result. The
+    /// audio is not on this device (not in iCloud, not downloaded yet, or not syncing here); a downloaded copy later
+    /// points `audioFileName` at itself (`installDownloadedAudio`).
+    ///
+    /// Audio markers (`.audio`) never get here: `SyncCoordinator` hands them to `AudioSync` first.
     func remoteInsert(_ record: SyncRecord) -> SyncEntity {
         let f = record.fields
         let id = record.id.entityID
@@ -58,6 +61,8 @@ extension LibraryStore {
                                     captureChannel: f["captureChannel"]?.stringValue ?? "", anchors: [])
             context.insert(l)
             return .groupLabel(l)
+        case .audio:
+            preconditionFailure("audio markers are handled by AudioSync")
         }
     }
 

@@ -5,6 +5,10 @@ public struct AppPaths: Sendable {
     public let root: URL               // Application Support/Transcribe (real) | Application Support/Transcribe-Fake (fake engine)
                                        // | NSTemporaryDirectory()/transcribe-uitest-<pid> (-uiTesting)
     public var audioDirectory: URL { root.appendingPathComponent("Audio", isDirectory: true) }
+    /// Audio sync's downloads in progress (`<id>.<ext>.part`); emptied at launch, never backed up.
+    public var audioIncomingDirectory: URL { root.appendingPathComponent("AudioIncoming", isDirectory: true) }
+    /// Audio sync's encoded copies waiting to upload (`<id>.m4a`); never backed up.
+    public var audioOutgoingDirectory: URL { root.appendingPathComponent("AudioOutgoing", isDirectory: true) }
     /// Where builds before bundling downloaded the models (~704 MB). Deleted at launch; never used.
     public var legacyModelsDirectory: URL { root.appendingPathComponent("Models", isDirectory: true) }
     public var storeURL: URL { root.appendingPathComponent("Library.store") }
@@ -34,17 +38,27 @@ public struct AppPaths: Sendable {
     /// "<uuid>.wav"
     public func newAudioFileName(for id: UUID) -> String { "\(id.uuidString).wav" }
 
-    /// Creates the root and Audio/; sets file protection .completeUntilFirstUserAuthentication (iOS) on Audio/.
+    /// Creates the root, Audio/, AudioIncoming/ and AudioOutgoing/; sets file protection
+    /// .completeUntilFirstUserAuthentication (iOS) on the three audio folders, and excludes the two scratch folders
+    /// from backups (Audio/, downloaded copies included, stays in backups: decision 22).
     /// The speech models are read-only resources in the app bundle, so there is no models folder here.
     public func prepare() throws {
         let fm = FileManager.default
-        for dir in [root, audioDirectory] {
+        for dir in [root, audioDirectory, audioIncomingDirectory, audioOutgoingDirectory] {
             try fm.createDirectory(at: dir, withIntermediateDirectories: true)
         }
         #if os(iOS)
-        try fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
-                             ofItemAtPath: audioDirectory.path)
+        for dir in [audioDirectory, audioIncomingDirectory, audioOutgoingDirectory] {
+            try fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                                 ofItemAtPath: dir.path)
+        }
         #endif
+        for dir in [audioIncomingDirectory, audioOutgoingDirectory] {
+            var url = dir
+            var values = URLResourceValues()
+            values.isExcludedFromBackup = true
+            try url.setResourceValues(values)
+        }
     }
 
     /// Creates `Dictation/` and excludes it from backups.

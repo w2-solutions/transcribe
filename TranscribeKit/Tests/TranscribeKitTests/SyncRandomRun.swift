@@ -19,30 +19,45 @@ struct SeededRNG: RandomNumberGenerator {
 }
 
 /// A seeded random run of user operations on three devices with random sync interleavings (§8.7).
+///
+/// With `audio`, the devices also run audio sync (A and C iPhones, B a Mac) and a fifth of the steps are audio
+/// operations: Sync audio switched, a drain, a transcript opened, a relaunch while a transfer is held, an audio request
+/// failed once. Without it the run, and its random sequence, is exactly as before.
 @MainActor
 struct SyncRandomRun {
     let seed: UInt64
     let operations: Int
+    let audio: Bool
     var rng: SeededRNG
     let cloud = FakeCloud()
     let devices: [FakeDevice]
     var log: [String] = []
     /// Fast-path misses found after an operation (a change only a full scan would have found).
     var undetected: [String] = []
+    /// With `audio`: relaunches that caught an upload or download in flight.
+    var heldRelaunches = 0
 
-    init(seed: UInt64, operations: Int = 200) throws {
+    init(seed: UInt64, operations: Int = 200, audio: Bool = false) throws {
         self.seed = seed
         self.operations = operations
+        self.audio = audio
         rng = SeededRNG(seed: seed)
         let clock = TestClock()
-        devices = [try FakeDevice("A", cloud: cloud, channel: CaptureChannel.iphone, clock: clock),
-                   try FakeDevice("B", cloud: cloud, channel: CaptureChannel.mac, clock: clock),
-                   try FakeDevice("C", cloud: cloud, channel: CaptureChannel.iphone, clock: clock)]
+        devices = [try FakeDevice("A", cloud: cloud, channel: CaptureChannel.iphone, clock: clock, audio: audio,
+                                  platform: .iPhone),
+                   try FakeDevice("B", cloud: cloud, channel: CaptureChannel.mac, clock: clock, audio: audio,
+                                  platform: .mac),
+                   try FakeDevice("C", cloud: cloud, channel: CaptureChannel.iphone, clock: clock, audio: audio,
+                                  platform: .iPhone)]
     }
 
     func cleanup() { for d in devices { d.cleanup() } }
 
     mutating func run() async {
+        if audio {
+            let clock = devices[0].clock
+            await cloud.setNow { clock.date }
+        }
         await devices[0].sync.enable()
         await devices[1].sync.enable()
         for step in 0..<operations {
@@ -54,6 +69,11 @@ struct SyncRandomRun {
             }
             let d = devices[Int.random(in: 0..<devices.count, using: &rng)]
             devices[0].clock.advance(Double(Int.random(in: 1...90, using: &rng)))
+            if audio, Int.random(in: 0..<5, using: &rng) == 0 {
+                let op = await audioOperation(on: d)
+                log.append("\(step) \(d.name) \(op)")
+                continue
+            }
             let roll = Int.random(in: 0..<100, using: &rng)
             if roll < 18 {
                 let full = Bool.random(using: &rng)
@@ -85,7 +105,65 @@ struct SyncRandomRun {
             for r in processing(d) { log.append("end \(d.name) \(finishProcessing(d, r))") }
             if !d.settings.syncEnabled { await d.sync.enable() }
         }
-        await settle(devices, rounds: 16)
+        guard audio else {
+            await settle(devices, rounds: 16)
+            return
+        }
+        await cloud.setAudioHook(nil)
+        for d in devices where !d.settings.syncAudio {
+            d.settings.syncAudio = true
+            d.audio.settingChanged()
+            log.append("end \(d.name) Sync audio on")
+        }
+        await settleAudio(devices, rounds: 16)
+        // A blob whose upload a relaunch abandoned, and whose recording was then deleted, has no marker and no
+        // holder: the weekly server-truth sweep removes it once it is a day old (decision 13).
+        devices[0].clock.advance(AudioPolicy.sweepInterval + AudioPolicy.orphanMinimumAge)
+        await settleAudio(devices, rounds: 16)
+    }
+
+    // MARK: Audio operations
+
+    /// One audio operation on `d` (only with `audio`).
+    private mutating func audioOperation(on d: FakeDevice) async -> String {
+        let ready = ((try? d.context.fetch(FetchDescriptor<Recording>())) ?? [])
+            .filter { $0.stage == .ready }.sorted { $0.id.uuidString < $1.id.uuidString }
+        switch Int.random(in: 0..<5, using: &rng) {
+        case 0:
+            d.settings.syncAudio.toggle()
+            d.audio.settingChanged()
+            return "Sync audio \(d.settings.syncAudio ? "on" : "off")"
+        case 1:
+            await d.audio.drain()
+            return "audio drain"
+        case 2:
+            guard let r = pick(ready) else { return "open (none)" }
+            d.audio.transcriptOpened(r.id)
+            return "open \(r.id.uuidString.prefix(4))"
+        case 3:
+            // A relaunch while an upload or download is held in the cloud, when the loop starts one: it waits until a
+            // transfer reaches the cloud or the loop has nothing left (so the device's state, not timing, decides).
+            let hold = AudioHold()
+            await cloud.setAudioHook { op, _ in if op == .upload || op == .download { await hold.wait() } }
+            d.audio.pump()
+            await waitUntil("a transfer held or the audio loop idle") {
+                await hold.arrived > 0 || d.audio.loopTask == nil
+            }
+            let held = await hold.arrived > 0
+            if held { heldRelaunches += 1 }
+            await d.relaunch()
+            await hold.release()
+            await cloud.setAudioHook(nil)
+            if d.settings.syncEnabled { await d.sync.start() }
+            return "relaunch\(held ? " with a transfer held" : "")"
+        default:
+            let ops: [FakeCloud.AudioOp] = [.upload, .download, .probe, .delete]
+            let errors: [AudioTransferError] = [.retryable(retryAfter: nil), .networkUnavailable, .other(code: 1)]
+            let op = pick(ops)!, error = pick(errors)!
+            guard let r = pick(ready) else { return "fail audio (none)" }
+            await cloud.failNextAudio(op, r.id, with: error)
+            return "fail next \(op) of \(r.id.uuidString.prefix(4)) with \(error)"
+        }
     }
 
     private func processing(_ d: FakeDevice) -> [Recording] {
@@ -113,7 +191,7 @@ struct SyncRandomRun {
         let rows = Dictionary(d.stateRows().map { ($0.recordName, $0) }, uniquingKeysWith: { a, _ in a })
         var misses: [String] = []
         var present: Set<String> = []
-        for type in SyncRecordType.allCases {
+        for type in SyncRecordType.libraryCases {
             for e in (try? projector.all(type)) ?? [] {
                 present.insert(e.recordID.recordName)
                 guard e.isSyncable else { continue }
@@ -124,7 +202,7 @@ struct SyncRandomRun {
             }
         }
         let holding = (try? d.sync.detector.syncedRecordingIsProcessing()) ?? false
-        for (name, row) in rows where !present.contains(name) && row.pending != .delete {
+        for (name, row) in rows where !row.isAudioRow && !present.contains(name) && row.pending != .delete {
             if row.typeRaw == SyncRecordType.speaker.rawValue && holding { continue }
             misses.append("unsent delete \(name)")
         }

@@ -150,8 +150,14 @@ struct VoiceDetailView: View {
         // Grouped by the device that heard each sample once more than one device has (each microphone hears a voice a
         // little differently), and within a device by sound (voice sample groups §7). Row indexes stay global, in
         // `sortedSamples` order.
+        // Audio sync's state per source recording ("Downloading audio…", "Audio is in iCloud"); reading it observes
+        // audio sync's `revision`, so a sample turns playable when its recording's audio lands.
+        let audio = env.sync?.audio
         let model = VoiceSampleGroups.build(profile: profile, recordingsByID: recordingsByID, localChannel: localChannel,
-                                            paths: env.paths)
+                                            paths: env.paths,
+                                            audioState: audio.map { audio in
+                                                { id in recordingsByID[id].map(audio.state(of:)) }
+                                            })
         let items = Self.cardItems(model, sampleIDs: samples.map(\.id))
         return VStack(alignment: .leading, spacing: 0) {
             VStack(alignment: .leading, spacing: 0) {
@@ -273,7 +279,7 @@ struct VoiceDetailView: View {
         }()
         let text = "\(place) · \(section.sampleCount)"
         return HStack(spacing: 6) {
-            Image(systemName: AudioElsewhereBanner.symbol(section.channel))
+            Image(systemName: AudioBanner.symbol(section.channel))
                 .font(.system(size: 12, weight: .semibold))
                 .accessibilityHidden(true)
             Text(text)

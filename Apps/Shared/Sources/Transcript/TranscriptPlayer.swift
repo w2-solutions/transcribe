@@ -15,7 +15,8 @@ struct TranscriptPlayer: View {
     let showsCopy: Bool
     /// False while a recording runs (§6.4: playback would fight capture for the audio session).
     var showsPlayer: Bool = true
-    /// False when the audio is on another device (§8.5): no player at all; the transcript shows `AudioElsewhereBanner`.
+    /// False when the audio is not on this device (not in iCloud, not downloaded yet, or not syncing here): no player at
+    /// all; the transcript shows `AudioBanner`.
     var hasAudio: Bool = true
     let onCopy: () -> Void
 
@@ -50,7 +51,7 @@ struct TranscriptPlayer: View {
                     .accessibilityIdentifier("player.offWhileRecording")
             }
         }
-        // Full width, so Copy keeps to the trailing edge even with no player under it (audio on another device).
+        // Full width, so Copy keeps to the trailing edge even with no player under it (audio not on this device).
         .frame(maxWidth: .infinity, alignment: .trailing)
         .padding(.horizontal, 12)
         .padding(.bottom, 2)

@@ -171,8 +171,11 @@ struct AskBanner: View {
     }
 }
 
-/// "No speech found in this recording." The audio can still be played.
+/// "No speech found in this recording." The audio can still be played, when it is on this device.
 struct NoSpeechCard: View {
+    /// False when the audio is not on this device: the card then does not offer playing it.
+    var canPlay: Bool = true
+
     var body: some View {
         HStack(spacing: 12) {
             BannerIcon(systemImage: "waveform.slash", tint: DS.Colour.secondary, fill: DS.Colour.neutralFill)
@@ -180,9 +183,11 @@ struct NoSpeechCard: View {
                 Text("No speech found in this recording.")
                     .font(.headline)
                     .foregroundStyle(DS.Colour.ink)
-                Text("You can still play the audio.")
-                    .scaledFont(size: 14, relativeTo: .subheadline)
-                    .foregroundStyle(DS.Colour.secondary)
+                if canPlay {
+                    Text("You can still play the audio.")
+                        .scaledFont(size: 14, relativeTo: .subheadline)
+                        .foregroundStyle(DS.Colour.secondary)
+                }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }

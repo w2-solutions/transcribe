@@ -12,7 +12,14 @@ public enum FakeScriptName: String, Sendable, CaseIterable {
 }
 /// A fake sync scenario for UI tests (`TRANSCRIBE_SYNC=fake:<scenario>`, §8.6). UI tests never touch CloudKit.
 public enum FakeSyncScenario: String, Sendable, CaseIterable {
-    case fresh, remoteLibrary, signedOut, accountSwitched, zoneRemoved, duplicateKaran, massDelete
+    case fresh, remoteLibrary
+    /// `remoteLibrary` with the iPhone's audio in iCloud too: each recording's blob and its marker.
+    case remoteLibraryWithAudio
+    case signedOut, accountSwitched, zoneRemoved, duplicateKaran, massDelete
+}
+/// The network a fake-engine or UI-test run pretends to be on (`TRANSCRIBE_NETWORK`), for audio sync's network rules.
+public enum FakeNetwork: String, Sendable {
+    case wifi, cellular, lowData, offline
 }
 public enum FakeSpeed: String, Sendable, CaseIterable { case instant, demo, frozen }
 public enum FakeModelState: String, Sendable, CaseIterable { case installed, missing }
@@ -57,6 +64,9 @@ public struct LaunchConfig: Sendable, Equatable {
     public static let envMCPAutoAllow = "TRANSCRIBE_MCP_AUTO_ALLOW" // on (fake engine and UI tests only)
     public static let envMCPTestPort = "TRANSCRIBE_MCP_TEST_PORT"  // 1–65535
     public static let envUpdateAvailable = "TRANSCRIBE_UPDATE_AVAILABLE" // a version, e.g. 9.9.9 (fake engine and UI tests only)
+    public static let envNetwork = "TRANSCRIBE_NETWORK"    // wifi | cellular | lowData | offline (fake engine and UI tests only)
+    public static let envSyncAudio = "TRANSCRIBE_SYNC_AUDIO"  // "off": the switch starts off; "intro": the one-time
+                                                              // notice may show (fake engine and UI tests only)
     public static let envShortcuts = "TRANSCRIBE_SHORTCUTS"        // sim (fake engine and UI tests only)
 
     public var useFakeEngine: Bool
@@ -84,6 +94,15 @@ public struct LaunchConfig: Sendable, Equatable {
     /// (`TRANSCRIBE_UPDATE_AVAILABLE=9.9.9`, digits and dots). Read only with the fake engine or `-uiTesting`, like
     /// `channel`; the Mac app honours it only in DEBUG builds, never starts Sparkle for it and never saves it.
     public var updateAvailable: String?
+    /// The network audio sync sees (`TRANSCRIBE_NETWORK`); nil = the real one. Read only with the fake engine or
+    /// `-uiTesting`, like `channel`.
+    public var network: FakeNetwork?
+    /// "Sync audio" starts off for this run (`TRANSCRIBE_SYNC_AUDIO=off`). Read only with the fake engine or
+    /// `-uiTesting`, like `channel`.
+    public var syncAudioOff: Bool
+    /// The one-time "Audio now syncs with iCloud" notice may show in this run (`TRANSCRIBE_SYNC_AUDIO=intro`), for the
+    /// notice's UI tests. Read only with the fake engine or `-uiTesting`, like `channel`.
+    public var syncAudioIntro: Bool
     /// The Mac's global shortcuts simulated for this session (`TRANSCRIBE_SHORTCUTS=sim`): a Shortcut Simulation menu
     /// stands in for the keys. Read only with the fake engine or `-uiTesting`, like `channel`, and never saved; the Mac
     /// app honours it only in DEBUG builds. A simulated session never registers system shortcuts, never posts events
@@ -108,6 +127,12 @@ public struct LaunchConfig: Sendable, Equatable {
         mcpAutoAllow = testRun && Self.isOn(environment[Self.envMCPAutoAllow])
         mcpTestPort = testRun ? environment[Self.envMCPTestPort].flatMap { UInt16($0) }.flatMap { $0 == 0 ? nil : $0 } : nil
         updateAvailable = testRun ? Self.parseVersion(environment[Self.envUpdateAvailable]) : nil
+        network = testRun ? environment[Self.envNetwork].flatMap {
+            FakeNetwork(rawValue: $0.trimmingCharacters(in: .whitespaces))
+        } : nil
+        let syncAudio = environment[Self.envSyncAudio]?.trimmingCharacters(in: .whitespaces).lowercased()
+        syncAudioOff = testRun && syncAudio == "off"
+        syncAudioIntro = testRun && syncAudio == "intro"
         shortcutSimulation = testRun && environment[Self.envShortcuts]?.trimmingCharacters(in: .whitespaces).lowercased() == "sim"
     }
     /// "1.2.3": digits and dots, starting and ending with a digit; anything else → nil.

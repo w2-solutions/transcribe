@@ -170,15 +170,17 @@ public enum VoiceSampleGroups {
     }
 
     /// The card for `profile` as it is now: its samples split and labelled exactly as the store checks them, with clip
-    /// states read from this device's audio folder.
+    /// states read from this device's audio folder. `audioState` gives a recording's audio state by id (from
+    /// `AudioSync.state(of:)`), so a sample whose audio is in iCloud or downloading says so; nil without audio sync.
     @MainActor
     public static func build(profile: VoiceProfile, recordingsByID: [UUID: Recording], localChannel: String,
-                             paths: AppPaths) -> VoiceSampleGroupsView {
+                             paths: AppPaths,
+                             audioState: ((UUID) -> RecordingAudioState?)? = nil) -> VoiceSampleGroupsView {
         let samples = profile.sortedSamples
         var clipStates: [UUID: SampleClipState] = [:], sampleSource: [UUID: UUID] = [:]
         var recordingTitles: [UUID: String] = [:]
         for sample in samples {
-            clipStates[sample.id] = clipState(sample, recordingsByID: recordingsByID, paths: paths)
+            clipStates[sample.id] = clipState(sample, recordingsByID: recordingsByID, paths: paths, audioState: audioState)
             guard let source = sample.sourceRecordingID else { continue }
             sampleSource[sample.id] = source
             if let recording = recordingsByID[source] { recordingTitles[source] = recording.displayTitle }
@@ -192,13 +194,16 @@ public enum VoiceSampleGroups {
                      sampleSource: sampleSource)
     }
 
-    /// Whether `sample`'s clip can play here: its source recording from `recordingsByID`, its WAV under `paths`.
+    /// Whether `sample`'s clip can play here: its source recording from `recordingsByID`, its audio file under
+    /// `paths` (the WAV, or a downloaded copy), and, when the file is missing, the recording's `audioState`.
     @MainActor
-    public static func clipState(_ sample: VoiceSample, recordingsByID: [UUID: Recording], paths: AppPaths) -> SampleClipState {
+    public static func clipState(_ sample: VoiceSample, recordingsByID: [UUID: Recording], paths: AppPaths,
+                                 audioState: ((UUID) -> RecordingAudioState?)? = nil) -> SampleClipState {
         let recording = sample.sourceRecordingID.flatMap { recordingsByID[$0] }
         return SampleClipState.resolve(
             sourceRecordingID: sample.sourceRecordingID, clip: sample.clipRange,
             recording: recording.map { (fileName: $0.audioFileName, channel: $0.captureChannel) },
-            audioExists: { FileManager.default.fileExists(atPath: paths.audioURL(fileName: $0).path) })
+            audioExists: { FileManager.default.fileExists(atPath: paths.audioURL(fileName: $0).path) },
+            audioState: { audioState?($0) })
     }
 }

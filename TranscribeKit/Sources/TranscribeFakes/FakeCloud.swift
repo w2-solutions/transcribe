@@ -11,6 +11,8 @@ import TranscribeKit
 /// - `zoneNotFound`, zone delete and purge, and `encryptedDataReset`
 /// - account switching (each account has its own database)
 /// - quota and network-failure injection, and the 250-record batch limit
+/// - audio blobs (`af.<id>`) per account in the default zone, which no change feed sees, moved only by
+///   `FakeAudioTransfer` (`FakeCloud+Audio.swift`)
 public actor FakeCloud {
     public struct Stored: Sendable, Equatable {
         public var fields: [String: SyncValue]
@@ -52,12 +54,28 @@ public actor FakeCloud {
     /// Record names whose next save fails with `.retryable` once.
     private var retryOnce: Set<String> = []
 
+    // Audio (`FakeCloud+Audio.swift`). The blobs are in each account's default zone: they survive a `Library` zone
+    // delete, go with a purge, and become unreadable after an encrypted-data reset.
+    var audioStore: [String: [UUID: StoredAudio]] = [:]
+    var audioQuota: Int64?
+    var audioFailures: [AudioOp: [UUID: AudioTransferError]] = [:]
+    var corruptDownloads: Set<UUID> = []
+    var lostReplies: Set<UUID> = []
+    var unreadableProbes: Set<UUID> = []
+    var audioIndexExists = true
+    var audioHook: (@Sendable (AudioOp, UUID) async -> Void)?
+    var audioNow: @Sendable () -> Date = { Date() }
+    var injectedAudioFailuresTaken = 0
+    var audioBlobsDeleted = 0
+
     public init() {}
 
     /// A cloud that already holds records, for the UI-test scenarios (`FakeCloud+Scenarios.swift`): each account's
     /// records are saved in order as `inject` would (change tags 1, 2, 3 …), then the zones in `removed` are deleted as
-    /// another device would. Synchronous, so the app can build it before its first frame.
-    init(accounts: [String: [SyncRecord]], removed: [String: ZoneDeletionReason] = [:]) {
+    /// another device would. `audio` holds each account's blobs (a removed zone treats them as `removeZone` does).
+    /// Synchronous, so the app can build it before its first frame.
+    init(accounts: [String: [SyncRecord]], removed: [String: ZoneDeletionReason] = [:],
+         audio: [String: [StoredAudio]] = [:]) {
         var dbs: [String: Database] = [:]
         for (account, records) in accounts {
             var db = Database()
@@ -70,6 +88,10 @@ public actor FakeCloud {
             }
             dbs[account] = db
         }
+        var blobs: [String: [UUID: StoredAudio]] = [:]
+        for (account, stored) in audio {
+            blobs[account] = Dictionary(stored.map { ($0.descriptor.recordingID, $0) }, uniquingKeysWith: { _, b in b })
+        }
         for (account, reason) in removed {
             var db = dbs[account] ?? Database()
             db.zoneExists = false
@@ -78,8 +100,10 @@ public actor FakeCloud {
             db.generation += 1
             db.deletionReason = reason
             dbs[account] = db
+            blobs[account] = Self.audio(blobs[account] ?? [:], afterZoneRemoval: reason)
         }
         databases = dbs
+        audioStore = blobs
     }
 
     // MARK: Test controls
@@ -89,6 +113,8 @@ public actor FakeCloud {
     public func failOnce(_ recordName: String) { retryOnce.insert(recordName) }
 
     /// Deletes (or purges, or resets the encrypted data of) an account's zone, as another device or iCloud would.
+    /// Audio blobs live in the default zone: `.deleted` keeps them, `.purged` drops them, `.encryptedDataReset`
+    /// makes them unreadable.
     public func removeZone(account: String, reason: ZoneDeletionReason) {
         var db = databases[account] ?? Database()
         db.zoneExists = false
@@ -97,6 +123,7 @@ public actor FakeCloud {
         db.generation += 1
         db.deletionReason = reason
         databases[account] = db
+        if let blobs = audioStore[account] { audioStore[account] = Self.audio(blobs, afterZoneRemoval: reason) }
     }
 
     /// The current records of an account, by record name (fields only).
@@ -142,6 +169,13 @@ public actor FakeCloud {
         databases[account] = db
     }
 
+    /// Which of `ids` have a `rec.<id>` record in the account's `Library` zone; nil when the zone is gone.
+    func recordingRecords(account: String, ids: [UUID]) -> Set<UUID>? {
+        guard let db = databases[account], db.zoneExists else { return nil }
+        return Set(ids.filter { db.records[SyncRecordID(type: .recording, entityID: $0).recordName] != nil })
+    }
+
+    /// The `Library` zone only: audio blobs in the default zone stay (Remove iCloud Copy deletes them first).
     func deleteZone(account: String) throws {
         if networkDown { throw SyncTransportError.networkUnavailable }
         removeZone(account: account, reason: .deleted)

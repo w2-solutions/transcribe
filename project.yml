@@ -63,7 +63,7 @@ targets:
         CFBundleShortVersionString: $(MARKETING_VERSION)
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         UILaunchScreen: {}
-        NSMicrophoneUsageDescription: "Transcribe records conversations on this iPhone to turn them into text. Audio never leaves the device."
+        NSMicrophoneUsageDescription: "Transcribe records conversations on this iPhone and turns them into text on this iPhone."
         # remote-notification: CKSyncEngine fetches when iCloud pushes a change (only while sync is on).
         UIBackgroundModes: [audio, processing, remote-notification]
         # "NO" when built with TRANSCRIBE_SYNC=NO (no iCloud entitlement): the transport then never opens CloudKit.

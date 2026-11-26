@@ -37,6 +37,7 @@ struct LibraryView: View {
     var body: some View {
         let visible = self.visible
         List {
+            audioIntro
             if env.isLaunched, showsModelsCard {
                 ModelsCard(waitingCount: ModelsCard.waitingCount(recordings))
                     .libraryRow()
@@ -105,6 +106,15 @@ struct LibraryView: View {
         .onChange(of: recordings.map(\.id)) { _, ids in closePrompts(keeping: ids) }
         .onChange(of: isSearchPresented) { _, presented in
             if !presented { query.searchText = "" }
+        }
+    }
+
+    /// "Audio now syncs with iCloud" (decision 24), once, at the top of the list.
+    @ViewBuilder private var audioIntro: some View {
+        if let audio = env.sync?.audio, audio.introPending {
+            AudioIntroCard(audio: audio)
+                .libraryRow()
+                .transition(.opacity)
         }
     }
 

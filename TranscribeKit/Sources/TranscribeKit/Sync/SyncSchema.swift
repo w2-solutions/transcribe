@@ -57,6 +57,9 @@ public enum SyncSchema {
             // One group: a Save writes the text, the date and the anchor together, so they never merge apart.
             [Group.body: ["profileID", "text", "createdAt", "editedAt", "embeddingModelKey", "captureChannel", "anchor",
                           "anchorDimension"]]
+        case .audio:
+            // Write-once: the marker never changes after its create.
+            AudioMarker.groups
         }
     }
 
@@ -71,6 +74,7 @@ public enum SyncSchema {
         case .speaker: ["recordingID": .recording, "profileID": .profile]
         case .sample, .negative, .groupLabel: ["profileID": .profile]
         case .profile, .folder: [:]
+        case .audio: [:]   // the record name carries the recording id
         }
     }
 

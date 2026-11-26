@@ -28,6 +28,9 @@ public final class AppSettings {
         static let autoCopy = "settings.autoCopy"
         static let syncEnabled = "settings.syncEnabled"
         static let syncCloudEnvironment = "sync.cloudEnvironment"
+        static let syncAudio = "settings.syncAudio"
+        static let syncAudioLastSweep = "sync.audio.lastSweep"
+        static let syncAudioIntroShown = "sync.audio.introShown"
     }
 
     @ObservationIgnored private let defaults: UserDefaults
@@ -44,6 +47,10 @@ public final class AppSettings {
     public var autoCopy: CopyFormat { didSet { defaults.set(autoCopy.rawValue, forKey: Key.autoCopy) } }              // default .textOnly
     /// "Sync with iCloud" on this device (§8.4, D3). Off by default.
     public var syncEnabled: Bool { didSet { defaults.set(syncEnabled, forKey: Key.syncEnabled) } }                  // default false
+    /// "Sync audio" on this device: acts only while `syncEnabled` is on. Its default (`syncAudioDefault`) is on,
+    /// except in Debug builds with the real engine (decision 25); the key is written only when the switch flips, so
+    /// an absent key keeps reading the default.
+    public var syncAudio: Bool { didSet { defaults.set(syncAudio, forKey: Key.syncAudio) } }
 
     /// The iCloud environment ("Development" or "Production") this device's sync state was made in; see
     /// `SyncCoordinator.cloudEnvironment`. Not a user setting.
@@ -52,7 +59,22 @@ public final class AppSettings {
         set { defaults.set(newValue, forKey: Key.syncCloudEnvironment) }
     }
 
-    public init(defaults: UserDefaults) {
+    /// When the audio orphan sweep last ran (set to now the first time audio sync runs, so the first sweep waits a
+    /// week). Not a user setting.
+    public var syncAudioLastSweep: Date? {
+        get { defaults.object(forKey: Key.syncAudioLastSweep) as? Date }
+        set { defaults.set(newValue, forKey: Key.syncAudioLastSweep) }
+    }
+
+    /// The one-time "Audio now syncs with iCloud" notice has been shown or is not needed (decision 24). Not a user
+    /// setting; default false.
+    public var syncAudioIntroShown: Bool {
+        get { defaults.bool(forKey: Key.syncAudioIntroShown) }
+        set { defaults.set(newValue, forKey: Key.syncAudioIntroShown) }
+    }
+
+    /// `syncAudioDefault`: what "Sync audio" reads while its key is absent (false in Debug real-engine runs).
+    public init(defaults: UserDefaults, syncAudioDefault: Bool = true) {
         self.defaults = defaults
         identifySpeakers = defaults.object(forKey: Key.identifySpeakers) as? Bool ?? true
         recogniseVoices = defaults.object(forKey: Key.recogniseVoices) as? Bool ?? true
@@ -61,6 +83,7 @@ public final class AppSettings {
         appearance = defaults.string(forKey: Key.appearance).flatMap(AppearanceSetting.init(rawValue:)) ?? .system
         autoCopy = defaults.string(forKey: Key.autoCopy).flatMap(CopyFormat.init(rawValue:)) ?? .textOnly
         syncEnabled = defaults.object(forKey: Key.syncEnabled) as? Bool ?? false
+        syncAudio = defaults.object(forKey: Key.syncAudio) as? Bool ?? syncAudioDefault
     }
 
     public var pipeline: PipelineSettings {

@@ -82,6 +82,8 @@ struct RecordProjector {
             return first(FetchDescriptor<Folder>(predicate: #Predicate { $0.id == uuid })).map(SyncEntity.folder)
         case .groupLabel:
             return first(FetchDescriptor<VoiceGroupLabel>(predicate: #Predicate { $0.id == uuid })).map(SyncEntity.groupLabel)
+        case .audio:
+            return nil   // an audio marker has no entity (AudioSync keeps its own rows)
         }
     }
 
@@ -101,6 +103,7 @@ struct RecordProjector {
         case .negative: try context.fetch(FetchDescriptor<VoiceNegative>()).map(SyncEntity.negative)
         case .folder: try context.fetch(FetchDescriptor<Folder>()).map(SyncEntity.folder)
         case .groupLabel: try context.fetch(FetchDescriptor<VoiceGroupLabel>()).map(SyncEntity.groupLabel)
+        case .audio: []
         }
     }
 
@@ -114,6 +117,7 @@ struct RecordProjector {
         case .negative: Set(try context.fetch(FetchDescriptor<VoiceNegative>()).map(\.id))
         case .folder: Set(try context.fetch(FetchDescriptor<Folder>()).map(\.id))
         case .groupLabel: Set(try context.fetch(FetchDescriptor<VoiceGroupLabel>()).map(\.id))
+        case .audio: []
         }
     }
 
