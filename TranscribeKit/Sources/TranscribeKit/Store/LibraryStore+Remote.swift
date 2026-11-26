@@ -50,6 +50,14 @@ extension LibraryStore {
             let fd = Folder(id: id, name: f["name"]?.stringValue ?? "", createdAt: f["createdAt"]?.dateValue ?? clock.now)
             context.insert(fd)
             return .folder(fd)
+        case .groupLabel:
+            // No anchor yet: the body group brings the exact bytes.
+            let created = f["createdAt"]?.dateValue ?? clock.now
+            let l = VoiceGroupLabel(id: id, text: f["text"]?.stringValue ?? "", createdAt: created,
+                                    embeddingModelKey: f["embeddingModelKey"]?.stringValue ?? "",
+                                    captureChannel: f["captureChannel"]?.stringValue ?? "", anchors: [])
+            context.insert(l)
+            return .groupLabel(l)
         }
     }
 
@@ -151,6 +159,16 @@ extension LibraryStore {
             n.captureChannel = v["captureChannel"]?.stringValue
             n.captureInput = v["captureInput"]?.stringValue
 
+        case (.groupLabel(let l), G.body):
+            l.profile = resolve("profileID", v, &unresolved) { id in try? self.profile(id) }
+            l.text = v["text"]?.stringValue ?? ""
+            if let d = v["createdAt"]?.dateValue { l.createdAt = d }
+            if let d = v["editedAt"]?.dateValue { l.editedAt = d }
+            l.embeddingModelKey = v["embeddingModelKey"]?.stringValue ?? ""
+            l.captureChannel = v["captureChannel"]?.stringValue ?? ""
+            l.anchorVectorData = v["anchor"]?.bytesValue ?? Data()   // the exact bytes: never decoded and packed again
+            l.anchorDimension = Int(v["anchorDimension"]?.intValue ?? 0)
+
         case (.folder(let f), G.name):
             if let n = v["name"]?.stringValue { f.name = n }
         case (.folder(let f), G.meta):
@@ -209,6 +227,9 @@ extension LibraryStore {
         case (.negative(let n), "profileID"):
             guard let p = try? profile(targetID) else { return false }
             n.profile = p
+        case (.groupLabel(let l), "profileID"):
+            guard let p = try? profile(targetID) else { return false }
+            l.profile = p
         default:
             return true   // an unknown field: drop it
         }
@@ -223,6 +244,7 @@ extension LibraryStore {
         case (.speaker(let s), "profileID"): s.profile != nil
         case (.sample(let s), "profileID"): s.profile != nil
         case (.negative(let n), "profileID"): n.profile != nil
+        case (.groupLabel(let l), "profileID"): l.profile != nil
         default: false
         }
     }
@@ -255,6 +277,9 @@ extension LibraryStore {
         case .folder(let f):
             for r in f.recordings { r.folder = nil }
             context.delete(f)
+        case .groupLabel(let l):
+            l.profile?.groupLabels.removeAll { $0.id == l.id }
+            context.delete(l)
         }
     }
 

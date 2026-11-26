@@ -15,7 +15,8 @@ struct SyncCrash: Error {}
 /// Applies fetched records and merges server copies (§8.4 flows 2 and 3).
 ///
 /// A fetched modification and a `serverRecordChanged` copy go through the same three-way merge. A fetch is applied
-/// in chunks of 100 records, modifications first (folders, profiles, recordings, speakers, samples, negatives) and
+/// in chunks of 100 records, modifications first (folders, profiles, recordings, speakers, samples, negatives, group
+/// labels) and
 /// deletions last, each chunk committing the entity writes and their state rows in one save.
 @MainActor
 final class RemoteApplier {
@@ -183,7 +184,7 @@ final class RemoteApplier {
             for s in p.speakers { if let r = s.recording { effects.touchedRecordings.insert(r.id) } }   // names in search text
         case .sample(let s): if let p = s.profile { effects.touchedProfiles.insert(p.id) }
         case .negative(let n): if let p = n.profile { effects.touchedProfiles.insert(p.id) }
-        case .folder: break
+        case .folder, .groupLabel: break   // a label changes no profile state: its group is worked out when drawn
         }
     }
 

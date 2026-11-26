@@ -18,7 +18,7 @@ public enum SyncSchema {
         public static let ident = "ident", stats = "stats", label = "label", rejected = "rejected"
         // VoiceProfile (meta is shared)
         public static let name = "name", me = "me", auto = "auto", colour = "colour", model = "model"
-        // VoiceSample, VoiceNegative
+        // VoiceSample, VoiceNegative, VoiceGroupLabel
         public static let body = "body"
     }
 
@@ -53,6 +53,10 @@ public enum SyncSchema {
                           "sourceSpeakerID", "captureChannel", "captureInput"]]
         case .folder:
             [Group.name: ["name"], Group.meta: ["createdAt"]]
+        case .groupLabel:
+            // One group: a Save writes the text, the date and the anchor together, so they never merge apart.
+            [Group.body: ["profileID", "text", "createdAt", "editedAt", "embeddingModelKey", "captureChannel", "anchor",
+                          "anchorDimension"]]
         }
     }
 
@@ -65,7 +69,7 @@ public enum SyncSchema {
         switch type {
         case .recording: ["folderID": .folder]
         case .speaker: ["recordingID": .recording, "profileID": .profile]
-        case .sample, .negative: ["profileID": .profile]
+        case .sample, .negative, .groupLabel: ["profileID": .profile]
         case .profile, .folder: [:]
         }
     }
