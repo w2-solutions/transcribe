@@ -6,13 +6,19 @@ import TranscribeCore
 
 /// One real capture session (§5.9).
 ///
-/// A `CaptureSource` (the microphone) delivers 16 kHz mono Float32 chunks and events into one
-/// `AsyncStream`. A single consumer, this actor:
+/// A `CaptureSource` (the microphone, Mac audio, or both mixed by `MixedCaptureSource`) delivers 16 kHz mono Float32
+/// chunks and events into one `AsyncStream`. A single consumer, this actor:
 /// - writes the WAV through `WAVFileWriter`, flushing the header every 5 s;
 /// - turns RMS into a 0...1 level and emits `.tick` about 20 times a second (elapsed excludes pauses);
 /// - accumulates 200 waveform peak bins;
 /// - feeds `SlidingWindowAsrManager` (sharing the engine's loaded `AsrModels`) when live text is on,
 ///   rebuilding an `AVAudioPCMBuffer` inside the actor. `liveConfig` sets how soon words appear.
+///
+/// Mac audio (`request.sources`): in a Both recording each tick carries the microphone's level and Mac audio's
+/// (`CaptureSource.streamLevels()`), and the stems the source wrote come back in `CapturedAudio.stems`. Mac audio lost
+/// is a notice in a Both recording (the microphone carries on) and a pause (`.routeLost`) when Mac audio is all there
+/// is. The capture detail always names what was captured (`sources`, `input`); a microphone recording's detail is
+/// left exactly as the microphone reports it.
 public actor FluidLiveRecording: LiveRecording {
     public nonisolated let events: AsyncStream<RecordingEvent>
     private let eventContinuation: AsyncStream<RecordingEvent>.Continuation
@@ -39,6 +45,9 @@ public actor FluidLiveRecording: LiveRecording {
     private let log = Logger(subsystem: "ai.w2solutions.transcribe", category: "FluidLiveRecording")
     private let source: any CaptureSource
     private let url: URL
+    private let sources: CaptureSources
+    /// The stems a Both recording writes (nil for the other sources).
+    private let stems: CaptureStems?
     private let language: Language?
     private let liveModels: @Sendable () async -> AsrModels?
     private let liveConfig: SlidingWindowAsrConfig
@@ -75,6 +84,8 @@ public actor FluidLiveRecording: LiveRecording {
          liveConfig: SlidingWindowAsrConfig = FluidLiveRecording.liveConfig,
          freeBytes: @escaping @Sendable (URL) -> Int64? = FluidLiveRecording.volumeFreeBytes) {
         self.url = request.audioURL
+        self.sources = request.sources
+        self.stems = request.sources == .both ? (request.stems ?? CaptureStems.beside(audioURL: request.audioURL)) : nil
         self.source = source
         self.language = LanguageMapping.fluid(request.language)
         self.liveModels = liveModels
@@ -111,6 +122,7 @@ public actor FluidLiveRecording: LiveRecording {
             _ = try? writer?.finish()
             writer = nil
             try? FileManager.default.removeItem(at: url)
+            removeStems()
             eventContinuation.finish()
             throw FluidErrorMapping.engineError(error)
         }
@@ -185,7 +197,21 @@ public actor FluidLiveRecording: LiveRecording {
         }
         if let writeError { log.error("Audio write error during capture: \(writeError, privacy: .public)") }
         return CapturedAudio(url: url, duration: duration, marks: marks, peaks: peaks.result(),
-                             detail: await source.captureDetail())
+                             detail: Self.detail(await source.captureDetail(), sources: sources),
+                             stems: stems.flatMap { s in
+                                 let fm = FileManager.default
+                                 return fm.fileExists(atPath: s.mic.path) && fm.fileExists(atPath: s.system.path) ? s : nil
+                             })
+    }
+
+    /// The source's detail, naming what was captured. A microphone recording's detail is left as it is (so it encodes
+    /// byte for byte as before); Mac audio gets `sources` and, when the source did not say, `input`.
+    static func detail(_ detail: CaptureDetail?, sources: CaptureSources) -> CaptureDetail? {
+        guard sources != .microphone else { return detail }
+        var d = detail ?? CaptureDetail(hardwareModel: CaptureChannel.hardwareModel, input: nil)
+        d.sources = sources.detailValue
+        if d.input == nil || d.input == CaptureDetail.Input.unknown { d.input = sources.detailInput }
+        return d
     }
 
     public func discard() async {
@@ -203,6 +229,13 @@ public actor FluidLiveRecording: LiveRecording {
         _ = try? writer?.finish()
         writer = nil
         try? FileManager.default.removeItem(at: url)
+        removeStems()
+    }
+
+    private func removeStems() {
+        guard let stems else { return }
+        try? FileManager.default.removeItem(at: stems.mic)
+        try? FileManager.default.removeItem(at: stems.system)
     }
 
     // MARK: Consumer
@@ -232,8 +265,18 @@ public actor FluidLiveRecording: LiveRecording {
                 return
             }
         }
-        for tick in meter.ingest(samples) {
-            eventContinuation.yield(.tick(elapsed: Double(tick.endFrame) / Double(LevelMeter.sampleRate), level: tick.level))
+        let ticks = meter.ingest(samples)
+        if !ticks.isEmpty {
+            // A Both recording shows each stream's level; the mix's level is only the fallback.
+            let streams = sources == .both ? await source.streamLevels() : nil
+            for tick in ticks {
+                let elapsed = Double(tick.endFrame) / Double(LevelMeter.sampleRate)
+                if let streams {
+                    eventContinuation.yield(.tick(elapsed: elapsed, level: streams.mic, systemLevel: streams.system))
+                } else {
+                    eventContinuation.yield(.tick(elapsed: elapsed, level: tick.level))
+                }
+            }
         }
         peaks.ingest(samples)
         framesSinceFlush += samples.count
@@ -261,10 +304,7 @@ public actor FluidLiveRecording: LiveRecording {
             guard state == .paused(.interruption), shouldResume else { return }
             await resume()
         case .routeLost:
-            guard state == .recording else { return }
-            await source.pause()
-            state = .paused(.routeLost)
-            eventContinuation.yield(.paused(.routeLost))
+            await pauseForLostRoute()
         case .mediaServicesReset:
             await end(.mediaServicesReset)
         case .failed(let message):
@@ -272,9 +312,21 @@ public actor FluidLiveRecording: LiveRecording {
         case .systemAudioSilent:
             eventContinuation.yield(.notice(.systemAudioSilent))
         case .systemAudioLost:
-            // Both mode: the microphone carries on. (A Mac-audio-only source reports `.routeLost` instead.)
-            eventContinuation.yield(.notice(.systemAudioLost))
+            if sources == .macAudio {
+                // Mac audio is all this recording has: pause, as for a lost microphone. Resume rebuilds the tap.
+                await pauseForLostRoute()
+            } else {
+                // Both: the microphone carries on.
+                eventContinuation.yield(.notice(.systemAudioLost))
+            }
         }
+    }
+
+    private func pauseForLostRoute() async {
+        guard state == .recording else { return }
+        await source.pause()
+        state = .paused(.routeLost)
+        eventContinuation.yield(.paused(.routeLost))
     }
 
     /// Capture stopped for a system reason. The file stays open; the caller must still call `stop()`.

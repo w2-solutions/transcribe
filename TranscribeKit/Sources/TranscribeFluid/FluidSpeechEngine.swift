@@ -74,7 +74,8 @@ public actor FluidSpeechEngine: SpeechEngine {
     private var plannedWarm: Set<PrepareStage> = []
 
     private let log = Logger(subsystem: "ai.w2solutions.transcribe", category: "FluidSpeechEngine")
-    private let captureFactory: @Sendable () -> any CaptureSource
+    /// Makes the capture source for what a recording captures, with the stems a Both recording writes.
+    private let captureFactory: @Sendable (CaptureSources, CaptureStems) -> any CaptureSource
     private let asrConfig: ASRConfig
     private let diarizerConfig: OfflineDiarizerConfig
 
@@ -99,15 +100,17 @@ public actor FluidSpeechEngine: SpeechEngine {
     /// No I/O: the app builds this engine even for fake-engine runs. `prepareLog` is only written by a prepare.
     public init(modelsRoot: URL, prepareLog: URL? = nil, activity: AppActivity = AppActivity()) {
         self.init(modelsRoot: modelsRoot, prepareLog: prepareLog, activity: activity,
-                  captureFactory: { MicrophoneCapture() })
+                  captureFactory: { MicrophoneCapture() }, sourceFactory: Self.makeCaptureSource)
     }
 
     /// Tests inject a scripted capture source, a Neural Engine probe and a hook between a stage's work and its
-    /// verdict.
+    /// verdict. `captureFactory` makes microphone sources; `sourceFactory`, when given, makes every source instead
+    /// (Mac audio tests). Without it, Mac audio uses the real sources.
     init(modelsRoot: URL, prepareLog: URL? = nil, activity: AppActivity = AppActivity(),
          afterStageWork: (@Sendable (String) async -> Void)? = nil,
          neuralEngineProbe: @escaping @Sendable () -> Bool = { PrepareLog.neuralEngineAvailable() },
-         captureFactory: @escaping @Sendable () -> any CaptureSource) {
+         captureFactory: @escaping @Sendable () -> any CaptureSource,
+         sourceFactory: (@Sendable (CaptureSources, CaptureStems) -> any CaptureSource)? = nil) {
         FluidRuntime.lockDown()
         self.activity = activity
         self.afterStageWork = afterStageWork
@@ -115,7 +118,9 @@ public actor FluidSpeechEngine: SpeechEngine {
         self.modelsRoot = modelsRoot
         self.paths = FluidModelPaths(root: modelsRoot)
         self.prepareLog = prepareLog
-        self.captureFactory = captureFactory
+        self.captureFactory = sourceFactory ?? { sources, stems in
+            sources == .microphone ? captureFactory() : Self.makeCaptureSource(sources, stems)
+        }
         self.asrConfig = Self.makeASRConfig()
         self.diarizerConfig = Self.makeDiarizerConfig()
     }
@@ -406,11 +411,36 @@ public actor FluidSpeechEngine: SpeechEngine {
 
     // MARK: Capture
 
+    /// Mac audio (a Core Audio process tap) exists on the Mac only.
+    public nonisolated var systemAudioAvailable: Bool { Self.recordsMacAudio }
+    #if os(macOS)
+    static let recordsMacAudio = true
+    #else
+    static let recordsMacAudio = false
+    #endif
+
+    /// The real source for each choice: the microphone, Mac audio alone (straight into the recording's file, no
+    /// stems), or both mixed with stems.
+    static func makeCaptureSource(_ sources: CaptureSources, _ stems: CaptureStems) -> any CaptureSource {
+        #if os(macOS)
+        switch sources {
+        case .microphone: return MicrophoneCapture()
+        case .macAudio: return SystemAudioCapture()
+        case .both: return MixedCaptureSource(mic: MicrophoneCapture(), system: SystemAudioCapture(), stems: stems)
+        }
+        #else
+        return MicrophoneCapture()
+        #endif
+    }
+
     public func startRecording(_ request: RecordingRequest) async throws -> any LiveRecording {
-        // Mac audio capture is not built yet: `systemAudioAvailable` is false, so only the microphone is accepted.
         guard request.sources == .microphone || systemAudioAvailable else { throw EngineError.sourceUnavailable }
-        guard await microphonePermission() == .granted else { throw EngineError.microphoneDenied }
-        return try await startRecording(request, source: captureFactory())
+        // Mac audio alone needs no microphone; its access is asked by the system when the tap first runs.
+        if request.sources.includesMicrophone {
+            guard await microphonePermission() == .granted else { throw EngineError.microphoneDenied }
+        }
+        let stems = request.stems ?? CaptureStems.beside(audioURL: request.audioURL)
+        return try await startRecording(request, source: captureFactory(request.sources, stems))
     }
 
     /// Capture from any source (the microphone in the app, a scripted source in tests).

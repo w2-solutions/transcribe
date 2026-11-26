@@ -16,6 +16,9 @@ public struct FakeScript: Sendable {
     public var behaviour: Behaviour
     /// Per-span overrides for `embedVoice`: the first entry whose range contains a span's midpoint wins.
     public var spanVectors: [(range: TimeRange, vector: VoiceVector)] = []
+    /// Speakers heard through Mac audio (the far side of a call). In a fake Both recording the system stem holds
+    /// exactly their segments and the microphone stem the rest (`FakeLiveRecording`).
+    public var remoteSpeakers: Set<SpeakerKey> = []
 
     /// Segments with the synthetic person speaking each one (for SyntheticAudio).
     public var audioSegments: [(TimeRange, SyntheticPerson)] {

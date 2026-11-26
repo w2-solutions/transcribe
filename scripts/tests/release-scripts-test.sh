@@ -5,7 +5,8 @@
 #
 #   scripts/tests/release-scripts-test.sh
 #
-# Sections: lint (bash -n, shellcheck, actionlint); release-mac.sh --print-version; then, on macOS only,
+# Sections: lint (bash -n, shellcheck, actionlint); release-mac.sh --print-version; the Mac audio privacy string
+# (project.yml everywhere, release-mac.sh --check-info-plist on macOS); then, on macOS only,
 # ed25519.swift (with a cross-check against Sparkle's sign_update when $DERIVED holds it), sign-mac-release.sh --test
 # and publish-mac.sh --dest dir:, delta updates (make-mac-delta.sh with Sparkle's BinaryDelta when $DERIVED holds it,
 # sign and publish with --delta, fetch-published-mac.sh against a local server); finally release-gate.sh against a local server. On Linux (release-checks.yml) the
@@ -126,6 +127,50 @@ expect_rc "TRANSCRIBE_FEED_URL without a test key is refused" 2 \
   ./scripts/release-mac.sh --print-version
 expect_out "a TEST build honours TRANSCRIBE_TEST_VERSION" "0.3.1 301" \
   env TRANSCRIBE_ED_PUBLIC_KEY="$K" TRANSCRIBE_TEST_VERSION=0.3.1 PROJECT="$P300" ./scripts/release-mac.sh --print-version
+
+# ---------------------------------------------------------------------------------------------------------------
+section "Mac audio privacy string"
+# info_key TARGET KEY: TARGET's block in project.yml has KEY (the Info.plist properties live inside the target).
+info_key() {
+  awk -v target="$1" -v key="$2" '
+    /^  [^ #]/ { t = ($0 ~ ("^  " target ":")) }
+    t && $1 == key ":" { found = 1 }
+    END { exit !found }
+  ' project.yml
+}
+expect_rc "project.yml: TranscribeMac has NSAudioCaptureUsageDescription" 0 info_key TranscribeMac NSAudioCaptureUsageDescription
+expect_rc "project.yml: the iPhone app (no Mac audio) does not" 1 info_key Transcribe NSAudioCaptureUsageDescription
+expect_rc "project.yml: no system-audio entitlement anywhere" 1 grep -rn 'system-audio' project.yml Apps/Mac/TranscribeMac.entitlements \
+  Apps/Mac/TranscribeMac.local.entitlements
+expect_rc "release-mac.sh --check-info-plist needs a file" 2 ./scripts/release-mac.sh --check-info-plist
+if [ "$(uname -s)" = Darwin ]; then
+  # info_plist FILE KEY=VALUE...: a minimal Info.plist with string values ("KEY=" is an empty string).
+  info_plist() {
+    local file="$1" kv
+    shift
+    {
+      printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n'
+      for kv in "$@"; do printf '<key>%s</key><string>%s</string>\n' "${kv%%=*}" "${kv#*=}"; done
+      printf '</dict>\n</plist>\n'
+    } >"$file"
+  }
+  info_plist "$T/info-ok.plist" NSMicrophoneUsageDescription=mic NSAudioCaptureUsageDescription="Mac audio"
+  info_plist "$T/info-missing.plist" NSMicrophoneUsageDescription=mic
+  info_plist "$T/info-empty.plist" NSMicrophoneUsageDescription=mic NSAudioCaptureUsageDescription=
+  info_plist "$T/info-nomic.plist" NSAudioCaptureUsageDescription="Mac audio"
+  cp "$T/info-ok.plist" "$T/info-bool.plist"
+  plutil -replace NSAudioCaptureUsageDescription -bool true "$T/info-bool.plist"
+  expect_rc "--check-info-plist accepts both privacy strings" 0 ./scripts/release-mac.sh --check-info-plist "$T/info-ok.plist"
+  expect_rc "--check-info-plist refuses a missing NSAudioCaptureUsageDescription" 1 \
+    ./scripts/release-mac.sh --check-info-plist "$T/info-missing.plist"
+  expect_rc "--check-info-plist refuses an empty NSAudioCaptureUsageDescription" 1 \
+    ./scripts/release-mac.sh --check-info-plist "$T/info-empty.plist"
+  expect_rc "--check-info-plist refuses a NSAudioCaptureUsageDescription that is not a string" 1 \
+    ./scripts/release-mac.sh --check-info-plist "$T/info-bool.plist"
+  expect_rc "--check-info-plist refuses a missing NSMicrophoneUsageDescription" 1 \
+    ./scripts/release-mac.sh --check-info-plist "$T/info-nomic.plist"
+  expect_rc "--check-info-plist refuses a missing file" 1 ./scripts/release-mac.sh --check-info-plist "$T/nothing.plist"
+fi
 
 # ---------------------------------------------------------------------------------------------------------------
 if [ "$(uname -s)" = Darwin ]; then
