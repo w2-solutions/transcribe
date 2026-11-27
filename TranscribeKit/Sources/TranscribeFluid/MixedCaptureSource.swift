@@ -1,0 +1,263 @@
+import Foundation
+import os
+import TranscribeCore
+
+/// A Both recording's capture (Mac audio, decided 2026-11-26): the microphone and Mac audio, each stamped with host
+/// time, put on one timeline by a `StreamAligner` and delivered as one ordinary stream of
+/// `clamp(mic + system, −1, 1)` chunks. So `FluidLiveRecording`, the recording's `<id>.wav`, live text, playback, clips
+/// and speaker separation are the same as for a microphone recording.
+///
+/// Beside the mix it writes each aligned stream to its stem (`CaptureStems`: `Audio/Stems/<id>.mic.wav` and
+/// `<id>.system.wav`) through `WAVFileWriter`, flushing their headers every 5 s of audio like the main file, so a crash
+/// leaves stems that salvage can read. Both stems and the mix have exactly the same length: sample n of each is the
+/// same moment. Stems are temporary; the store deletes them when the recording is ready.
+///
+/// - The microphone starts first (so the tap can exclude this process's own audio object). If it cannot start, the
+///   recording does not start. If Mac audio cannot start, the recording goes on with the microphone and delivers
+///   `.systemAudioLost` at once; Mac audio (built with `keepsTryingAfterFailedStart`) keeps trying to join, as after
+///   a failed rebuild.
+/// - Mac audio lost later (`.systemAudioLost`, or its own route lost or failure) is filled with zeros, and the event
+///   is passed on once; the microphone carries on. Mac audio keeps trying to come back (`SystemAudioCapture` rebuilds
+///   on the next device change, retries, and on resume); when it does (`.systemAudioRestored`) it is placed on the
+///   timeline by its host time again and the event is passed on. `.systemAudioSilent` is passed on. The microphone's own
+///   events are passed on as they are (an interruption or a lost microphone pauses the whole recording).
+/// - A pause pauses both; on resume the timeline is anchored again, so the pause leaves no zeros.
+/// - Every 5 s of aligned audio it logs the aligner's counters per stream when any changed since the last line
+///   ("Aligner: mic +<inserted> −<dropped> fill <filled> corr <corrections>; system …", totals for the recording, info,
+///   public), and once at stop ("Aligned Mac audio: …") when any is not zero (2026-11-27). The fill of a stream marked
+///   lost grows on every push, so it alone never writes a line (`AlignerLogPolicy`); the next line has its total.
+/// - `streamLevels()` gives each stream's level (the recording window's two meters); `captureDetail()` the
+///   microphone's detail with `input = micAndSystem`, `sources = both` and Mac audio's output route.
+actor MixedCaptureSource: CaptureSource {
+    private enum Item: Sendable {
+        case audio(CaptureStream, [Float], Double?)
+        case event(CaptureStream, CaptureSourceEvent)
+        case rebase
+    }
+
+    private let log = Logger(subsystem: "ai.w2solutions.transcribe", category: "MixedCaptureSource")
+    private let mic: any StampedCaptureSource
+    private let system: any StampedCaptureSource
+    let stems: CaptureStems
+
+    private var deliver: (@Sendable (CaptureInput) -> Void)?
+    private var aligner: StreamAligner
+    private var micWriter: WAVFileWriter?
+    private var systemWriter: WAVFileWriter?
+    private var stemWriteFailed = false
+    private var framesSinceFlush = 0
+    /// Aligned frames since the aligner's counters were last compared, and what they were then.
+    private var framesSinceAlignerLog = 0
+    private var loggedCounters = (mic: StreamAligner.Counters(), system: StreamAligner.Counters())
+    private var micMeter = LevelMeter()
+    private var systemMeter = LevelMeter()
+    private var levels = StreamLevels(mic: 0, system: 0)
+    private var systemLost = false
+    private var started = false
+    private var stopped = false
+
+    private let items: AsyncStream<Item>
+    private let itemContinuation: AsyncStream<Item>.Continuation
+    private var consumer: Task<Void, Never>?
+
+    init(mic: any StampedCaptureSource, system: any StampedCaptureSource, stems: CaptureStems,
+         aligner: StreamAligner = StreamAligner()) {
+        self.mic = mic
+        self.system = system
+        self.stems = stems
+        self.aligner = aligner
+        (items, itemContinuation) = AsyncStream.makeStream(of: Item.self, bufferingPolicy: .unbounded)
+    }
+
+    func start(_ deliver: @escaping @Sendable (CaptureInput) -> Void) async throws {
+        guard !started, !stopped else { throw EngineError.failed("Capture already started") }
+        started = true
+        self.deliver = deliver
+        do {
+            micWriter = try WAVFileWriter(url: stems.mic)
+            systemWriter = try WAVFileWriter(url: stems.system)
+        } catch {
+            closeWriters(remove: true)
+            throw EngineError.failed("Could not create the audio file: \(FluidErrorMapping.describe(error))")
+        }
+        let stream = items
+        consumer = Task { [weak self] in
+            for await item in stream {
+                guard let self else { return }
+                await self.handle(item)
+            }
+        }
+        let continuation = itemContinuation
+        do {
+            try await mic.startStamped { continuation.yield(Self.item(.mic, $0)) }
+        } catch {
+            stopped = true
+            continuation.finish()
+            await consumer?.value
+            closeWriters(remove: true)
+            throw error
+        }
+        do {
+            try await system.startStamped { continuation.yield(Self.item(.system, $0)) }
+        } catch {
+            log.error("Mac audio did not start; recording the microphone only: \(FluidErrorMapping.describe(error), privacy: .public)")
+            continuation.yield(.event(.system, .systemAudioLost))
+        }
+    }
+
+    private static func item(_ stream: CaptureStream, _ input: StampedInput) -> Item {
+        switch input {
+        case .audio(let samples, let host): .audio(stream, samples, host)
+        case .event(let event): .event(stream, event)
+        }
+    }
+
+    func pause() async {
+        guard started, !stopped else { return }
+        await mic.pause()
+        // Lost or not: a lost Mac audio stops trying to come back while the recording is paused.
+        await system.pause()
+    }
+
+    func resume() async throws {
+        guard started, !stopped else { return }
+        // Queued behind everything delivered before the pause, so the pause never becomes zeros.
+        itemContinuation.yield(.rebase)
+        try await mic.resume()
+        // A lost Mac audio is tried again too; when it comes back it reports `.systemAudioRestored` itself.
+        do {
+            try await system.resume()
+        } catch {
+            log.error("Mac audio did not resume; recording the microphone only: \(FluidErrorMapping.describe(error), privacy: .public)")
+            itemContinuation.yield(.event(.system, .systemAudioLost))
+        }
+    }
+
+    func stop() async {
+        guard started, !stopped else { return }
+        stopped = true
+        await mic.stop()
+        await system.stop()
+        itemContinuation.finish()
+        await consumer?.value
+        consumer = nil
+        emit(aligner.finish())
+        if aligner.insertedFrames + aligner.droppedFrames + aligner.lagFilledFrames + aligner.corrections > 0 {
+            log.info("Aligned Mac audio: \(self.aligner.insertedFrames, privacy: .public) inserted, \(self.aligner.droppedFrames, privacy: .public) dropped, \(self.aligner.lagFilledFrames, privacy: .public) filled, \(self.aligner.corrections, privacy: .public) corrections")
+        }
+        closeWriters(remove: false)
+        deliver = nil
+    }
+
+    func captureDetail() async -> CaptureDetail? {
+        let micDetail = await mic.captureDetail()
+        let systemDetail = await system.captureDetail()
+        var detail = micDetail ?? CaptureDetail(hardwareModel: CaptureChannel.hardwareModel, input: nil)
+        detail.input = CaptureSources.both.detailInput
+        detail.sources = CaptureSources.both.detailValue
+        detail.outputRoute = systemDetail?.outputRoute
+        detail.routeChanged = (micDetail?.routeChanged ?? false) || (systemDetail?.routeChanged ?? false)
+        return detail
+    }
+
+    func streamLevels() async -> StreamLevels? { levels }
+
+    /// Whether Mac audio was lost (tests).
+    var isSystemLost: Bool { systemLost }
+
+    // MARK: Consumer
+
+    private func handle(_ item: Item) {
+        switch item {
+        case .audio(let stream, let samples, let host):
+            guard !samples.isEmpty else { return }
+            emit(aligner.push(stream, samples, hostSeconds: host))
+        case .rebase:
+            emit(aligner.rebase())
+        case .event(.mic, let event):
+            deliver?(.event(event))
+        case .event(.system, let event):
+            switch event {
+            case .systemAudioSilent:
+                deliver?(.event(.systemAudioSilent))
+            case .systemAudioLost, .routeLost, .failed, .mediaServicesReset:
+                guard !systemLost else { return }
+                systemLost = true
+                emit(aligner.markLost(.system))
+                deliver?(.event(.systemAudioLost))
+            case .systemAudioRestored:
+                guard systemLost else { return }
+                systemLost = false
+                log.notice("Mac audio came back")
+                emit(aligner.markRestored(.system))
+                deliver?(.event(.systemAudioRestored))
+            case .interrupted, .interruptionEnded:
+                break   // only the microphone's session is interrupted
+            }
+        }
+    }
+
+    private func emit(_ out: StreamAligner.Output) {
+        guard !out.isEmpty else { return }
+        if !stemWriteFailed {
+            do {
+                try micWriter?.append(out.mic)
+                try systemWriter?.append(out.system)
+            } catch {
+                stemWriteFailed = true
+                log.error("Stem write failed; the recording goes on without stems: \(FluidErrorMapping.describe(error), privacy: .public)")
+            }
+        }
+        if let last = micMeter.ingest(out.mic).last { levels.mic = last.level }
+        if let last = systemMeter.ingest(out.system).last { levels.system = last.level }
+        framesSinceFlush += out.count
+        if framesSinceFlush >= FluidLiveRecording.flushFrames, !stemWriteFailed {
+            framesSinceFlush = 0
+            do {
+                try micWriter?.flushHeader()
+                try systemWriter?.flushHeader()
+            } catch {
+                log.error("Stem header flush failed: \(FluidErrorMapping.describe(error), privacy: .public)")
+            }
+        }
+        framesSinceAlignerLog += out.count
+        if framesSinceAlignerLog >= Self.alignerLogFrames {
+            framesSinceAlignerLog = 0
+            logAlignerIfChanged()
+        }
+        deliver?(.audio(out.mixed()))
+    }
+
+    /// 5 s at 16 kHz of aligned audio: how often the aligner's counters are compared (and logged when changed).
+    static let alignerLogFrames = 80_000
+
+    private func logAlignerIfChanged() {
+        let m = aligner.counters(of: .mic), s = aligner.counters(of: .system)
+        guard AlignerLogPolicy.changed(m, since: loggedCounters.mic, lost: aligner.isLost(.mic))
+                || AlignerLogPolicy.changed(s, since: loggedCounters.system, lost: aligner.isLost(.system))
+        else { return }
+        loggedCounters = (m, s)
+        log.info("Aligner: mic +\(m.inserted, privacy: .public) −\(m.dropped, privacy: .public) fill \(m.filled, privacy: .public) corr \(m.corrections, privacy: .public); system +\(s.inserted, privacy: .public) −\(s.dropped, privacy: .public) fill \(s.filled, privacy: .public) corr \(s.corrections, privacy: .public)")
+    }
+
+    private func closeWriters(remove: Bool) {
+        _ = try? micWriter?.finish()
+        _ = try? systemWriter?.finish()
+        micWriter = nil
+        systemWriter = nil
+        if remove {
+            try? FileManager.default.removeItem(at: stems.mic)
+            try? FileManager.default.removeItem(at: stems.system)
+        }
+    }
+}
+
+/// Whether a stream's aligner counters changed enough for the 5 s "Aligner:" line (review 2026-11-27): any change,
+/// except the fill of a stream marked lost, which grows on every push (a Both recording whose Mac audio never starts
+/// would otherwise log the same line every 5 s for the whole recording).
+enum AlignerLogPolicy {
+    static func changed(_ now: StreamAligner.Counters, since logged: StreamAligner.Counters, lost: Bool) -> Bool {
+        guard lost else { return now != logged }
+        return now.inserted != logged.inserted || now.dropped != logged.dropped || now.corrections != logged.corrections
+    }
+}

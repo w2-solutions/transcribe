@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import TranscribeCore
 import TranscribeKit
 
 /// What the Mac sidebar has selected.
@@ -35,4 +36,7 @@ final class MacSelection {
     /// Set by New Recording (⌘N); the main window starts recording as its toolbar button does (so a denied microphone
     /// shows its sheet) and clears it.
     var recordRequested = false
+    /// Set by File → Record From (a source chosen there); the main window records with it, as `recordRequested` does,
+    /// and clears it.
+    var recordSourceRequest: CaptureSources?
 }

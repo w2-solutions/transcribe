@@ -8,8 +8,8 @@ import TranscribeCore
 
 /// Opens the committed V2 library (`Fixtures/V2Library`, written by `V2FixtureWriter`; the owner's phone ran V2)
 /// and the V1 library under the current schema, through V3. Nothing may be lost, the V3 channel fields start empty,
-/// and the one-time backup is taken exactly once. The current version's own checks (V4: no labels, the marker, a
-/// fresh install) are in `MigrationV4Tests`.
+/// and the one-time backup is taken exactly once. The current version's own checks (the marker, a
+/// fresh install) are in `MigrationV5Tests`.
 @Suite("Store migration through V3")
 @MainActor
 struct MigrationV3Tests {
@@ -88,7 +88,7 @@ struct MigrationV3Tests {
         }
 
         // The store on disk is now a store of the current schema.
-        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV4Tests.v4VersionHashes()))
+        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV5Tests.v5VersionHashes()))
         let reopened = try ModelContainerFactory.make(inMemory: false, url: storeURL)
         let again = try Self.manifest(reopened.mainContext)
         #expect(again.recordings == expected.recordings && again.speakers == expected.speakers)
@@ -123,7 +123,7 @@ struct MigrationV3Tests {
             #expect(try store.stampCaptureChannels() == m.counts.recordings + m.counts.samples)
             #expect(try context.fetchCount(FetchDescriptor<VoiceSample>()) == m.counts.samples)
         }
-        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV4Tests.v4VersionHashes()))
+        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV5Tests.v5VersionHashes()))
     }
 
     // MARK: Backup and marker

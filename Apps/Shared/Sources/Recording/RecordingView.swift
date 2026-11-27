@@ -16,7 +16,10 @@ struct RecordingView: View {
     /// Set once the live text has outgrown its card: the header shrinks to one line and the level meter to a
     /// strip, handing the room to the words. It stays set for the rest of the recording so nothing jumps back.
     @State private var isCompact = false
+    /// Both mode on the Mac: the Mac's sound plays through its built-in speakers (checked every few seconds).
+    @State private var playsThroughSpeakers = false
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.openURL) private var openURL
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     private var recorder: RecorderController { env.recorder }
@@ -33,9 +36,7 @@ struct RecordingView: View {
             liveCard
                 .layoutPriority(1)
             if !dynamicTypeSize.isAccessibilitySize {
-                LiveLevelMeter(levels: recorder.levels, maxHeight: isCompact ? 36 : 64, height: isCompact ? 44 : 96)
-                    .padding(.top, isCompact ? 0 : 10)
-                    .accessibilityIdentifier(AX.Recording.levelMeter)
+                meters
             }
             Spacer(minLength: 0)
         }
@@ -58,6 +59,15 @@ struct RecordingView: View {
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier(AX.Recording.screen)
         .onAppear { env.player.stop() }
+        // Both mode: whether the Mac's sound plays through its speakers (the headphones hint). Polled, since the user
+        // can plug headphones in mid-recording; nothing to check in the other modes or on the iPhone.
+        .task(id: recorder.sources == .both && recorder.isActive) {
+            guard recorder.sources == .both, recorder.isActive else { playsThroughSpeakers = false; return }
+            while !Task.isCancelled {
+                playsThroughSpeakers = Platform.outputIsBuiltInSpeaker()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
         .onChange(of: recorder.isActive) { _, active in
             // A new capture: the Mac's single Recording window keeps this view's state between recordings, so the
             // previous recording's finished stop must not leave Stop disabled.
@@ -107,7 +117,7 @@ struct RecordingView: View {
         HStack(spacing: 9) {
             PulsingRecordDot(isPulsing: RecordingStatus.isLive(recorder.state))
                 .frame(width: 8, height: 8)
-            Text(RecordingStatus.title(recorder.state))
+            Text(RecordingStatus.title(recorder.state, sources: recorder.sources))
                 .scaledFont(size: 14, weight: .semibold, relativeTo: .subheadline)
                 .lineLimit(1)
                 .minimumScaleFactor(0.8)
@@ -122,7 +132,7 @@ struct RecordingView: View {
         .frame(minHeight: 36)
         .floatingGlass(Capsule())
         .accessibilityElement(children: .contain)
-        .accessibilityLabel(RecordingStatus.accessibilityLabel(recorder.state, elapsed: recorder.elapsed))
+        .accessibilityLabel(RecordingStatus.accessibilityLabel(recorder.state, elapsed: recorder.elapsed, sources: recorder.sources))
         .accessibilityIdentifier(AX.Recording.statusCapsule)
     }
 
@@ -142,6 +152,17 @@ struct RecordingView: View {
                     .foregroundStyle(DS.Colour.secondary)
                     .accessibilityIdentifier(AX.Recording.date)
             }
+            // Kept in the compact header too: what is being recorded matters for the whole recording.
+            if showsSource {
+                Label(RecordingSourceCopy.sourceLine(recorder.sources),
+                      systemImage: RecordingSourceCopy.symbol(recorder.sources))
+                    .font(DS.Typo.subheadline)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(RecordingSourceCopy.sourceLine(recorder.sources))
+                    .accessibilityValue(RecordingSourceCopy.sourceLine(recorder.sources))
+                    .accessibilityIdentifier(AX.Recording.source)
+            }
             Label {
                 Text("Speakers are separated when you stop.")
             } icon: {
@@ -151,8 +172,87 @@ struct RecordingView: View {
             .scaledFont(size: 14, relativeTo: .subheadline)
             .foregroundStyle(DS.Colour.secondary)
             .padding(.top, isCompact ? 0 : 6)
+            if recorder.sources == .both && playsThroughSpeakers {
+                Label {
+                    Text(RecordingSourceCopy.headphonesHint)
+                } icon: {
+                    Image(systemName: "headphones").font(.system(size: 14, weight: .medium))
+                }
+                .labelStyle(HintLabelStyle())
+                .scaledFont(size: 14, relativeTo: .subheadline)
+                .foregroundStyle(DS.Colour.secondary)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(RecordingSourceCopy.headphonesHint)
+                .accessibilityValue(RecordingSourceCopy.headphonesHint)
+                .accessibilityIdentifier(AX.Recording.headphonesHint)
+            }
+            if let note = RecordingSourceCopy.note(recorder.notice, sources: recorder.sources) {
+                macAudioNote(note, offersSettings: recorder.notice == .systemAudioSilent)
+            }
         }
         .padding(.horizontal, 4)
+    }
+
+    /// The source line shows on a Mac that can record Mac audio (it says what this recording captures). The iPhone,
+    /// which records the microphone only, never shows it.
+    private var showsSource: Bool { env.macAudioAvailable || recorder.sources != .microphone }
+
+    /// "No sound from Mac audio…" (with Open Privacy Settings) or "Mac audio stopped…".
+    private func macAudioNote(_ text: String, offersSettings: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Label {
+                Text(text).fixedSize(horizontal: false, vertical: true)
+            } icon: {
+                Image(systemName: "speaker.slash").font(.system(size: 14, weight: .medium))
+            }
+            .labelStyle(HintLabelStyle())
+            .scaledFont(size: 14, relativeTo: .subheadline)
+            .foregroundStyle(DS.Colour.unnamedText)
+            .accessibilityElement(children: .ignore)
+            .accessibilityLabel(text)
+            .accessibilityValue(text)
+            .accessibilityIdentifier(AX.Recording.macAudioNote)
+            if offersSettings {
+                LinkButton(RecordingSourceCopy.openPrivacySettings, font: .subheadline.weight(.semibold)) {
+                    openURL(Platform.macAudioSettingsURL)
+                }
+                .padding(.leading, 22)
+                .accessibilityIdentifier(AX.Recording.macAudioNoteOpenSettings)
+            }
+        }
+        .padding(.top, 4)
+    }
+
+    // MARK: Level meters
+
+    /// One meter (the microphone, or Mac audio alone); in Both mode two, captioned, one per stream.
+    @ViewBuilder private var meters: some View {
+        if recorder.sources == .both {
+            VStack(spacing: isCompact ? 2 : 6) {
+                captionedMeter(RecordingSourceCopy.micMeterCaption, levels: recorder.levels, id: AX.Recording.levelMeterMic)
+                captionedMeter(RecordingSourceCopy.macAudioMeterCaption, levels: recorder.systemLevels,
+                               id: AX.Recording.levelMeterMacAudio)
+            }
+            .padding(.top, isCompact ? 0 : 10)
+        } else {
+            LiveLevelMeter(levels: recorder.levels, maxHeight: isCompact ? 36 : 64, height: isCompact ? 44 : 96)
+                .padding(.top, isCompact ? 0 : 10)
+                .accessibilityIdentifier(AX.Recording.levelMeter)
+        }
+    }
+
+    private func captionedMeter(_ caption: String, levels: [Float], id: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(caption)
+                .font(DS.Typo.chip)
+                .foregroundStyle(DS.Colour.secondary)
+                .padding(.horizontal, 4)
+            LiveLevelMeter(levels: levels, maxHeight: isCompact ? 22 : 36, height: isCompact ? 28 : 48)
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(caption)
+        .accessibilityValue(caption)
+        .accessibilityIdentifier(id)
     }
 
     // MARK: Bottom bar

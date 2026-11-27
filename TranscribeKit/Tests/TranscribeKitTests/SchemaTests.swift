@@ -8,12 +8,12 @@ import TranscribeCore
 @Suite("WP3: schema")
 @MainActor
 struct SchemaTests {
-    @Test func migrationPlanListsV1ToV4() {
+    @Test func migrationPlanListsV1ToV5() {
         let schemas = TranscribeMigrationPlan.schemas
-        #expect(schemas.count == 4)
+        #expect(schemas.count == 5)
         #expect(schemas[0] == TranscribeSchemaV1.self && schemas[1] == TranscribeSchemaV2.self && schemas[2] == TranscribeSchemaV3.self
-                && schemas[3] == TranscribeSchemaV4.self)
-        #expect(TranscribeMigrationPlan.stages.count == 3)
+                && schemas[3] == TranscribeSchemaV4.self && schemas[4] == TranscribeSchemaV5.self)
+        #expect(TranscribeMigrationPlan.stages.count == 4)
         #expect(TranscribeSchemaV1.versionIdentifier == Schema.Version(1, 0, 0))
         #expect(TranscribeSchemaV1.models.count == 5)
         #expect(TranscribeSchemaV2.versionIdentifier == Schema.Version(2, 0, 0))
@@ -27,10 +27,14 @@ struct SchemaTests {
         #expect(TranscribeSchemaV4.models.count == 9)
         let v4Names = Set(TranscribeSchemaV4.models.map { String(describing: $0) })
         #expect(v4Names == v3Names.union(["VoiceGroupLabel"]))
+        #expect(TranscribeSchemaV5.versionIdentifier == Schema.Version(5, 0, 0))
+        #expect(TranscribeSchemaV5.models.count == 9)
+        #expect(Set(TranscribeSchemaV5.models.map { String(describing: $0) }) == v4Names)
         // The aliases name the current schema.
-        #expect(Recording.self == TranscribeSchemaV4.Recording.self && VoiceNegative.self == TranscribeSchemaV4.VoiceNegative.self)
-        #expect(SyncRecordState.self == TranscribeSchemaV4.SyncRecordState.self)
-        #expect(VoiceProfile.self == TranscribeSchemaV4.VoiceProfile.self && VoiceGroupLabel.self == TranscribeSchemaV4.VoiceGroupLabel.self)
+        #expect(Recording.self == TranscribeSchemaV5.Recording.self && VoiceNegative.self == TranscribeSchemaV5.VoiceNegative.self)
+        #expect(SyncRecordState.self == TranscribeSchemaV5.SyncRecordState.self)
+        #expect(RecordingSpeaker.self == TranscribeSchemaV5.RecordingSpeaker.self)
+        #expect(VoiceProfile.self == TranscribeSchemaV5.VoiceProfile.self && VoiceGroupLabel.self == TranscribeSchemaV5.VoiceGroupLabel.self)
     }
 
     /// Samples added at the same moment (a seed, a merge) keep one order on every draw: by id.

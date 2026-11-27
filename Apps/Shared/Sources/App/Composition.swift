@@ -55,6 +55,20 @@ import TranscribeFakes
             if config.syncAudioOff { env.settings.syncAudio = false }
             env.settings.syncAudioIntroShown = !config.syncAudioIntro
         }
+        // Mac audio test hooks. The output route the headphones hint reads (`TRANSCRIBE_OUTPUT_ROUTE`) with the fake
+        // engine or UI tests; the recording source (`TRANSCRIBE_SOURCE`) and whether the explainer was already seen
+        // (`TRANSCRIBE_MAC_AUDIO_EXPLAINED`) in UI tests only, whose settings are a fresh suite of their own (a plain
+        // fake-engine run uses this Mac's defaults, which a hook must never change).
+        if config.uiTesting || config.useFakeEngine {
+            let environment = ProcessInfo.processInfo.environment
+            Platform.outputRouteOverride = environment["TRANSCRIBE_OUTPUT_ROUTE"].flatMap { $0.isEmpty ? nil : $0 }
+            if config.uiTesting {
+                if let source = config.source { env.settings.recordingSource = source }
+                if let explained = environment["TRANSCRIBE_MAC_AUDIO_EXPLAINED"] {
+                    env.settings.macAudioExplained = ["1", "yes", "true", "on"].contains(explained.lowercased())
+                }
+            }
+        }
         #endif
         return env
     }

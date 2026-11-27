@@ -1,11 +1,17 @@
 import CryptoKit
 import Foundation
+import TranscribeCore
 
 /// The record mapping (§8.2): which fields each record type carries, grouped into the units that merge together.
 ///
 /// Every record also carries `sv` (the record schema version), which belongs to no group. A group's hash is the
 /// SHA-256 of the JSON of its `[field: SyncValue]`, encoded with sorted keys. A field missing from a record hashes
 /// as `.null`, so an older record without a new optional field compares equal to one that has it as nil.
+///
+/// A field added to an existing group after that group's hashes were first agreed with the server
+/// (`addedFields`) is left out of the group's values, and so out of its hash, while it is null. So every record that
+/// does not use it (all of them, right after the upgrade) hashes exactly as the base hashes an older build agreed,
+/// and the upgrade queues nothing. A value changes the hash as any field does.
 public enum SyncSchema {
     /// The record schema version this build writes and understands. A fetched record with a higher `sv` pauses sync.
     public static let version: Int64 = 1
@@ -34,7 +40,8 @@ public enum SyncSchema {
         case .speaker:
             [Group.ident: ["recordingID", "key", "ordinal", "colourSlot", "cleanSeconds", "vector", "embeddingModelKey",
                            "vectorCoherence"],
-             Group.stats: ["turnCount", "totalSeconds"],
+             // `captureSource` (V5, Mac audio) is here because "Same as" changes it together with the turn counts.
+             Group.stats: ["turnCount", "totalSeconds", "captureSource"],
              Group.label: ["label", "profileID", "suggestedProfileID", "nameSnapshot", "matchScore", "matchMargin"],
              Group.rejected: ["rejectedProfileIDs"]]
         case .profile:
@@ -63,6 +70,14 @@ public enum SyncSchema {
         }
     }
 
+    /// Fields added to an existing group after its hashes were agreed (see the type's doc): omitted while null.
+    public static func addedFields(_ type: SyncRecordType) -> Set<String> {
+        switch type {
+        case .speaker: ["captureSource"]   // V5 (2026-11-26)
+        default: []
+        }
+    }
+
     /// Group names of a type, sorted (a stable order for merges and tests).
     public static func groupNames(_ type: SyncRecordType) -> [String] { groups(type).keys.sorted() }
 
@@ -84,10 +99,15 @@ public enum SyncSchema {
         return 1
     }
 
-    /// The values of one group (missing fields read as `.null`).
+    /// The values of one group (missing fields read as `.null`; an `addedFields` field that is null is left out).
     public static func values(_ fields: [String: SyncValue], group: String, type: SyncRecordType) -> [String: SyncValue] {
         var out: [String: SyncValue] = [:]
-        for f in groups(type)[group] ?? [] { out[f] = fields[f] ?? .null }
+        let added = addedFields(type)
+        for f in groups(type)[group] ?? [] {
+            let value = fields[f] ?? .null
+            if value == .null, added.contains(f) { continue }
+            out[f] = value
+        }
         return out
     }
 
@@ -216,8 +236,8 @@ extension SyncValue {
     static func floats(_ values: [Float]) -> SyncValue { .bytes(packFloats(values)) }
 
     /// Milliseconds since 1970, rounded to the nearest millisecond (so `Date(ms)` round-trips exactly).
-    static func millis(_ d: Date) -> Int64 { Int64((d.timeIntervalSince1970 * 1000).rounded()) }
-    static func dateFrom(millis: Int64) -> Date { Date(timeIntervalSince1970: Double(millis) / 1000) }
+    static func millis(_ d: Date) -> Int64 { SyncMillis.millis(d) }
+    static func dateFrom(millis: Int64) -> Date { SyncMillis.date(millis: millis) }
 
     static func packFloats(_ values: [Float]) -> Data {
         var data = Data(capacity: values.count * 4)

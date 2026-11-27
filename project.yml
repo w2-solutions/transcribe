@@ -181,6 +181,9 @@ targets:
         LSMinimumSystemVersion: $(MACOSX_DEPLOYMENT_TARGET)
         LSApplicationCategoryType: public.app-category.productivity
         NSMicrophoneUsageDescription: "Transcribe records conversations and dictation on this Mac to turn them into text. Speech is processed on this Mac."
+        # Mac audio (a Core Audio process tap, no entitlement): macOS shows this when Transcribe first records the
+        # sound of calls and other apps. The Mac only; release-mac.sh checks it is there.
+        NSAudioCaptureUsageDescription: "Transcribe records the sound of calls and other apps on this Mac when you choose Mac audio, to turn it into text. Speech is processed on this Mac."
         NSHumanReadableCopyright: "© 2026 W2 Solutions"
         ITSAppUsesNonExemptEncryption: false
         # Sparkle (in-app updates). The app turns the updater on only when it is not a Debug, fake-engine or UI-test

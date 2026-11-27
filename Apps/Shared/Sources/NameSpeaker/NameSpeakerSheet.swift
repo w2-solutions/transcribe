@@ -111,6 +111,22 @@ private struct NameSpeakerForm: View {
                 if model.showsRemember {
                     rememberCard.padding(.top, 14)
                 }
+                if let note = model.notLearnedNote {
+                    // Heard on both the microphone and Mac audio: named, but not learned from this recording.
+                    Label {
+                        Text(note).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: RecordingSourceCopy.heardThroughMacAudioSymbol)
+                    }
+                    .scaledFont(size: 14, relativeTo: .subheadline)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .padding(.top, 14)
+                    .padding(.leading, 2)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(note)
+                    .accessibilityValue(note)
+                    .accessibilityIdentifier(AX.NameSpeaker.notLearned)
+                }
             }
             .padding(.horizontal, 20)
             .padding(.top, 16)

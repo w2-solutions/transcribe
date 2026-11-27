@@ -17,6 +17,7 @@ private struct Card {
     var clipStates: [UUID: SampleClipState] = [:]
     var titles: [UUID: String] = [:]
     var sources: [UUID: UUID] = [:]
+    var inputs: [UUID: String] = [:]
 
     /// A grouped sample of `axis`, one second after the previous sample.
     @discardableResult
@@ -51,7 +52,8 @@ private struct Card {
         VoiceSampleGroups.build(profileID: profileID, sortedSampleIDs: ids,
                                 split: GroupingInput.Split(items: items, ungrouped: ungrouped),
                                 anchors: labels, labelTexts: labelTexts, dimension: SyntheticVoices.dimension,
-                                localChannel: local, clipStates: clipStates, recordingTitles: titles, sampleSource: sources)
+                                localChannel: local, clipStates: clipStates, recordingTitles: titles, sampleSource: sources,
+                                captureInputs: inputs)
     }
 }
 
@@ -213,8 +215,60 @@ struct VoiceSampleGroupsTests {
         card.add(far, 34, channel: CaptureChannel.iphone)
         #expect(card.build().showsNote)
         #expect(VoiceSampleGroups.groupedNote
-                == "Samples that sound alike are grouped. Play one to hear it, and label it if you like.")
+                == "Samples that sound alike are grouped. Each group is recognised on its own, and Transcribe keeps at least one sample from every group.")
         #expect(VoiceSampleGroups.defaultNote == "More samples make recognition more reliable.")
+    }
+}
+
+/// Mac audio (decision D2): call audio stays on the "mac" channel and forms its own sound groups; a group whose samples
+/// were mostly heard through Mac audio says so.
+@Suite("Voice sample groups: groups heard through Mac audio")
+struct VoiceSampleGroupsMacAudioTests {
+    let close = GroupVoices.close, far = GroupVoices.far, speaker = GroupVoices.speaker
+    let mac = CaptureChannel.mac, tap = CaptureDetail.Input.systemAudio
+
+    @Test func aGroupMostlyHeardThroughMacAudioIsMarked() throws {
+        var card = Card()
+        let c0 = card.add(close, 30, channel: mac), c1 = card.add(close, 31, channel: mac)
+        let s0 = card.add(speaker, 36, channel: mac), s1 = card.add(speaker, 37, channel: mac), s2 = card.add(speaker, 38, channel: mac)
+        card.inputs[c0] = CaptureDetail.Input.builtInMic
+        card.inputs[c1] = CaptureDetail.Input.micAndSystem   // a microphone speaker of a Both recording
+        card.inputs[s0] = tap; card.inputs[s1] = tap
+        card.inputs[s2] = CaptureDetail.Input.builtInMic
+        let groups = try #require(card.build(local: mac).channels.first).groups
+        #expect(groups.map(\.sampleIndexes) == [[0, 1], [2, 3, 4]])
+        #expect(groups.map(\.heardThroughMacAudio) == [false, true], "two of three is most")
+        #expect(VoiceSampleGroups.macAudioNote == "Heard through Mac audio")
+    }
+
+    @Test func halfIsNotMost() throws {
+        var card = Card()
+        let a = card.add(speaker, 36, channel: mac)
+        card.add(speaker, 37, channel: mac)
+        card.inputs[a] = tap
+        let group = try #require(card.build(local: mac).channels.first?.groups.first)
+        #expect(!group.heardThroughMacAudio)
+        #expect(!group.showsHeader, "a sole plain group still looks as it did")
+    }
+
+    @Test func aSoleMacAudioGroupShowsItsHeader() throws {
+        var card = Card()
+        let a = card.add(speaker, 36, channel: mac)
+        card.inputs[a] = tap
+        let group = try #require(card.build(local: mac).channels.first?.groups.first)
+        #expect(group.heardThroughMacAudio && group.showsHeader, "the note needs the header")
+        #expect(group.title == "Group 1" && !group.isLabelled, "a label stays the user's: the note never retitles")
+    }
+
+    @Test func inputsChangeNoGrouping() {
+        var card = Card()
+        let ids = [card.add(close, 30, channel: mac), card.add(far, 33, channel: mac), card.add(close, 31, channel: mac)]
+        let before = card.build(local: mac)
+        for id in ids { card.inputs[id] = tap }
+        let after = card.build(local: mac)
+        #expect(before.channels.map { $0.groups.map(\.ref) } == after.channels.map { $0.groups.map(\.ref) })
+        let marked = after.channels.flatMap(\.groups).map(\.heardThroughMacAudio)
+        #expect(!marked.isEmpty && !marked.contains(false))
     }
 }
 

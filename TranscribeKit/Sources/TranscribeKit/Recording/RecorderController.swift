@@ -13,6 +13,12 @@ public final class RecorderController {
     public private(set) var startedAt: Date?
     public private(set) var elapsed: TimeInterval = 0
     public private(set) var levels: [Float] = []          // last 56 levels (bars on screen 2)
+    /// Mac audio's last 56 levels in a Both recording (the second meter); empty otherwise.
+    public private(set) var systemLevels: [Float] = []
+    /// What the running (or last) recording captures.
+    public private(set) var sources: CaptureSources = .microphone
+    /// The latest Mac audio notice of the running recording (silent, lost); nil until one comes.
+    public private(set) var notice: RecordingNotice?
     public private(set) var liveText = LiveText()
     public private(set) var liveTextNote: String?         // e.g. "Live text starts when setup finishes."
     public private(set) var marks: [TimeInterval] = []
@@ -65,26 +71,30 @@ public final class RecorderController {
         self.paths = paths; self.settings = settings; self.clock = clock; self.gate = gate
     }
 
-    /// Asks for mic permission if undetermined. Throws EngineError.microphoneDenied.
+    /// Asks for mic permission if undetermined (only when `sources` include the microphone). Throws
+    /// EngineError.microphoneDenied, or `.sourceUnavailable` for Mac audio on an engine without it.
     /// Creates the Recording row (.capturing), calls coordinator.suspendForCapture(), starts the engine session.
     /// Calling it while a recording is active returns the active id; calling it while another start is in
     /// flight throws `EngineError.failed("Already starting")`. During a dictation (the capture gate is taken) it
     /// throws `EngineError.failed(CaptureGate.dictationBusyMessage)` and creates nothing.
-    @discardableResult public func start() async throws -> UUID {
+    @discardableResult public func start(sources: CaptureSources = .microphone) async throws -> UUID {
         if let id = recordingID, isActive, state != .starting { return id }
         guard state == .idle else { throw EngineError.failed("Already starting") }
+        guard !sources.includesSystemAudio || engine.systemAudioAvailable else { throw EngineError.sourceUnavailable }
         guard gate.claim(.meeting) else { throw EngineError.failed(CaptureGate.dictationBusyMessage) }
         state = .starting
 
         // 1. Permission (asks once when undetermined).
-        var permission = await engine.microphonePermission()
-        if permission == .undetermined {
-            permission = await engine.requestMicrophonePermission() ? .granted : .denied
-        }
-        guard permission == .granted else {
-            state = .idle
-            gate.release(.meeting)
-            throw EngineError.microphoneDenied
+        if sources.includesMicrophone {
+            var permission = await engine.microphonePermission()
+            if permission == .undetermined {
+                permission = await engine.requestMicrophonePermission() ? .granted : .denied
+            }
+            guard permission == .granted else {
+                state = .idle
+                gate.release(.meeting)
+                throw EngineError.microphoneDenied
+            }
         }
 
         // 2–5. Id, row, pre-empt processing, start the engine session.
@@ -96,17 +106,20 @@ public final class RecorderController {
         var suspended = false
         do {
             try paths.prepare()
-            try store.createRecording(id: id, createdAt: now, audioFileName: fileName, source: .microphone)
+            try store.createRecording(id: id, createdAt: now, audioFileName: fileName, source: .microphone,
+                                      captureSources: sources)
             created = true
             await coordinator.suspendForCapture()
             suspended = true
             let request = RecordingRequest(audioURL: paths.audioURL(fileName: fileName), liveText: live,
-                                           language: settings.language)
+                                           language: settings.language, sources: sources,
+                                           stems: sources == .both ? paths.stems(recordingID: id) : nil)
             let session = try await engine.startRecording(request)
             self.session = session
             recordingID = id
             startedAt = now
-            elapsed = 0; levels = []; liveText = LiveText(); marks = []; lastMarkAt = nil
+            elapsed = 0; levels = []; systemLevels = []; liveText = LiveText(); marks = []; lastMarkAt = nil
+            self.sources = sources; notice = nil
             systemEndReason = nil; systemStop = nil
             liveTextNote = live ? nil : Self.noteWithoutModels(setupFailed: models.hasFailed)
             liveTextWaitsForModels = !live
@@ -240,10 +253,16 @@ public final class RecorderController {
 
     func handle(_ event: RecordingEvent) {
         switch event {
-        case .tick(let elapsed, let level):
+        case .tick(let elapsed, let level, let systemLevel):
             self.elapsed = elapsed
             levels.append(Swift.min(1, Swift.max(0, level.isFinite ? level : 0)))
             if levels.count > Self.levelHistory { levels.removeFirst(levels.count - Self.levelHistory) }
+            if let systemLevel {
+                systemLevels.append(Swift.min(1, Swift.max(0, systemLevel.isFinite ? systemLevel : 0)))
+                if systemLevels.count > Self.levelHistory { systemLevels.removeFirst(systemLevels.count - Self.levelHistory) }
+            }
+        case .notice(let notice):
+            self.notice = notice
         case .liveText(let text):
             liveText = text
             liveTextNote = nil

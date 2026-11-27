@@ -35,6 +35,20 @@ public struct AppPaths: Sendable {
 
     public func audioURL(fileName: String) -> URL { audioDirectory.appendingPathComponent(fileName, isDirectory: false) }
 
+    /// `Audio/Stems/`: the temporary per-stream files of recordings that captured the microphone and Mac audio.
+    /// `prepare()` does not create it; the capture that writes a stem does.
+    public var stemsDirectory: URL { audioDirectory.appendingPathComponent(CaptureStems.directoryName, isDirectory: true) }
+
+    /// `Audio/Stems/<id>.mic.wav` or `<id>.system.wav`, beside the recording's `<id>.wav` (`CaptureStems.beside`).
+    public func stemURL(recordingID: UUID, stream: CaptureStream) -> URL {
+        stems(recordingID: recordingID).url(stream)
+    }
+
+    /// Both stems of a recording.
+    public func stems(recordingID: UUID) -> CaptureStems {
+        CaptureStems.beside(audioURL: audioURL(fileName: newAudioFileName(for: recordingID)))
+    }
+
     /// "<uuid>.wav"
     public func newAudioFileName(for id: UUID) -> String { "\(id.uuidString).wav" }
 

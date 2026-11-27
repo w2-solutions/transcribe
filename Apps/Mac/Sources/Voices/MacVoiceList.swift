@@ -17,7 +17,7 @@ struct MacVoiceList: View {
     @State private var mergeRequest: MergeRequest?
 
     /// Mac wording, sync-aware.
-    private var macCopy: DeviceCopy { DeviceCopy(platform: .mac, syncOn: env.copy.syncOn) }
+    private var macCopy: DeviceCopy { DeviceCopy(platform: .mac, syncOn: env.copy.syncOn, macAudio: env.macAudioAvailable) }
 
     var body: some View {
         let model = VoicesListModel(profiles: profiles, recordings: recordings, platform: .mac)

@@ -1,0 +1,462 @@
+#if os(macOS)
+import CoreAudio
+import Foundation
+import Synchronization
+
+/// Single-producer, single-consumer slots between Mac audio's IO block and the queue that converts and delivers it
+/// (review 2026-11-26). The IO block only copies the tap's buffers and the host time into a preallocated slot and
+/// signals; resampling, allocation and delivery happen off the IO cycle, so a busy Mac never makes the HAL skip tap
+/// buffers because the block ran long.
+///
+/// `write` is real-time safe: no allocation, no locks, no Swift arrays grown. A full ring, a missing buffer or one
+/// larger than a slot drops that buffer (counted in `dropped`); the receiver sees the sample-time gap and fills it with
+/// zeros (`TapGapFill`), so the `StreamAligner`, which only corrects a lasting offset (2026-11-27), gets a contiguous stream.
+final class TapRing: @unchecked Sendable {
+    let slotCount: Int
+    /// The tap's buffers per IO cycle (1 for an interleaved or mono format, else one per channel).
+    let bufferCount: Int
+    /// Bytes each buffer of a slot can hold.
+    let bytesPerBuffer: Int
+    /// The number of buffers the aggregate's input list had when the ring was built (its stream configuration), or
+    /// nil for no check. A list of another length means the layout changed under the IO block, so `firstIndex` may
+    /// point at another stream: the cycle is dropped and counted in `layoutMismatches`.
+    let expectedBufferCount: Int?
+
+    private let storage: UnsafeMutableRawPointer
+    private let byteCounts: UnsafeMutablePointer<Int>
+    private let hostTimes: UnsafeMutablePointer<UInt64>
+    private let hostValid: UnsafeMutablePointer<Bool>
+    private let sampleTimes: UnsafeMutablePointer<Double>
+    private let sampleValid: UnsafeMutablePointer<Bool>
+    /// Slots written and read so far (monotonic; the slot is the count modulo `slotCount`).
+    private let written = Atomic<Int>(0)
+    private let read = Atomic<Int>(0)
+    private let drops = Atomic<Int>(0)
+    private let mismatches = Atomic<Int>(0)
+    private let cycles = Atomic<Int>(0)
+
+    init(slotCount: Int, bufferCount: Int, bytesPerBuffer: Int, expectedBufferCount: Int? = nil) {
+        precondition(slotCount > 0 && bufferCount > 0 && bytesPerBuffer > 0)
+        self.slotCount = slotCount
+        self.bufferCount = bufferCount
+        self.bytesPerBuffer = bytesPerBuffer
+        self.expectedBufferCount = expectedBufferCount
+        storage = UnsafeMutableRawPointer.allocate(byteCount: slotCount * bufferCount * bytesPerBuffer, alignment: 16)
+        byteCounts = .allocate(capacity: slotCount * bufferCount)
+        byteCounts.initialize(repeating: 0, count: slotCount * bufferCount)
+        hostTimes = .allocate(capacity: slotCount)
+        hostTimes.initialize(repeating: 0, count: slotCount)
+        hostValid = .allocate(capacity: slotCount)
+        hostValid.initialize(repeating: false, count: slotCount)
+        sampleTimes = .allocate(capacity: slotCount)
+        sampleTimes.initialize(repeating: 0, count: slotCount)
+        sampleValid = .allocate(capacity: slotCount)
+        sampleValid.initialize(repeating: false, count: slotCount)
+    }
+
+    deinit {
+        storage.deallocate()
+        byteCounts.deallocate()
+        hostTimes.deallocate()
+        hostValid.deallocate()
+        sampleTimes.deallocate()
+        sampleValid.deallocate()
+    }
+
+    /// Buffers dropped so far (log-only).
+    var dropped: Int { drops.load(ordering: .relaxed) }
+
+    /// IO cycles dropped because the input list did not have `expectedBufferCount` buffers.
+    var layoutMismatches: Int { mismatches.load(ordering: .relaxed) }
+
+    /// IO cycles seen so far, written or dropped (the first-IO watchdog and the IO heartbeat).
+    var ioCycles: Int { cycles.load(ordering: .relaxed) }
+
+    /// Slots written and not read yet (tests).
+    var pending: Int { written.load(ordering: .acquiring) - read.load(ordering: .acquiring) }
+
+    /// Real-time safe. Copies buffers `firstIndex ..< firstIndex + bufferCount` of `list` into the next slot with the
+    /// host time and the device's sample time. Returns whether a slot was written.
+    func write(_ list: UnsafePointer<AudioBufferList>, firstIndex: Int, hostTime: UInt64?,
+               sampleTime: Double? = nil) -> Bool {
+        cycles.add(1, ordering: .relaxed)
+        let w = written.load(ordering: .relaxed)
+        guard w - read.load(ordering: .acquiring) < slotCount else { return drop() }
+        let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: list))
+        if let expectedBufferCount, buffers.count != expectedBufferCount {
+            mismatches.add(1, ordering: .relaxed)
+            return drop()
+        }
+        guard firstIndex >= 0, buffers.count >= firstIndex + bufferCount else { return drop() }
+        let slot = w % slotCount
+        for b in 0..<bufferCount {
+            let buffer = buffers[firstIndex + b]
+            let size = Int(buffer.mDataByteSize)
+            guard let data = buffer.mData, size <= bytesPerBuffer else { return drop() }
+            let index = slot * bufferCount + b
+            (storage + index * bytesPerBuffer).copyMemory(from: data, byteCount: size)
+            byteCounts[index] = size
+        }
+        hostTimes[slot] = hostTime ?? 0
+        hostValid[slot] = hostTime != nil
+        sampleTimes[slot] = sampleTime ?? 0
+        sampleValid[slot] = sampleTime != nil
+        written.store(w + 1, ordering: .releasing)
+        return true
+    }
+
+    /// The consumer: hands every written slot to `body` in order (its buffers' bytes, valid only during the call, and
+    /// its host time), then frees it. Returns the number of slots read.
+    @discardableResult
+    func drain(_ body: (_ buffers: [UnsafeRawBufferPointer], _ hostTime: UInt64?) -> Void) -> Int {
+        drainStamped { buffers, hostTime, _ in body(buffers, hostTime) }
+    }
+
+    /// `drain`, also handing over each slot's sample time.
+    @discardableResult
+    func drainStamped(_ body: (_ buffers: [UnsafeRawBufferPointer], _ hostTime: UInt64?, _ sampleTime: Double?) -> Void)
+        -> Int {
+        var r = read.load(ordering: .relaxed)
+        let w = written.load(ordering: .acquiring)
+        var count = 0
+        while r < w {
+            let slot = r % slotCount
+            let buffers = (0..<bufferCount).map { b -> UnsafeRawBufferPointer in
+                let index = slot * bufferCount + b
+                return UnsafeRawBufferPointer(start: storage + index * bytesPerBuffer, count: byteCounts[index])
+            }
+            body(buffers, hostValid[slot] ? hostTimes[slot] : nil, sampleValid[slot] ? sampleTimes[slot] : nil)
+            r += 1
+            count += 1
+            read.store(r, ordering: .releasing)
+        }
+        return count
+    }
+
+    private func drop() -> Bool {
+        drops.add(1, ordering: .relaxed)
+        return false
+    }
+}
+
+/// Where the tap's buffers sit in the aggregate device's input buffer list (review 2026-11-26). With the `output` clock
+/// the aggregate has the default output device as its main sub-device, and when that device also has inputs (AirPods,
+/// a USB headset or audio interface) the aggregate's input list carries their microphone streams beside the tap's. With
+/// `builtIn` the sub-device is the built-in output (normally no inputs); with `tap` there is none, and the list must
+/// hold exactly the tap's buffers (an empty `subDeviceLayout`).
+enum TapBufferLayout {
+    struct Placement: Equatable {
+        /// The index of the tap's first buffer.
+        var first: Int
+        /// False when two placements fitted equally and the composition's order (sub-device inputs first) decided.
+        var certain: Bool
+    }
+
+    /// The index of the tap's first buffer, or nil when the layout cannot be read safely (`place`).
+    static func firstTapIndex(channelsPerBuffer: [UInt32], aggregateStreams: [AudioObjectID] = [],
+                              subDeviceStreams: Set<AudioObjectID> = [], subDeviceLayout: [UInt32],
+                              terminalTypes: [UInt32] = [], tapBuffers: Int, tapChannelsPerBuffer: UInt32) -> Int? {
+        place(channelsPerBuffer: channelsPerBuffer, aggregateStreams: aggregateStreams, subDeviceStreams: subDeviceStreams,
+              subDeviceLayout: subDeviceLayout, terminalTypes: terminalTypes, tapBuffers: tapBuffers,
+              tapChannelsPerBuffer: tapChannelsPerBuffer)?.first
+    }
+
+    /// Where the tap's buffers are.
+    ///
+    /// - `channelsPerBuffer`: the aggregate's input stream configuration (one entry per buffer the IO block gets).
+    /// - `aggregateStreams`: the aggregate's input stream objects, in the same order (may be empty if unreadable).
+    /// - `subDeviceStreams` / `subDeviceLayout`: the output device's own input streams and their configuration.
+    /// - `terminalTypes`: the aggregate's input streams' `kAudioStreamPropertyTerminalType`, in order (may be empty).
+    /// - `tapBuffers` / `tapChannelsPerBuffer`: what the tap's format needs.
+    ///
+    /// 1. When the aggregate reports the sub-device's own stream objects, the tap is what is left.
+    /// 2. Otherwise the sub-device's inputs sit either before the tap (the composition's order) or after it; each
+    ///    order must match the sub-device's configuration buffer for buffer and give the tap its channel count.
+    /// 3. A stream whose terminal type is a microphone is never taken as the tap. When both orders still fit (a mono
+    ///    headset microphone beside a mono tap, with no terminal type that tells), the composition's order is taken
+    ///    and the placement is marked not certain (logged; to be checked on a real Mac with AirPods).
+    static func place(channelsPerBuffer: [UInt32], aggregateStreams: [AudioObjectID], subDeviceStreams: Set<AudioObjectID>,
+                      subDeviceLayout: [UInt32], terminalTypes: [UInt32], tapBuffers: Int,
+                      tapChannelsPerBuffer: UInt32) -> Placement? {
+        let n = channelsPerBuffer.count
+        guard tapBuffers > 0, n >= tapBuffers else { return nil }
+        func fits(_ first: Int) -> Bool {
+            first >= 0 && first + tapBuffers <= n
+                && channelsPerBuffer[first..<(first + tapBuffers)].allSatisfy { $0 == tapChannelsPerBuffer }
+        }
+        func microphoneAt(_ first: Int) -> Bool {
+            terminalTypes.count == n && (first..<(first + tapBuffers)).contains { isMicrophone(terminalTypes[$0]) }
+        }
+        if aggregateStreams.count == n, aggregateStreams.contains(where: subDeviceStreams.contains) {
+            let others = aggregateStreams.indices.filter { !subDeviceStreams.contains(aggregateStreams[$0]) }
+            guard others.count == tapBuffers, let first = others.first, others.last == first + tapBuffers - 1,
+                  fits(first) else { return nil }
+            return Placement(first: first, certain: true)
+        }
+        if n == tapBuffers {
+            // Only one set of streams: never a microphone. When the output has inputs of its own and no terminal type
+            // tells, it is the tap only by assumption (flagged).
+            guard fits(0), !microphoneAt(0) else { return nil }
+            return Placement(first: 0, certain: subDeviceLayout.isEmpty || terminalTypes.count == n)
+        }
+        let sub = subDeviceLayout.count
+        guard sub > 0, n == sub + tapBuffers else { return nil }
+        let subFirst = fits(sub) && Array(channelsPerBuffer[0..<sub]) == subDeviceLayout && !microphoneAt(sub)
+        let tapFirst = fits(0) && Array(channelsPerBuffer[tapBuffers..<n]) == subDeviceLayout && !microphoneAt(0)
+        switch (subFirst, tapFirst) {
+        case (true, false): return Placement(first: sub, certain: true)
+        case (false, true): return Placement(first: 0, certain: true)
+        case (true, true):
+            // Both fit and no microphone stream rules either out: the composition's order, flagged.
+            return Placement(first: sub, certain: false)
+        case (false, false): return nil
+        }
+    }
+
+    /// A stream terminal type that is a microphone: Core Audio's own ('micr', 'hmic', 'rmic') and the USB Audio input
+    /// (0x02xx) and bidirectional (0x04xx, headsets) terminal types that USB devices report.
+    static func isMicrophone(_ terminalType: UInt32) -> Bool {
+        switch terminalType {
+        case kAudioStreamTerminalTypeMicrophone, kAudioStreamTerminalTypeHeadsetMicrophone,
+             kAudioStreamTerminalTypeReceiverMicrophone: true
+        case 0x0200..<0x0300, 0x0400..<0x0500: true
+        default: false
+        }
+    }
+
+    /// Per input stream: whether the IO block uses it (only the tap's), for `kAudioDevicePropertyIOProcStreamUsage`, so
+    /// the output device's microphone is never turned on for a recording that does not use it.
+    static func streamUsage(streamCount: Int, firstTapIndex: Int, tapBuffers: Int) -> [Bool] {
+        (0..<streamCount).map { $0 >= firstTapIndex && $0 < firstTapIndex + tapBuffers }
+    }
+}
+
+/// The format Mac audio's IO block delivers (2026-11-27): the tap's sample layout at the rate the aggregate runs at. The
+/// aggregate runs at its main sub-device's (the output's) rate, which is not always the tap's own: a Bluetooth headset
+/// in call mode runs at 16 kHz while `kAudioTapPropertyFormat` still says 48 kHz. The aggregate's nominal rate wins
+/// (an aggregate runs every stream at its one rate), then the tap stream's virtual format, then the tap's. Measured on
+/// Bose headphones in call mode (2026-11-27): the tap and its stream in the aggregate both said 48 kHz while the
+/// aggregate ran at 16 kHz, and 16 kHz was right. With the `tap` clock the aggregate's rate is the one set and read
+/// back. `TapRateCheck` catches whatever these properties get wrong.
+enum TapStreamFormat {
+    static func ioFormat(tap: AudioStreamBasicDescription, streamFormat: AudioStreamBasicDescription?,
+                         aggregateRate: Float64?) -> AudioStreamBasicDescription {
+        var io = tap
+        if let aggregateRate, aggregateRate > 0 {
+            io.mSampleRate = aggregateRate
+        } else if let rate = streamFormat?.mSampleRate, rate > 0 {
+            io.mSampleRate = rate
+        }
+        return io
+    }
+}
+
+/// Mac audio's rate, measured (2026-11-27): Core Audio's rate properties have been wrong for a Bluetooth headset in
+/// call mode, and a wrong rate stretches or squeezes every buffer, which the aligner then pads with silence or trims (a
+/// robot voice). So the receiver measures the rate the IO runs at over consecutive `window`s of steady IO: from the
+/// device's sample time against host time when the IO reports it, else from the frames that arrive. Only after
+/// `agreeingWindows` windows in a row are more than `tolerance` off the rate in use, and each within `snap` of the same
+/// standard rate, does it give a verdict. A gap in the host times longer than `maxGap` (IO stalled or restarted), or a
+/// sample time that goes back, starts again. A verdict rebuilds the aggregate (`TapRateResponse`); the receiver never
+/// changes its converter on its own.
+///
+/// Why the sample time (found 2026-11-27, Bose headphones turning on call mode at the start of a recording): for some
+/// seconds the HAL skipped IO cycles, so fewer frames arrived (about 11 kHz worth) while the device still ran at
+/// 16 kHz. Counting frames read that as an 11,025 Hz device and stretched the audio until the next window. Skipped
+/// cycles are lost audio, which the receiver fills with zeros in place (`TapGapFill`); they never mean another rate.
+/// `skippedFrames` counts them (sample time that advanced with no frames delivered), for the log.
+struct TapRateCheck {
+    static let standardRates: [Double] = [8_000, 11_025, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000]
+    static let window = 1.5
+    static let agreeingWindows = 2
+    static let maxGap = 0.25
+    static let tolerance = 0.08
+    static let snap = 0.03
+
+    private(set) var skippedFrames = 0
+    private var startHost: Double?
+    private var startSample: Double?
+    private var lastHost: Double?
+    private var lastSample: Double?
+    private var lastFrames = 0
+    private var frames = 0
+    private var candidate: Double?
+    private var agreeing = 0
+
+    /// One delivered buffer of `count` frames that started at `host` seconds and, if the IO reports it, at the
+    /// device's `sampleTime`. Returns the rate to switch to, once the measurements say `current` is wrong.
+    mutating func observe(frames count: Int, host: Double, sampleTime: Double? = nil, current: Double) -> Double? {
+        guard let lastHost, host > lastHost, host - lastHost <= Self.maxGap, let startHost,
+              (sampleTime == nil) == (lastSample == nil), (sampleTime ?? 1) > (lastSample ?? 0) else {
+            restart(at: host, sampleTime: sampleTime, frames: count)
+            candidate = nil; agreeing = 0
+            return nil
+        }
+        if let sampleTime, let lastSample {
+            skippedFrames += Swift.max(0, Int((sampleTime - lastSample).rounded()) - lastFrames)
+        }
+        frames += lastFrames          // the previous buffer's frames all arrived before this one started
+        self.lastHost = host; lastSample = sampleTime; lastFrames = count
+        let elapsed = host - startHost
+        guard elapsed >= Self.window else { return nil }
+        let measured: Double
+        if let sampleTime, let startSample {
+            measured = (sampleTime - startSample) / elapsed
+        } else {
+            measured = Double(frames) / elapsed
+        }
+        restart(at: host, sampleTime: sampleTime, frames: count)
+        guard abs(measured - current) / current > Self.tolerance,
+              let nearest = Self.standardRates.min(by: { abs($0 - measured) < abs($1 - measured) }),
+              abs(nearest - measured) / nearest <= Self.snap, nearest != current else {
+            candidate = nil; agreeing = 0     // agrees with the rate in use, or matches nothing standard
+            return nil
+        }
+        if nearest == candidate { agreeing += 1 } else { candidate = nearest; agreeing = 1 }
+        guard agreeing >= Self.agreeingWindows else { return nil }
+        candidate = nil; agreeing = 0
+        return nearest
+    }
+
+    private mutating func restart(at host: Double, sampleTime: Double?, frames count: Int) {
+        startHost = host; lastHost = host; startSample = sampleTime; lastSample = sampleTime
+        lastFrames = count; frames = 0
+    }
+}
+
+/// Whether a paused Mac audio capture can restart its aggregate as it was (review 2026-11-26): only when nothing
+/// changed while it was paused. A change notice that arrived during the pause, a different tap format, or an aggregate
+/// that is gone all mean a rebuild; so does another default output, but only with the `output` clock (2026-11-27: with
+/// `tap` and `builtIn` the default output is not part of the aggregate, and the global tap follows it).
+enum TapResumePlan {
+    static func canResumeInPlace(mode: MacAudioClock = .output, changedWhilePaused: Bool, aggregateAlive: Bool,
+                                 builtOutputUID: String?, currentOutputUID: String?,
+                                 builtFormat: AudioStreamBasicDescription?,
+                                 currentFormat: AudioStreamBasicDescription?) -> Bool {
+        guard !changedWhilePaused, aggregateAlive, let builtFormat, let currentFormat else { return false }
+        if mode == .output {
+            guard let builtOutputUID, builtOutputUID == currentOutputUID else { return false }
+        }
+        return sameFormat(builtFormat, currentFormat)
+    }
+
+    static func sameFormat(_ a: AudioStreamBasicDescription, _ b: AudioStreamBasicDescription) -> Bool {
+        a.mSampleRate == b.mSampleRate && a.mFormatID == b.mFormatID && a.mFormatFlags == b.mFormatFlags
+            && a.mBytesPerPacket == b.mBytesPerPacket && a.mFramesPerPacket == b.mFramesPerPacket
+            && a.mBytesPerFrame == b.mBytesPerFrame && a.mChannelsPerFrame == b.mChannelsPerFrame
+            && a.mBitsPerChannel == b.mBitsPerChannel
+    }
+}
+
+/// When a failed rebuild of Mac audio is tried again (review 2026-11-26): besides every later device change, after
+/// these delays, then only on device changes.
+enum TapRetryPolicy {
+    static let delays: [Duration] = [.seconds(1), .seconds(2), .seconds(5), .seconds(10), .seconds(30)]
+
+    static func delay(afterFailures failures: Int) -> Duration? {
+        failures >= 1 && failures <= delays.count ? delays[failures - 1] : nil
+    }
+}
+
+/// Mac audio's running, paused and lost bookkeeping (review 2026-11-26), kept apart from the Core Audio calls in
+/// `SystemAudioCapture` so its rules can be tested: when a change notice rebuilds, when it is only remembered, when a
+/// failure is reported and retried, and when Mac audio counts as back.
+///
+/// A build that started is not yet a success (review 2026-11-27): `started()` only marks IO running, and Mac audio
+/// counts as back (lost cleared, `.systemAudioRestored`, the failure count reset) only at `confirmed()`, when its first
+/// IO cycle came. So a chain of clocks that all start and never deliver IO counts as one more failed build each time
+/// and its retries back off along `TapRetryPolicy`, instead of flapping lost and restored every few seconds.
+struct TapLifecycle: Equatable {
+    /// IO is running (started; maybe not yet confirmed).
+    private(set) var running = false
+    /// Paused by the recording.
+    private(set) var paused = false
+    /// Mac audio was reported lost (or could not start) and has not delivered IO since; later notices and retries try
+    /// again.
+    private(set) var lost = false
+    private(set) var stopped = false
+    /// A change notice (or a rebuild) came while paused: `resume()` rebuilds instead of restarting in place.
+    private(set) var changedWhilePaused = false
+    /// Builds that failed since IO last came.
+    private(set) var failedBuilds = 0
+    /// The recording resumed while lost: its next failure is reported again (a Mac-audio-only recording resumed itself
+    /// and must pause again).
+    private(set) var resumedWhileLost = false
+
+    enum Notice: Equatable { case ignore, remember, rebuild }
+
+    /// A device, tap or stream change notice.
+    mutating func noticed() -> Notice {
+        guard !stopped else { return .ignore }
+        if paused { changedWhilePaused = true; return .remember }
+        return running || lost ? .rebuild : .ignore
+    }
+
+    /// Whether a rebuild runs now: running, or lost, and not paused. One that a pause stops (the notice came just
+    /// before it) is remembered for `resume()`.
+    mutating func mayRebuild() -> Bool {
+        guard !stopped else { return false }
+        if paused { changedWhilePaused = true; return false }
+        return running || lost
+    }
+
+    /// A build started IO. Lost and the failure count stay until `confirmed()`.
+    mutating func started() {
+        running = true
+        changedWhilePaused = false
+    }
+
+    /// The started build delivered its first IO cycle. Returns whether Mac audio had been lost (deliver
+    /// `.systemAudioRestored`).
+    mutating func confirmed() -> Bool {
+        let wasLost = lost
+        lost = false
+        failedBuilds = 0
+        resumedWhileLost = false
+        return wasLost
+    }
+
+    struct Failure: Equatable {
+        /// The first failure since Mac audio last delivered IO (or since a resume while lost): report it lost.
+        var firstLoss: Bool
+        /// When to try again (nil: only on later change notices, or on resume).
+        var retryAfter: Duration?
+        /// The failure count the retry belongs to (`retryDue`).
+        var attempt: Int
+    }
+
+    /// A build failed.
+    mutating func failed() -> Failure {
+        running = false
+        failedBuilds += 1
+        let first = !lost || resumedWhileLost
+        resumedWhileLost = false
+        lost = true
+        return Failure(firstLoss: first, retryAfter: TapRetryPolicy.delay(afterFailures: failedBuilds), attempt: failedBuilds)
+    }
+
+    /// Whether a scheduled retry runs: still lost, not paused or stopped, and no newer failure has scheduled its own.
+    func retryDue(attempt: Int) -> Bool { !stopped && !paused && lost && !running && failedBuilds == attempt }
+
+    /// The recording paused. Returns whether IO was running (stop it).
+    mutating func pause() -> Bool {
+        guard !stopped else { return false }
+        paused = true
+        defer { running = false }
+        return running
+    }
+
+    /// The recording resumes. Returns whether to start or rebuild (not stopped, not running already).
+    mutating func beginResume() -> Bool {
+        guard !stopped, !running else { return false }
+        paused = false
+        if lost { resumedWhileLost = true }
+        return true
+    }
+
+    mutating func stop() {
+        stopped = true
+        running = false
+    }
+}
+#endif

@@ -10,6 +10,8 @@ public struct SampleGroupHeader: View {
     let title: String
     let count: Int
     let subtitle: String?
+    /// A second line with a speaker glyph ("Heard through Mac audio"); nil for none. Its identifier is `id` + ".macAudio".
+    let note: String?
     let isLabelled: Bool
     let isPlaying: Bool
     /// False when no sample of the group can play here: the play button is hidden (its space is kept, so titles line up).
@@ -18,9 +20,9 @@ public struct SampleGroupHeader: View {
     let onPlay: () -> Void
     let onLabel: () -> Void
 
-    public init(title: String, count: Int, subtitle: String?, isLabelled: Bool, isPlaying: Bool, canPlay: Bool, id: String,
-                onPlay: @escaping () -> Void, onLabel: @escaping () -> Void) {
-        self.title = title; self.count = count; self.subtitle = subtitle; self.isLabelled = isLabelled
+    public init(title: String, count: Int, subtitle: String?, note: String? = nil, isLabelled: Bool, isPlaying: Bool,
+                canPlay: Bool, id: String, onPlay: @escaping () -> Void, onLabel: @escaping () -> Void) {
+        self.title = title; self.count = count; self.subtitle = subtitle; self.note = note; self.isLabelled = isLabelled
         self.isPlaying = isPlaying; self.canPlay = canPlay; self.id = id; self.onPlay = onPlay; self.onLabel = onLabel
     }
 
@@ -47,6 +49,20 @@ public struct SampleGroupHeader: View {
                         .lineLimit(2)
                         .fixedSize(horizontal: false, vertical: true)
                         .accessibilityIdentifier(id + ".subtitle")
+                }
+                if let note {
+                    Label {
+                        Text(note)
+                    } icon: {
+                        Image(systemName: "speaker.wave.2").font(.system(size: 10, weight: .semibold))
+                    }
+                    .font(DS.Typo.meta)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .lineLimit(1)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(note)
+                    .accessibilityValue(note)
+                    .accessibilityIdentifier(id + ".macAudio")
                 }
             }
             Spacer(minLength: 8)

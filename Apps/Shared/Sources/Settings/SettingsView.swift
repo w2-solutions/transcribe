@@ -48,6 +48,11 @@ struct SettingsView: View {
                 }
                 footnote("Speaker separation runs on-device once a recording ends.")
 
+                #if os(macOS)
+                // RECORDING (Mac only, when Mac audio can be recorded): microphone, both, or Mac audio only.
+                RecordingSourceSection()
+                #endif
+
                 // TRANSCRIPTION
                 SectionHeader("Transcription").padding(.top, 14).padding(.bottom, 6)
                 SettingsCard {

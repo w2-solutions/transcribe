@@ -50,7 +50,7 @@ enum AudioRowRead {
     case malformed
 }
 
-extension TranscribeSchemaV4.SyncRecordState {
+extension TranscribeSchemaV5.SyncRecordState {
     var isAudioRow: Bool { typeRaw == AudioRows.typeRaw }
 
     /// Only `.malformed` rows are deleted (next derive); `.newer` rows are kept untouched.

@@ -26,7 +26,11 @@ public protocol LibraryStoring: AnyObject, Sendable {
     @discardableResult func adoptStrayDownloads() throws -> Int
 
     // MARK: Recording lifecycle
-    func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws   // stage .capturing
+    /// Stage .capturing. `captureSources` other than the microphone are saved at once as a provisional capture
+    /// detail (sources and input only), so a capture salvaged after a crash or a failed stop is still processed as
+    /// what it captured; `finishCapture` replaces it with the full detail.
+    func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource,
+                         captureSources: CaptureSources) throws
     func finishCapture(id: UUID, audio: CapturedAudio, language: LanguageHint) throws                         // → .queued
     func discardRecording(id: UUID) throws                                                                   // deletes row + file
     func snapshot(of id: UUID) throws -> RecordingSnapshot
@@ -98,6 +102,12 @@ public protocol LibraryStoring: AnyObject, Sendable {
 }
 
 public extension LibraryStoring {
+    /// A microphone recording (or an import).
+    func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws {
+        try createRecording(id: id, createdAt: createdAt, audioFileName: audioFileName, source: source,
+                            captureSources: .microphone)
+    }
+
     /// Applies decisions without traces.
     func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], policy: MatchPolicy) throws -> ProcessingOutcome {
         try applyMatches(id: id, decisions: decisions, traces: [:], policy: policy)

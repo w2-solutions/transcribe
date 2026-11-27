@@ -54,15 +54,19 @@ public struct GroupSection: Identifiable, Equatable, Sendable {
     public let sampleIndexes: [Int]
     /// The group's play button plays this sample: the first representative whose clip can play; nil hides the button.
     public let playSampleID: UUID?
-    /// False only for a channel's sole unlabelled group, which then looks as the channel did before grouping.
+    /// False only for a channel's sole unlabelled group not heard through Mac audio, which then looks as the channel
+    /// did before grouping.
     public let showsHeader: Bool
+    /// Most of the group's samples were heard through Mac audio (`captureInput == systemAudio`): the header says
+    /// "Heard through Mac audio" (`VoiceSampleGroups.macAudioNote`). Display only, like the groups themselves.
+    public let heardThroughMacAudio: Bool
     public var id: UUID { ref.key }
 
     public init(ref: SampleGroupRef, position: Int, title: String, isLabelled: Bool, subtitle: String?,
-                sampleIndexes: [Int], playSampleID: UUID?, showsHeader: Bool) {
+                sampleIndexes: [Int], playSampleID: UUID?, showsHeader: Bool, heardThroughMacAudio: Bool = false) {
         self.ref = ref; self.position = position; self.title = title; self.isLabelled = isLabelled
         self.subtitle = subtitle; self.sampleIndexes = sampleIndexes; self.playSampleID = playSampleID
-        self.showsHeader = showsHeader
+        self.showsHeader = showsHeader; self.heardThroughMacAudio = heardThroughMacAudio
     }
 }
 
@@ -70,8 +74,11 @@ public struct GroupSection: Identifiable, Equatable, Sendable {
 /// the main-actor conveniences read a `VoiceProfile` through `GroupingInput`, exactly as the store does when it checks
 /// a label action, so the screen's refs are the ones the store accepts.
 public enum VoiceSampleGroups {
-    /// "Samples that sound alike are grouped…", shown instead of today's note when `showsNote` is true.
-    public static let groupedNote = "Samples that sound alike are grouped. Play one to hear it, and label it if you like."
+    /// "Samples that sound alike are grouped…", shown instead of today's note when `showsNote` is true. Groups are
+    /// scored on their own when matching, and curation keeps a sample of every group (with a confirmed sample).
+    public static let groupedNote = "Samples that sound alike are grouped. Each group is recognised on its own, and Transcribe keeps at least one sample from every group."
+    /// Under a group's title when most of its samples were heard through Mac audio (a call, or another app's sound).
+    public static let macAudioNote = "Heard through Mac audio"
     /// Today's note, kept while no channel has two groups.
     public static let defaultNote = "More samples make recognition more reliable."
 
@@ -82,12 +89,15 @@ public enum VoiceSampleGroups {
     /// - `clipStates`: by sample id; a sample with none counts as not playable.
     /// - `recordingTitles`: display titles of the recordings that exist here, by id. `sampleSource`: each sample's
     ///   source recording id.
+    /// - `captureInputs`: each sample's `captureInput`, by sample id (a group whose samples are mostly `systemAudio` is
+    ///   marked as heard through Mac audio).
     /// An item the grouping drops (a vector of another dimension) is listed as not grouped, "still syncing", so no
     /// sample is ever hidden.
     public static func build(profileID: UUID, sortedSampleIDs: [UUID], split: GroupingInput.Split,
                              anchors: [GroupLabelAnchor], labelTexts: [UUID: String], dimension: Int,
                              localChannel: String, clipStates: [UUID: SampleClipState],
                              recordingTitles: [UUID: String], sampleSource: [UUID: UUID],
+                             captureInputs: [UUID: String] = [:],
                              policy: SampleGroupPolicy = .default) -> VoiceSampleGroupsView {
         let index = Dictionary(sortedSampleIDs.enumerated().map { ($1, $0) }, uniquingKeysWith: { a, _ in a })
         let groups = SampleGrouping.group(split.items, dimension: dimension, policy: policy)
@@ -119,12 +129,14 @@ public enum VoiceSampleGroups {
                 let text = labelID.flatMap { labelTexts[$0] }.flatMap { $0.isEmpty ? nil : $0 }
                 let ref = SampleGroupRef(profileID: profileID, channel: channel, key: g.key, memberIDs: g.memberIDs,
                                          shownLabelID: labelID)
+                let macAudio = heardThroughMacAudio(memberIDs: g.memberIDs, captureInputs: captureInputs)
                 built.append(GroupSection(
                     ref: ref, position: position, title: text ?? "Group \(position + 1)", isLabelled: text != nil,
                     subtitle: subtitle(memberIDs: g.memberIDs, sampleSource: sampleSource, recordingTitles: recordingTitles),
                     sampleIndexes: g.memberIDs.compactMap { index[$0] }.sorted(),
                     playSampleID: g.representativeIDs.first { clipStates[$0]?.isPlayable == true },
-                    showsHeader: channelGroups.count > 1 || text != nil))
+                    showsHeader: channelGroups.count > 1 || text != nil || macAudio,
+                    heardThroughMacAudio: macAudio))
             }
             let rest = (ungrouped[channel] ?? []).sorted { $0.index < $1.index }
             sections.append(ChannelSection(channel: channel, groups: built, ungroupedIndexes: rest.map(\.index),
@@ -140,6 +152,12 @@ public enum VoiceSampleGroups {
             showsNote: sections.contains { $0.groups.count >= 2 },
             showsChannelHeaders: sections.count > 1 || sections.contains { $0.channel != localChannel },
             clipStates: clipStates)
+    }
+
+    /// More than half of the members were heard through Mac audio.
+    static func heardThroughMacAudio(memberIDs: [UUID], captureInputs: [UUID: String]) -> Bool {
+        let heard = memberIDs.filter { captureInputs[$0] == CaptureDetail.Input.systemAudio }.count
+        return heard * 2 > memberIDs.count
     }
 
     /// "From “Standup”", "From “Standup” and “Dinner”", "From “Standup”, “Dinner” and 2 more": the distinct titles
@@ -178,9 +196,10 @@ public enum VoiceSampleGroups {
                              audioState: ((UUID) -> RecordingAudioState?)? = nil) -> VoiceSampleGroupsView {
         let samples = profile.sortedSamples
         var clipStates: [UUID: SampleClipState] = [:], sampleSource: [UUID: UUID] = [:]
-        var recordingTitles: [UUID: String] = [:]
+        var recordingTitles: [UUID: String] = [:], captureInputs: [UUID: String] = [:]
         for sample in samples {
             clipStates[sample.id] = clipState(sample, recordingsByID: recordingsByID, paths: paths, audioState: audioState)
+            if let input = sample.captureInput { captureInputs[sample.id] = input }
             guard let source = sample.sourceRecordingID else { continue }
             sampleSource[sample.id] = source
             if let recording = recordingsByID[source] { recordingTitles[source] = recording.displayTitle }
@@ -191,7 +210,7 @@ public enum VoiceSampleGroups {
                      labelTexts: Dictionary(profile.groupLabels.map { ($0.id, $0.text) }, uniquingKeysWith: { a, _ in a }),
                      dimension: GroupingInput.dimension(ofModelKey: profile.embeddingModelKey) ?? 0,
                      localChannel: localChannel, clipStates: clipStates, recordingTitles: recordingTitles,
-                     sampleSource: sampleSource)
+                     sampleSource: sampleSource, captureInputs: captureInputs)
     }
 
     /// Whether `sample`'s clip can play here: its source recording from `recordingsByID`, its audio file under

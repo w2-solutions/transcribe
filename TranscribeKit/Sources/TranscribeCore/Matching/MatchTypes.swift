@@ -13,7 +13,11 @@ public struct MatchPolicy: Sendable, Equatable {
     public var strongMatchMin: Float = 0.70
     public var strongMatchMargin: Float = 0.20
     public var minAutoSampleCoherence: Float = 0.5
+    /// Soft cap per (profile, channel): above it the curator evicts, but never a sound group's last vouched member
+    /// (decision D4).
     public var maxSamplesPerProfile = 12
+    /// Hard ceiling per (profile, channel): above it even protected group members can go (decision D4).
+    public var sampleCeilingPerChannel = 20
     public var duplicateCosine: Float = 0.95
     public var scoringTopK = 2
     public var maxNegativesPerProfile = 8
@@ -27,6 +31,12 @@ public struct MatchPolicy: Sendable, Equatable {
     /// Trace only: cohort score statistics over the top N cosines, once the cohort has at least this many vectors.
     public var cohortStatsTopN = 20
     public var cohortStatsMinCount = 30
+    /// Score auto-labelling per sound group (decision D3; `SampleGrouping` at `groupJoinCosine`) and keep every sound
+    /// group when curating samples (decision D4). false reproduces the matcher and the curator from before groups
+    /// exactly. Only candidates that carry `sampleIDs` are scored per group.
+    public var groupScoring = true
+    /// The join value for grouping inside the matcher and the curator: the screen's value, one source of truth.
+    public var groupJoinCosine: Float = SampleGroupPolicy.default.joinCosine
     public init() {}
     public static let `default` = MatchPolicy()
 }
@@ -45,22 +55,32 @@ public struct ProfileCandidate: Sendable, Equatable {
     public let modelKey: String          // EmbeddingModelID.key
     public let autoLabel: Bool
     public let needsResample: Bool
+    /// Same count as `samples` when set: each sample's id, for sound grouping (canonical order and group keys).
+    /// nil (legacy callers and fixtures): the profile is scored without groups, exactly as before groups.
+    public let sampleIDs: [UUID]?
+    /// Same count as `samples` when set: each sample's `addedAt` in `SyncMillis`, for group keys. nil: unknown.
+    public let addedAtMillis: [Int64]?
 
     /// Legacy: every sample trusted, no negatives. `channels` nil means every sample's channel is nil.
     public init(id: UUID, name: String, samples: [VoiceVector], channels: [String?]? = nil, modelKey: String,
-                autoLabel: Bool, needsResample: Bool) {
+                autoLabel: Bool, needsResample: Bool, sampleIDs: [UUID]? = nil, addedAtMillis: [Int64]? = nil) {
         self.init(id: id, name: name, samples: samples, trusted: Array(repeating: true, count: samples.count),
-                  channels: channels, negatives: [], modelKey: modelKey, autoLabel: autoLabel, needsResample: needsResample)
+                  channels: channels, negatives: [], modelKey: modelKey, autoLabel: autoLabel, needsResample: needsResample,
+                  sampleIDs: sampleIDs, addedAtMillis: addedAtMillis)
     }
 
     public init(id: UUID, name: String, samples: [VoiceVector], trusted: [Bool], channels: [String?]? = nil,
-                negatives: [VoiceVector], modelKey: String, autoLabel: Bool, needsResample: Bool) {
+                negatives: [VoiceVector], modelKey: String, autoLabel: Bool, needsResample: Bool,
+                sampleIDs: [UUID]? = nil, addedAtMillis: [Int64]? = nil) {
         precondition(trusted.count == samples.count, "one trust flag per sample")
         let channels = channels ?? Array(repeating: nil, count: samples.count)
         precondition(channels.count == samples.count, "one channel per sample")
+        precondition(sampleIDs.map { $0.count == samples.count } ?? true, "one id per sample")
+        precondition(addedAtMillis.map { $0.count == samples.count } ?? true, "one added time per sample")
         self.id = id; self.name = name; self.samples = samples; self.trusted = trusted; self.channels = channels
         self.negatives = negatives
         self.modelKey = modelKey; self.autoLabel = autoLabel; self.needsResample = needsResample
+        self.sampleIDs = sampleIDs; self.addedAtMillis = addedAtMillis
     }
 }
 
@@ -71,10 +91,13 @@ public struct SpeakerProbe: Sendable, Equatable {
     public let rejectedProfileIDs: Set<UUID>
     /// The capture channel of the probe's recording (§7); nil = unknown.
     public let channel: String?
+    /// Never auto-labelled, only asked about: a speaker heard on both the microphone and Mac audio
+    /// (`SpeakerSource.mixed`, trace reason "mixedSource").
+    public let askOnly: Bool
     public init(key: SpeakerKey, vector: VoiceVector?, cleanSeconds: TimeInterval, rejectedProfileIDs: Set<UUID>,
-                channel: String? = nil) {
+                channel: String? = nil, askOnly: Bool = false) {
         self.key = key; self.vector = vector; self.cleanSeconds = cleanSeconds; self.rejectedProfileIDs = rejectedProfileIDs
-        self.channel = channel
+        self.channel = channel; self.askOnly = askOnly
     }
 }
 
@@ -114,6 +137,8 @@ public struct CuratedSample: Sendable, Equatable, Identifiable {
         self.id = id; self.vector = vector; self.origin = origin; self.addedAt = addedAt; self.speechSeconds = speechSeconds
     }
     public var isTrusted: Bool { SampleTrust.isTrusted(origin: origin, speechSeconds: speechSeconds) }
+    /// `addedAt` in whole milliseconds (`SyncMillis`), as every device sees a synced sample's date.
+    public var addedAtMillis: Int64 { SyncMillis.millis(addedAt) }
 }
 
 public struct CuratedNegative: Sendable, Equatable, Identifiable {
@@ -138,6 +163,21 @@ public struct SampleInsertResult: Sendable, Equatable {
     public var evicted: [UUID]
     public var added: Bool              // false when skipped as a near-duplicate
     public init(keep: [CuratedSample], evicted: [UUID], added: Bool) { self.keep = keep; self.evicted = evicted; self.added = added }
+}
+
+/// The result of `SampleCurator.insertMany` (a merge).
+public struct SampleMergeResult: Sendable, Equatable {
+    /// The full resulting set: the existing samples left, in input order, then the kept incoming ones.
+    public var keep: [CuratedSample]
+    /// Existing samples evicted.
+    public var evicted: [UUID]
+    /// Incoming samples kept, in canonical order (`addedAtMillis`, then id).
+    public var addedIDs: [UUID]
+    /// Incoming samples not kept: near-duplicates, or evicted by the cap.
+    public var skippedIDs: [UUID]
+    public init(keep: [CuratedSample], evicted: [UUID], addedIDs: [UUID], skippedIDs: [UUID]) {
+        self.keep = keep; self.evicted = evicted; self.addedIDs = addedIDs; self.skippedIDs = skippedIDs
+    }
 }
 
 public struct ColourRequest: Sendable, Equatable {

@@ -13,8 +13,13 @@ private func sample(_ n: Int, axis: Int, _ origin: SampleOrigin = .confirmed, da
     sample(n, TV.axis(axis), origin, day: day, seconds: seconds)
 }
 
-/// The cap these tests were written for; the default is now 12.
-private let capEight: MatchPolicy = { var p = MatchPolicy.default; p.maxSamplesPerProfile = 8; return p }()
+/// The curator from before sound groups (decision D4): `groupScoring` off. These suites pin that eviction order; with
+/// groups on, the orthogonal one-hot samples used here would each be a sound group of their own and all be kept up to
+/// the ceiling. `GroupPreservingCurationTests` covers curation with groups.
+private let legacy: MatchPolicy = { var p = MatchPolicy.default; p.groupScoring = false; return p }()
+
+/// The cap these tests were written for (the default is now 12), groups off.
+private let capEight: MatchPolicy = { var p = legacy; p.maxSamplesPerProfile = 8; return p }()
 
 @Suite("SampleCurator.shouldAddSample")
 struct SampleCuratorGateTests {
@@ -84,7 +89,7 @@ struct SampleCuratorTests {
     }
 
     @Test func customCap() {
-        var policy = MatchPolicy.default
+        var policy = legacy
         policy.maxSamplesPerProfile = 3
         let three = (0..<3).map { sample($0, axis: $0, day: $0) }
         let r = SampleCurator.insert(sample(9, axis: 9, day: 9), into: three, policy: policy)
@@ -179,9 +184,11 @@ struct SampleCuratorTests {
         #expect(keep.contains { $0.id == TV.uuid(0x100) })
     }
 
-    @Test func protectedSamplesCanExceedATinyCap() {
+    @Test(arguments: [false, true])
+    func protectedSamplesCanExceedATinyCap(groups: Bool) {
         // With a cap of 1 the earliest named sample and the new one are both protected; nothing is evicted.
-        var policy = MatchPolicy.default
+        var policy = legacy
+        policy.groupScoring = groups
         policy.maxSamplesPerProfile = 1
         let r = SampleCurator.insert(sample(9, axis: 9, day: 9), into: [sample(0, axis: 0, .named, day: 0)], policy: policy)
         #expect(r.added && r.keep.count == 2 && r.evicted.isEmpty)
@@ -259,7 +266,7 @@ struct SampleCuratorTrustTests {
     }
 
     @Test func evictionOrderAutomaticThenShortThenTrusted() {
-        var policy = MatchPolicy.default
+        var policy = legacy
         policy.maxSamplesPerProfile = 3
         let named = sample(0, axis: 0, .named, day: 0)
         let short = sample(1, axis: 1, .confirmed, day: 1, seconds: 6)
@@ -284,9 +291,14 @@ struct SampleCuratorTrustTests {
         #expect(r11.added && r11.keep.count == 12 && r11.evicted.isEmpty)
 
         let twelve = (0..<12).map { sample($0, axis: $0, day: $0) }
-        let r12 = SampleCurator.insert(sample(20, axis: 20, day: 20), into: twelve)
+        let r12 = SampleCurator.insert(sample(20, axis: 20, day: 20), into: twelve, policy: legacy)
         #expect(r12.added && r12.keep.count == 12 && r12.evicted.count == 1)
         #expect(Set(r12.keep.map(\.id)).isDisjoint(with: r12.evicted))
+
+        // With groups (the default), twelve orthogonal user samples are twelve sound groups, each one's last member,
+        // so the 13th sample is kept with all of them: the soft cap gives way below the ceiling of 20 (decision D4).
+        let grouped = SampleCurator.insert(sample(20, axis: 20, day: 20), into: twelve)
+        #expect(grouped.added && grouped.keep.count == 13 && grouped.evicted.isEmpty)
     }
 }
 

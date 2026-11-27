@@ -253,7 +253,7 @@ public final class DictationController {
             for await event in events {
                 guard let self, !Task.isCancelled, self.attempt == current else { return }
                 switch event {
-                case .tick(_, let level):
+                case .tick(_, let level, _):
                     self.levels.append(Swift.min(1, Swift.max(0, level.isFinite ? level : 0)))
                     if self.levels.count > DictationLimits.levelHistory {
                         self.levels.removeFirst(self.levels.count - DictationLimits.levelHistory)
@@ -262,7 +262,7 @@ public final class DictationController {
                     self.liveText = text
                 case .endedBySystem:
                     self.send(.maxDurationReached, for: current)
-                case .liveTextUnavailable, .paused, .resumed:
+                case .liveTextUnavailable, .paused, .resumed, .notice:   // dictation records the microphone only
                     break
                 }
             }

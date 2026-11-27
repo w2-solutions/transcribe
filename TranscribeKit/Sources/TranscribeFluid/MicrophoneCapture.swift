@@ -20,6 +20,20 @@ enum CaptureSourceEvent: Sendable, Equatable {
     case mediaServicesReset
     /// Capture failed for another reason.
     case failed(String)
+    /// Mac audio delivered only exact silence for a while although another app is playing sound (access is likely
+    /// off). Capture carries on.
+    case systemAudioSilent
+    /// Mac audio stopped and could not be restarted. A Both source carries on with the microphone.
+    case systemAudioLost
+    /// Mac audio came back after `systemAudioLost` (rebuilt after a later device change, a retry, or a resume).
+    case systemAudioRestored
+}
+
+/// The latest level of each stream of a source that captures two (the microphone and Mac audio), 0...1 like
+/// `RecordingEvent.tick`'s level. Single-stream sources have none.
+struct StreamLevels: Sendable, Equatable {
+    var mic: Float
+    var system: Float
 }
 
 /// One item from a capture source: 16 kHz mono Float32 samples, or an event.
@@ -40,10 +54,46 @@ protocol CaptureSource: AnyObject, Sendable {
     func stop() async
     /// The hardware and input route of this capture (log-only, §6.1). Read after `stop()`; nil when unknown.
     func captureDetail() async -> CaptureDetail?
+    /// The per-stream levels of a two-stream source (`MixedCaptureSource`); nil for a single stream.
+    func streamLevels() async -> StreamLevels?
 }
 
 extension CaptureSource {
     func captureDetail() async -> CaptureDetail? { nil }
+    /// The per-stream levels of a two-stream source, read on each tick; nil (the default) for one stream.
+    func streamLevels() async -> StreamLevels? { nil }
+}
+
+// MARK: - Stamped sources (one stream of a Both recording)
+
+/// One item from a stamped source: a 16 kHz mono chunk with the host time of its first sample (seconds on the host
+/// clock, nil when the hardware did not give one), or an event.
+enum StampedInput: Sendable {
+    case audio([Float], hostSeconds: Double?)
+    case event(CaptureSourceEvent)
+}
+
+/// A capture source that can also stamp its chunks with host time, so `MixedCaptureSource` can put two of them on one
+/// timeline (`StreamAligner`). Its plain `start` delivers the same audio without the stamps.
+protocol StampedCaptureSource: CaptureSource {
+    /// Like `start`, with each chunk's host time. Call one of the two, once.
+    func startStamped(_ deliver: @escaping @Sendable (StampedInput) -> Void) async throws
+}
+
+extension StampedCaptureSource {
+    func start(_ deliver: @escaping @Sendable (CaptureInput) -> Void) async throws {
+        try await startStamped { input in
+            switch input {
+            case .audio(let samples, _): deliver(.audio(samples))
+            case .event(let event): deliver(.event(event))
+            }
+        }
+    }
+}
+
+/// Host-clock seconds of an `AVAudioTime`, or nil when its host time is not valid.
+func hostSeconds(_ time: AVAudioTime) -> Double? {
+    time.isHostTimeValid ? AVAudioTime.seconds(forHostTime: time.hostTime) : nil
 }
 
 // MARK: - Input route detection (log-only, never throws)
@@ -188,10 +238,10 @@ private final class OneShotFeeder: @unchecked Sendable {
 /// Real capture (§5.9): `AVAudioSession` `.playAndRecord` / `.measurement` / `.allowBluetoothHFP` on iOS,
 /// an `AVAudioEngine` input tap feeding one stateful converter to 16 kHz mono Float32, and the session
 /// notifications mapped to `CaptureSourceEvent`s.
-actor MicrophoneCapture: CaptureSource {
+actor MicrophoneCapture: StampedCaptureSource {
     private let log = Logger(subsystem: "ai.w2solutions.transcribe", category: "MicrophoneCapture")
     private let engine = AVAudioEngine()
-    private var deliver: (@Sendable (CaptureInput) -> Void)?
+    private var deliver: (@Sendable (StampedInput) -> Void)?
     private var converter: TapConverter?
     private var tapInstalled = false
     private var running = false
@@ -204,7 +254,7 @@ actor MicrophoneCapture: CaptureSource {
 
     func captureDetail() async -> CaptureDetail? { detail }
 
-    func start(_ deliver: @escaping @Sendable (CaptureInput) -> Void) async throws {
+    func startStamped(_ deliver: @escaping @Sendable (StampedInput) -> Void) async throws {
         guard self.deliver == nil, !stopped else { throw EngineError.failed("Capture already started") }
         self.deliver = deliver
         do {
@@ -276,10 +326,10 @@ actor MicrophoneCapture: CaptureSource {
 
     /// Built outside the actor so the closure is not actor-isolated: Core Audio calls it on its own thread.
     private nonisolated static func makeTapBlock(converter: TapConverter,
-                                                 deliver: @escaping @Sendable (CaptureInput) -> Void) -> AVAudioNodeTapBlock {
-        { @Sendable buffer, _ in
+                                                 deliver: @escaping @Sendable (StampedInput) -> Void) -> AVAudioNodeTapBlock {
+        { @Sendable buffer, when in
             let samples = converter.convert(buffer)
-            if !samples.isEmpty { deliver(.audio(samples)) }
+            if !samples.isEmpty { deliver(.audio(samples, hostSeconds: hostSeconds(when))) }
         }
     }
 

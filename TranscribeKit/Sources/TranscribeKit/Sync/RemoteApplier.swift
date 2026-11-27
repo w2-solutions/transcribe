@@ -114,12 +114,24 @@ final class RemoteApplier {
                 switch actions[g] ?? .same {
                 case .takeServer:
                     store.remoteApply(group: g, of: server, to: e, unresolved: &unresolved)
+                    // A speaker source the server lacks (a record an older build created) is kept here, not
+                    // cleared; leaving the group's base at the server's hash sends it back to the server.
+                    if g == SyncSchema.Group.stats, case .speaker(let s) = e, s.captureSource != nil,
+                       server.fields["captureSource"]?.stringValue == nil {
+                        touch(e, effects: &effects)
+                        continue
+                    }
                     applied.insert(g)
                     touch(e, effects: &effects)
                 case .union:
                     if case .speaker(let s) = e {
                         let theirs = (server.fields["rejectedProfileIDs"]?.stringsValue ?? []).compactMap(UUID.init(uuidString:))
                         s.rejectedProfileIDs = LibraryStore.sortedIDs(s.rejectedProfileIDs + theirs)
+                    }
+                case .keepLocalJoinSource:
+                    if case .speaker(let s) = e {
+                        s.captureSource = MergePolicy.joinedSource(local: s.captureSource,
+                                                                   server: server.fields["captureSource"]?.stringValue)
                     }
                 case .same, .keepLocal:
                     break

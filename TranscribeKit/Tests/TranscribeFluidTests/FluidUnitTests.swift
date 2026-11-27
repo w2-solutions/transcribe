@@ -269,7 +269,7 @@ struct FluidLiveRecordingTests {
         #expect(audio.peaks.allSatisfy { abs($0 - 0.5) < 0.01 })
 
         let ticks = await events.value.compactMap { e -> (TimeInterval, Float)? in
-            if case .tick(let t, let l) = e { return (t, l) } else { return nil }
+            if case .tick(let t, let l, _) = e { return (t, l) } else { return nil }
         }
         #expect(ticks.count == 40)
         #expect(abs((ticks.last?.0 ?? 0) - 2.0) < 1e-9)

@@ -22,6 +22,9 @@ public enum SampleSkipReason: Sendable, Equatable {
     case tooLittleSpeech(seconds: Double)
     case noVector
     case duplicate
+    /// The speaker was heard on both the microphone and Mac audio (`SpeakerSource.mixed`): the name is saved, but
+    /// nothing is learned from that recording.
+    case mixedSource
 }
 public struct NameResult: Sendable, Equatable {
     public var profileID: UUID?
@@ -41,10 +44,15 @@ public struct SpeakerDraft: Sendable, Equatable {
     public var embeddingModel: EmbeddingModelID
     /// Span coherence of `vector` (§1.11); nil when the vector is a fallback or missing.
     public var coherence: Float?
+    /// Which stream the speaker was heard on (decision D1), written to `RecordingSpeaker.captureSource` in the same
+    /// save as the speaker. nil for a microphone-only recording (stored as nil, which reads as `.mic`).
+    public var source: SpeakerSource?
     public init(key: SpeakerKey, ordinal: Int, cleanSeconds: Double, totalSeconds: Double, turnCount: Int,
-                vector: VoiceVector?, embeddingModel: EmbeddingModelID, coherence: Float? = nil) {
+                vector: VoiceVector?, embeddingModel: EmbeddingModelID, coherence: Float? = nil,
+                source: SpeakerSource? = nil) {
         self.key = key; self.ordinal = ordinal; self.cleanSeconds = cleanSeconds; self.totalSeconds = totalSeconds
         self.turnCount = turnCount; self.vector = vector; self.embeddingModel = embeddingModel; self.coherence = coherence
+        self.source = source
     }
 }
 public struct RecordingSnapshot: Sendable, Equatable {
@@ -55,10 +63,14 @@ public struct RecordingSnapshot: Sendable, Equatable {
     public var language: LanguageHint
     public var transcript: TranscriptDocument?
     public var attemptCount: Int
+    /// What the recording captured (`CaptureDetail.sources`); the microphone for every recording before Mac audio.
+    public var captureSources: CaptureSources
     public init(id: UUID, audioFileName: String, duration: Double, stage: RecordingStage,
-                language: LanguageHint, transcript: TranscriptDocument?, attemptCount: Int) {
+                language: LanguageHint, transcript: TranscriptDocument?, attemptCount: Int,
+                captureSources: CaptureSources = .microphone) {
         self.id = id; self.audioFileName = audioFileName; self.duration = duration; self.stage = stage
         self.language = language; self.transcript = transcript; self.attemptCount = attemptCount
+        self.captureSources = captureSources
     }
 }
 public struct RecoverySnapshot: Sendable, Equatable {

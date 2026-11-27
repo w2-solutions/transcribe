@@ -180,6 +180,7 @@ enum LibraryErrors {
             return "Files up to 3 hours can be imported. This one is \(DisplayFormat.duration(duration))."
         case AudioImportError.failed(let text): return text
         case EngineError.microphoneDenied: return "Microphone access is off."
+        case EngineError.sourceUnavailable: return "Mac audio can't be recorded on this Mac."
         case EngineError.failed(let text): return text
         default: return error.localizedDescription
         }
