@@ -133,37 +133,46 @@ struct TapRingTests {
         receiver.finish()
     }
 
-    @Test func theReceiverSwitchesToTheRateTheIORunsAt() throws {
+    /// 2026-11-27: a rate verdict is reported to the capture (which rebuilds) and changes nothing by itself; only
+    /// `convert(fromRate:)`, the capture's last resort, switches the converter.
+    @Test func theReceiverReportsAnotherRateAndSwitchesOnlyWhenTold() throws {
         // The Bose case end to end: built for 48 kHz, fed 4 s of 16 kHz IO in 10 ms buffers.
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let converter = try #require(TapConverter(inputFormat: format))
         let ring = TapRing(slotCount: 64, bufferCount: 1, bytesPerBuffer: 4 * 4_800, expectedBufferCount: 1)
         let got = Mutex<[Int]>([])
-        let corrections = Mutex<[(Double, Double)]>([])
+        let verdicts = Mutex<[(Double, Double)]>([])
         let receiver = TapReceiver(format: format, converter: converter, ring: ring, firstIndex: 0, bytesPerFrame: 4,
                                    queue: DispatchQueue(label: "test.tap.rate"), deliver: { input in
                                        if case .audio(let samples, _) = input { got.withLock { $0.append(samples.count) } }
                                    }, silentFrames: 80_000, onLongSilence: {},
-                                   onRateCorrected: { from, to in corrections.withLock { $0.append((from, to)) } })
+                                   onRateVerdict: { inUse, measured in verdicts.withLock { $0.append((inUse, measured)) } })
         let start = AVAudioTime.seconds(forHostTime: mach_absolute_time())
-        for k in 0..<400 {
-            let tone = (0..<160).map { Float(0.25 * sin(2 * Double.pi * 440 * Double(k * 160 + $0) / 16_000)) }
-            var stamp = AudioTimeStamp()
-            stamp.mHostTime = AVAudioTime.hostTime(forSeconds: start + Double(k) * 0.01)
-            stamp.mSampleTime = Double(k * 160)
-            stamp.mFlags = [.hostTimeValid, .sampleTimeValid]
-            var none = AudioTimeStamp()
-            withList([tone]) { list in
-                receiver.ioBlock(&none, list, &stamp, UnsafeMutablePointer(mutating: list), &none)
+        func feed(_ range: Range<Int>) {
+            for k in range {
+                let tone = (0..<160).map { Float(0.25 * sin(2 * Double.pi * 440 * Double(k * 160 + $0) / 16_000)) }
+                var stamp = AudioTimeStamp()
+                stamp.mHostTime = AVAudioTime.hostTime(forSeconds: start + Double(k) * 0.01)
+                stamp.mSampleTime = Double(k * 160)
+                stamp.mFlags = [.hostTimeValid, .sampleTimeValid]
+                var none = AudioTimeStamp()
+                withList([tone]) { list in
+                    receiver.ioBlock(&none, list, &stamp, UnsafeMutablePointer(mutating: list), &none)
+                }
+                if k % 8 == 7 { receiver.flush() }
             }
-            if k % 8 == 7 { receiver.flush() }
+            receiver.flush()
         }
-        receiver.flush()
-        let fixes = corrections.withLock { $0 }
-        #expect(fixes.count == 1 && fixes.first?.0 == 48_000 && fixes.first?.1 == 16_000)
-        // From the switch on, 160 frames in give about 160 samples out (at 48 kHz they gave about 53).
-        let counts = got.withLock { $0 }
-        let tail = counts.suffix(50).reduce(0, +)
+        feed(0..<400)
+        let reported = verdicts.withLock { $0 }
+        #expect(reported.count == 1 && reported.first?.0 == 48_000 && reported.first?.1 == 16_000)
+        // Not switched: 160 frames in still give about 53 samples out.
+        var tail = got.withLock { $0 }.suffix(50).reduce(0, +)
+        #expect(abs(tail - 50 * 53) < 200, "last 50 buffers gave \(tail) samples")
+        // The capture's last resort: from then on, 160 frames in give about 160 samples out.
+        receiver.convert(fromRate: 16_000)
+        feed(400..<500)
+        tail = got.withLock { $0 }.suffix(50).reduce(0, +)
         #expect(abs(tail - 50 * 160) < 200, "last 50 buffers gave \(tail) samples")
         receiver.finish()
     }
@@ -374,7 +383,8 @@ struct TapRingTests {
         var s = TapLifecycle()
         var notice = s.noticed()
         #expect(notice == .ignore)                      // not started yet
-        var restored = s.built()
+        s.started()
+        var restored = s.confirmed()
         #expect(!restored)
         notice = s.noticed()
         #expect(notice == .rebuild)
@@ -384,7 +394,8 @@ struct TapRingTests {
         #expect(notice == .remember && s.changedWhilePaused)
         let resumes = s.beginResume()
         #expect(resumes)
-        restored = s.built()
+        s.started()
+        restored = s.confirmed()
         #expect(!restored && !s.changedWhilePaused)
         // A notice that came just before a pause: its rebuild finds the capture paused and leaves it for resume.
         notice = s.noticed()
@@ -396,7 +407,8 @@ struct TapRingTests {
 
     @Test func aFailedRebuildIsReportedOnceAndRetriedUntilItComesBack() {
         var s = TapLifecycle()
-        _ = s.built()
+        s.started()
+        _ = s.confirmed()
         var rebuilds = s.mayRebuild()
         #expect(rebuilds)
         let first = s.failed()
@@ -411,7 +423,9 @@ struct TapRingTests {
         for _ in 3...5 { _ = s.failed() }
         let sixth = s.failed()
         #expect(sixth.retryAfter == nil)               // then only device changes and resume
-        let restored = s.built()
+        s.started()
+        #expect(s.lost && s.failedBuilds == 6)         // started, but not back until IO comes
+        let restored = s.confirmed()
         #expect(restored)                              // back: report it
         #expect(!s.lost && s.failedBuilds == 0 && !s.retryDue(attempt: 2))
     }
@@ -423,13 +437,53 @@ struct TapRingTests {
         #expect(failure.firstLoss)
         let notice = s.noticed()
         #expect(notice == .rebuild && s.retryDue(attempt: 1))
-        let restored = s.built()
+        s.started()
+        let restored = s.confirmed()
         #expect(restored)
+    }
+
+    /// Review 2026-11-27: clocks that all start and never deliver IO. Each chain that runs out of modes is one more
+    /// failed build: reported lost once, never restored, and its retries back off until only device changes are left.
+    @Test func buildsThatNeverDeliverIOBackOffAndAreNeverRestored() {
+        var s = TapLifecycle()
+        s.started()                                    // the start: IO running, not yet confirmed
+        var failures: [TapLifecycle.Failure] = []
+        failures.append(s.failed())                    // the watchdog ran out of modes
+        for _ in 0..<6 {
+            #expect(s.retryDue(attempt: failures.last!.attempt))
+            s.started()                                // the retry starts a mode...
+            #expect(s.lost && !s.retryDue(attempt: failures.last!.attempt))
+            failures.append(s.failed())                // ...which never delivers IO either
+        }
+        #expect(failures.map(\.firstLoss) == [true, false, false, false, false, false, false])
+        #expect(failures.map(\.retryAfter) == [.seconds(1), .seconds(2), .seconds(5), .seconds(10), .seconds(30), nil, nil])
+        #expect(s.lost && s.failedBuilds == 7)
+    }
+
+    /// A recording resumed while lost (a Mac-audio-only recording resumes itself): a build that then never delivers
+    /// IO is reported lost again, so that recording pauses again.
+    @Test func aLossAfterAResumeWhileLostIsReportedAgain() {
+        var s = TapLifecycle()
+        s.started()
+        _ = s.confirmed()
+        let lost = s.failed()
+        #expect(lost.firstLoss)
+        _ = s.pause()
+        let resumes = s.beginResume()
+        #expect(resumes && s.resumedWhileLost)
+        s.started()
+        let again = s.failed()
+        let third = s.failed()
+        #expect(again.firstLoss && !third.firstLoss)   // reported again, once
+        s.started()
+        let restored = s.confirmed()
+        #expect(restored && !s.resumedWhileLost)
     }
 
     @Test func aPauseOrAStopEndsTheRetries() {
         var s = TapLifecycle()
-        _ = s.built()
+        s.started()
+        _ = s.confirmed()
         _ = s.failed()
         let wasRunning = s.pause()
         #expect(!wasRunning)                            // nothing running to stop
@@ -438,8 +492,8 @@ struct TapRingTests {
         #expect(!s.retryDue(attempt: 1) && !rebuilds && notice == .remember)
         let resumes = s.beginResume()
         #expect(resumes)
-        let again = s.failed()                          // the resume failed too: still lost, not reported again
-        #expect(!again.firstLoss && s.retryDue(attempt: again.attempt))
+        let again = s.failed()                          // the resume failed too: still lost (the caller reports it)
+        #expect(again.firstLoss && s.retryDue(attempt: again.attempt))
         s.stop()
         let afterStop = (s.noticed(), s.mayRebuild(), s.beginResume(), s.pause())
         #expect(afterStop == (.ignore, false, false, false) && !s.retryDue(attempt: again.attempt))

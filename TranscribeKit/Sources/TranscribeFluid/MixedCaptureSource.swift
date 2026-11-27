@@ -22,6 +22,10 @@ import TranscribeCore
 ///   timeline by its host time again and the event is passed on. `.systemAudioSilent` is passed on. The microphone's own
 ///   events are passed on as they are (an interruption or a lost microphone pauses the whole recording).
 /// - A pause pauses both; on resume the timeline is anchored again, so the pause leaves no zeros.
+/// - Every 5 s of aligned audio it logs the aligner's counters per stream when any changed since the last line
+///   ("Aligner: mic +<inserted> −<dropped> fill <filled> corr <corrections>; system …", totals for the recording, info,
+///   public), and once at stop ("Aligned Mac audio: …") when any is not zero (2026-11-27). The fill of a stream marked
+///   lost grows on every push, so it alone never writes a line (`AlignerLogPolicy`); the next line has its total.
 /// - `streamLevels()` gives each stream's level (the recording window's two meters); `captureDetail()` the
 ///   microphone's detail with `input = micAndSystem`, `sources = both` and Mac audio's output route.
 actor MixedCaptureSource: CaptureSource {
@@ -42,6 +46,9 @@ actor MixedCaptureSource: CaptureSource {
     private var systemWriter: WAVFileWriter?
     private var stemWriteFailed = false
     private var framesSinceFlush = 0
+    /// Aligned frames since the aligner's counters were last compared, and what they were then.
+    private var framesSinceAlignerLog = 0
+    private var loggedCounters = (mic: StreamAligner.Counters(), system: StreamAligner.Counters())
     private var micMeter = LevelMeter()
     private var systemMeter = LevelMeter()
     private var levels = StreamLevels(mic: 0, system: 0)
@@ -135,8 +142,8 @@ actor MixedCaptureSource: CaptureSource {
         await consumer?.value
         consumer = nil
         emit(aligner.finish())
-        if aligner.insertedFrames + aligner.droppedFrames + aligner.lagFilledFrames > 0 {
-            log.info("Aligned Mac audio: \(self.aligner.insertedFrames) inserted, \(self.aligner.droppedFrames) dropped, \(self.aligner.lagFilledFrames) filled")
+        if aligner.insertedFrames + aligner.droppedFrames + aligner.lagFilledFrames + aligner.corrections > 0 {
+            log.info("Aligned Mac audio: \(self.aligner.insertedFrames, privacy: .public) inserted, \(self.aligner.droppedFrames, privacy: .public) dropped, \(self.aligner.lagFilledFrames, privacy: .public) filled, \(self.aligner.corrections, privacy: .public) corrections")
         }
         closeWriters(remove: false)
         deliver = nil
@@ -213,7 +220,24 @@ actor MixedCaptureSource: CaptureSource {
                 log.error("Stem header flush failed: \(FluidErrorMapping.describe(error), privacy: .public)")
             }
         }
+        framesSinceAlignerLog += out.count
+        if framesSinceAlignerLog >= Self.alignerLogFrames {
+            framesSinceAlignerLog = 0
+            logAlignerIfChanged()
+        }
         deliver?(.audio(out.mixed()))
+    }
+
+    /// 5 s at 16 kHz of aligned audio: how often the aligner's counters are compared (and logged when changed).
+    static let alignerLogFrames = 80_000
+
+    private func logAlignerIfChanged() {
+        let m = aligner.counters(of: .mic), s = aligner.counters(of: .system)
+        guard AlignerLogPolicy.changed(m, since: loggedCounters.mic, lost: aligner.isLost(.mic))
+                || AlignerLogPolicy.changed(s, since: loggedCounters.system, lost: aligner.isLost(.system))
+        else { return }
+        loggedCounters = (m, s)
+        log.info("Aligner: mic +\(m.inserted, privacy: .public) −\(m.dropped, privacy: .public) fill \(m.filled, privacy: .public) corr \(m.corrections, privacy: .public); system +\(s.inserted, privacy: .public) −\(s.dropped, privacy: .public) fill \(s.filled, privacy: .public) corr \(s.corrections, privacy: .public)")
     }
 
     private func closeWriters(remove: Bool) {
@@ -225,5 +249,15 @@ actor MixedCaptureSource: CaptureSource {
             try? FileManager.default.removeItem(at: stems.mic)
             try? FileManager.default.removeItem(at: stems.system)
         }
+    }
+}
+
+/// Whether a stream's aligner counters changed enough for the 5 s "Aligner:" line (review 2026-11-27): any change,
+/// except the fill of a stream marked lost, which grows on every push (a Both recording whose Mac audio never starts
+/// would otherwise log the same line every 5 s for the whole recording).
+enum AlignerLogPolicy {
+    static func changed(_ now: StreamAligner.Counters, since logged: StreamAligner.Counters, lost: Bool) -> Bool {
+        guard lost else { return now != logged }
+        return now.inserted != logged.inserted || now.dropped != logged.dropped || now.corrections != logged.corrections
     }
 }

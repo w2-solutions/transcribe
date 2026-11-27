@@ -9,7 +9,8 @@ import Synchronization
 /// buffers because the block ran long.
 ///
 /// `write` is real-time safe: no allocation, no locks, no Swift arrays grown. A full ring, a missing buffer or one
-/// larger than a slot drops that buffer (counted in `dropped`); the `StreamAligner` sees the host-time gap and fills it.
+/// larger than a slot drops that buffer (counted in `dropped`); the receiver sees the sample-time gap and fills it with
+/// zeros (`TapGapFill`), so the `StreamAligner`, which only corrects a lasting offset (2026-11-27), gets a contiguous stream.
 final class TapRing: @unchecked Sendable {
     let slotCount: Int
     /// The tap's buffers per IO cycle (1 for an interleaved or mono format, else one per channel).
@@ -32,6 +33,7 @@ final class TapRing: @unchecked Sendable {
     private let read = Atomic<Int>(0)
     private let drops = Atomic<Int>(0)
     private let mismatches = Atomic<Int>(0)
+    private let cycles = Atomic<Int>(0)
 
     init(slotCount: Int, bufferCount: Int, bytesPerBuffer: Int, expectedBufferCount: Int? = nil) {
         precondition(slotCount > 0 && bufferCount > 0 && bytesPerBuffer > 0)
@@ -67,6 +69,9 @@ final class TapRing: @unchecked Sendable {
     /// IO cycles dropped because the input list did not have `expectedBufferCount` buffers.
     var layoutMismatches: Int { mismatches.load(ordering: .relaxed) }
 
+    /// IO cycles seen so far, written or dropped (the first-IO watchdog and the IO heartbeat).
+    var ioCycles: Int { cycles.load(ordering: .relaxed) }
+
     /// Slots written and not read yet (tests).
     var pending: Int { written.load(ordering: .acquiring) - read.load(ordering: .acquiring) }
 
@@ -74,6 +79,7 @@ final class TapRing: @unchecked Sendable {
     /// host time and the device's sample time. Returns whether a slot was written.
     func write(_ list: UnsafePointer<AudioBufferList>, firstIndex: Int, hostTime: UInt64?,
                sampleTime: Double? = nil) -> Bool {
+        cycles.add(1, ordering: .relaxed)
         let w = written.load(ordering: .relaxed)
         guard w - read.load(ordering: .acquiring) < slotCount else { return drop() }
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: list))
@@ -133,9 +139,11 @@ final class TapRing: @unchecked Sendable {
     }
 }
 
-/// Where the tap's buffers sit in the aggregate device's input buffer list (review 2026-11-26). The aggregate has the
-/// default output device as its clock, and when that device also has inputs (AirPods, a USB headset or audio
-/// interface) the aggregate's input list carries their microphone streams beside the tap's.
+/// Where the tap's buffers sit in the aggregate device's input buffer list (review 2026-11-26). With the `output` clock
+/// the aggregate has the default output device as its main sub-device, and when that device also has inputs (AirPods,
+/// a USB headset or audio interface) the aggregate's input list carries their microphone streams beside the tap's. With
+/// `builtIn` the sub-device is the built-in output (normally no inputs); with `tap` there is none, and the list must
+/// hold exactly the tap's buffers (an empty `subDeviceLayout`).
 enum TapBufferLayout {
     struct Placement: Equatable {
         /// The index of the tap's first buffer.
@@ -228,7 +236,8 @@ enum TapBufferLayout {
 /// in call mode runs at 16 kHz while `kAudioTapPropertyFormat` still says 48 kHz. The aggregate's nominal rate wins
 /// (an aggregate runs every stream at its one rate), then the tap stream's virtual format, then the tap's. Measured on
 /// Bose headphones in call mode (2026-11-27): the tap and its stream in the aggregate both said 48 kHz while the
-/// aggregate ran at 16 kHz, and 16 kHz was right. `TapRateCheck` corrects whatever these properties get wrong.
+/// aggregate ran at 16 kHz, and 16 kHz was right. With the `tap` clock the aggregate's rate is the one set and read
+/// back. `TapRateCheck` catches whatever these properties get wrong.
 enum TapStreamFormat {
     static func ioFormat(tap: AudioStreamBasicDescription, streamFormat: AudioStreamBasicDescription?,
                          aggregateRate: Float64?) -> AudioStreamBasicDescription {
@@ -247,14 +256,15 @@ enum TapStreamFormat {
 /// robot voice). So the receiver measures the rate the IO runs at over consecutive `window`s of steady IO: from the
 /// device's sample time against host time when the IO reports it, else from the frames that arrive. Only after
 /// `agreeingWindows` windows in a row are more than `tolerance` off the rate in use, and each within `snap` of the same
-/// standard rate, does it switch. A gap in the host times longer than `maxGap` (IO stalled or restarted), or a sample
-/// time that goes back, starts again.
+/// standard rate, does it give a verdict. A gap in the host times longer than `maxGap` (IO stalled or restarted), or a
+/// sample time that goes back, starts again. A verdict rebuilds the aggregate (`TapRateResponse`); the receiver never
+/// changes its converter on its own.
 ///
 /// Why the sample time (found 2026-11-27, Bose headphones turning on call mode at the start of a recording): for some
 /// seconds the HAL skipped IO cycles, so fewer frames arrived (about 11 kHz worth) while the device still ran at
 /// 16 kHz. Counting frames read that as an 11,025 Hz device and stretched the audio until the next window. Skipped
-/// cycles are lost audio, which the aligner fills with silence; they never mean another rate. `skippedFrames` counts
-/// them (sample time that advanced with no frames delivered), for the log.
+/// cycles are lost audio, which the receiver fills with zeros in place (`TapGapFill`); they never mean another rate.
+/// `skippedFrames` counts them (sample time that advanced with no frames delivered), for the log.
 struct TapRateCheck {
     static let standardRates: [Double] = [8_000, 11_025, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000]
     static let window = 1.5
@@ -315,14 +325,18 @@ struct TapRateCheck {
 }
 
 /// Whether a paused Mac audio capture can restart its aggregate as it was (review 2026-11-26): only when nothing
-/// changed while it was paused. A change notice that arrived during the pause, another default output, a different
-/// tap format, or an aggregate that is gone all mean a rebuild.
+/// changed while it was paused. A change notice that arrived during the pause, a different tap format, or an aggregate
+/// that is gone all mean a rebuild; so does another default output, but only with the `output` clock (2026-11-27: with
+/// `tap` and `builtIn` the default output is not part of the aggregate, and the global tap follows it).
 enum TapResumePlan {
-    static func canResumeInPlace(changedWhilePaused: Bool, aggregateAlive: Bool, builtOutputUID: String?,
-                                 currentOutputUID: String?, builtFormat: AudioStreamBasicDescription?,
+    static func canResumeInPlace(mode: MacAudioClock = .output, changedWhilePaused: Bool, aggregateAlive: Bool,
+                                 builtOutputUID: String?, currentOutputUID: String?,
+                                 builtFormat: AudioStreamBasicDescription?,
                                  currentFormat: AudioStreamBasicDescription?) -> Bool {
-        guard !changedWhilePaused, aggregateAlive, let builtOutputUID, builtOutputUID == currentOutputUID,
-              let builtFormat, let currentFormat else { return false }
+        guard !changedWhilePaused, aggregateAlive, let builtFormat, let currentFormat else { return false }
+        if mode == .output {
+            guard let builtOutputUID, builtOutputUID == currentOutputUID else { return false }
+        }
         return sameFormat(builtFormat, currentFormat)
     }
 
@@ -347,18 +361,27 @@ enum TapRetryPolicy {
 /// Mac audio's running, paused and lost bookkeeping (review 2026-11-26), kept apart from the Core Audio calls in
 /// `SystemAudioCapture` so its rules can be tested: when a change notice rebuilds, when it is only remembered, when a
 /// failure is reported and retried, and when Mac audio counts as back.
+///
+/// A build that started is not yet a success (review 2026-11-27): `started()` only marks IO running, and Mac audio
+/// counts as back (lost cleared, `.systemAudioRestored`, the failure count reset) only at `confirmed()`, when its first
+/// IO cycle came. So a chain of clocks that all start and never deliver IO counts as one more failed build each time
+/// and its retries back off along `TapRetryPolicy`, instead of flapping lost and restored every few seconds.
 struct TapLifecycle: Equatable {
-    /// IO is running.
+    /// IO is running (started; maybe not yet confirmed).
     private(set) var running = false
     /// Paused by the recording.
     private(set) var paused = false
-    /// The last build (start, rebuild or resume) failed; later notices and retries try again.
+    /// Mac audio was reported lost (or could not start) and has not delivered IO since; later notices and retries try
+    /// again.
     private(set) var lost = false
     private(set) var stopped = false
     /// A change notice (or a rebuild) came while paused: `resume()` rebuilds instead of restarting in place.
     private(set) var changedWhilePaused = false
-    /// Builds that failed since the last success.
+    /// Builds that failed since IO last came.
     private(set) var failedBuilds = 0
+    /// The recording resumed while lost: its next failure is reported again (a Mac-audio-only recording resumed itself
+    /// and must pause again).
+    private(set) var resumedWhileLost = false
 
     enum Notice: Equatable { case ignore, remember, rebuild }
 
@@ -377,18 +400,24 @@ struct TapLifecycle: Equatable {
         return running || lost
     }
 
-    /// A build succeeded. Returns whether Mac audio had been lost (deliver `.systemAudioRestored`).
-    mutating func built() -> Bool {
-        let wasLost = lost
+    /// A build started IO. Lost and the failure count stay until `confirmed()`.
+    mutating func started() {
         running = true
+        changedWhilePaused = false
+    }
+
+    /// The started build delivered its first IO cycle. Returns whether Mac audio had been lost (deliver
+    /// `.systemAudioRestored`).
+    mutating func confirmed() -> Bool {
+        let wasLost = lost
         lost = false
         failedBuilds = 0
-        changedWhilePaused = false
+        resumedWhileLost = false
         return wasLost
     }
 
     struct Failure: Equatable {
-        /// The first failure since Mac audio last ran: report it lost once.
+        /// The first failure since Mac audio last delivered IO (or since a resume while lost): report it lost.
         var firstLoss: Bool
         /// When to try again (nil: only on later change notices, or on resume).
         var retryAfter: Duration?
@@ -400,7 +429,8 @@ struct TapLifecycle: Equatable {
     mutating func failed() -> Failure {
         running = false
         failedBuilds += 1
-        let first = !lost
+        let first = !lost || resumedWhileLost
+        resumedWhileLost = false
         lost = true
         return Failure(firstLoss: first, retryAfter: TapRetryPolicy.delay(afterFailures: failedBuilds), attempt: failedBuilds)
     }
@@ -420,6 +450,7 @@ struct TapLifecycle: Equatable {
     mutating func beginResume() -> Bool {
         guard !stopped, !running else { return false }
         paused = false
+        if lost { resumedWhileLost = true }
         return true
     }
 
