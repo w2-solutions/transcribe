@@ -350,6 +350,10 @@ actor SystemAudioCapture: StampedCaptureSource {
                 log.info("Mac audio dropped \(receiver.dropped, privacy: .public) tap buffers (\(receiver.layoutMismatches, privacy: .public) for a changed input layout)")
             }
             receiver.finish()
+            let skipped = receiver.skippedFrames
+            if skipped > 0 {
+                log.notice("Mac audio: the output skipped \(skipped, privacy: .public) frames of IO (lost audio, filled with silence)")
+            }
         }
         receiver = nil
         builtOutputUID = nil
@@ -733,6 +737,8 @@ final class TapReceiver: @unchecked Sendable {
     deinit { signal.cancel() }
 
     var dropped: Int { ring.dropped }
+    /// Frames the device's sample time moved past with no IO delivered (log-only; read after `finish()`).
+    var skippedFrames: Int { queue.sync { rateCheck.skippedFrames } }
     var layoutMismatches: Int { ring.layoutMismatches }
 
     /// Real-time safe: copies and signals, nothing else. A cycle with another input layout signals too, so the
@@ -741,8 +747,10 @@ final class TapReceiver: @unchecked Sendable {
         { [ring, firstIndex, signal] _, inputData, inputTime, _, _ in
             let stamp = inputTime.pointee
             let host: UInt64? = stamp.mFlags.contains(.hostTimeValid) ? stamp.mHostTime : nil
+            let sample: Double? = stamp.mFlags.contains(.sampleTimeValid) ? stamp.mSampleTime : nil
             let before = ring.layoutMismatches
-            if ring.write(inputData, firstIndex: firstIndex, hostTime: host) || ring.layoutMismatches != before {
+            if ring.write(inputData, firstIndex: firstIndex, hostTime: host, sampleTime: sample)
+                || ring.layoutMismatches != before {
                 signal.add(data: 1)
             }
         }
@@ -767,11 +775,11 @@ final class TapReceiver: @unchecked Sendable {
             mismatchReported = true
             onLayoutMismatch()
         }
-        ring.drain { buffers, hostTime in
+        ring.drainStamped { buffers, hostTime, sampleTime in
             guard let first = buffers.first, first.count >= bytesPerFrame else { return }
             let frames = first.count / bytesPerFrame
             if let hostTime {
-                correctRate(frames: frames, host: AVAudioTime.seconds(forHostTime: hostTime))
+                correctRate(frames: frames, host: AVAudioTime.seconds(forHostTime: hostTime), sampleTime: sampleTime)
             }
             // A fresh buffer each time: the converter may keep reading its last input until the next call.
             guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)) else { return }
@@ -802,9 +810,10 @@ final class TapReceiver: @unchecked Sendable {
 
     /// Switches the format and converter to the rate the IO really runs at, when `TapRateCheck` says so. Only the
     /// rate changes: the sample layout, and so the copy, stay as built.
-    private func correctRate(frames: Int, host: Double) {
+    private func correctRate(frames: Int, host: Double, sampleTime: Double?) {
         let current = format.sampleRate
-        guard let rate = rateCheck.observe(frames: frames, host: host, current: current) else { return }
+        guard let rate = rateCheck.observe(frames: frames, host: host, sampleTime: sampleTime, current: current)
+        else { return }
         var asbd = format.streamDescription.pointee
         asbd.mSampleRate = rate
         guard let newFormat = AVAudioFormat(streamDescription: &asbd),

@@ -134,7 +134,7 @@ struct TapRingTests {
     }
 
     @Test func theReceiverSwitchesToTheRateTheIORunsAt() throws {
-        // The Bose case end to end: built for 48 kHz, fed 3 s of 16 kHz IO in 10 ms buffers.
+        // The Bose case end to end: built for 48 kHz, fed 4 s of 16 kHz IO in 10 ms buffers.
         let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
         let converter = try #require(TapConverter(inputFormat: format))
         let ring = TapRing(slotCount: 64, bufferCount: 1, bytesPerBuffer: 4 * 4_800, expectedBufferCount: 1)
@@ -146,11 +146,12 @@ struct TapRingTests {
                                    }, silentFrames: 80_000, onLongSilence: {},
                                    onRateCorrected: { from, to in corrections.withLock { $0.append((from, to)) } })
         let start = AVAudioTime.seconds(forHostTime: mach_absolute_time())
-        for k in 0..<300 {
+        for k in 0..<400 {
             let tone = (0..<160).map { Float(0.25 * sin(2 * Double.pi * 440 * Double(k * 160 + $0) / 16_000)) }
             var stamp = AudioTimeStamp()
             stamp.mHostTime = AVAudioTime.hostTime(forSeconds: start + Double(k) * 0.01)
-            stamp.mFlags = .hostTimeValid
+            stamp.mSampleTime = Double(k * 160)
+            stamp.mFlags = [.hostTimeValid, .sampleTimeValid]
             var none = AudioTimeStamp()
             withList([tone]) { list in
                 receiver.ioBlock(&none, list, &stamp, UnsafeMutablePointer(mutating: list), &none)
@@ -243,27 +244,37 @@ struct TapRingTests {
         #expect(!TapResumePlan.sameFormat(tap, io))      // a rate change means a rebuild, not a restart in place
     }
 
-    /// Feeds `seconds` of IO at `rate` in buffers of `frames`, starting at `start`; returns the first correction.
+    /// Feeds `seconds` of IO from a device running at `rate`, in buffers of `frames`, starting at `start`; with
+    /// `sampleTimes` the buffers carry the device's sample time. `delivered` is the share of IO cycles that arrive
+    /// (the rest are skipped, as while a Bluetooth headset switches modes). Returns the first correction.
     func feed(_ check: inout TapRateCheck, rate: Double, current: Double, frames: Int = 160, seconds: Double,
-              start: Double = 100) -> Double? {
+              start: Double = 100, sampleTimes: Bool = false, delivered: Double = 1) -> Double? {
         let step = Double(frames) / rate
-        var host = start
-        while host < start + seconds {
-            if let r = check.observe(frames: frames, host: host, current: current) { return r }
-            host += step
+        var k = 0
+        while Double(k) * step < seconds {
+            defer { k += 1 }
+            // Skip cycles evenly: deliver cycle k when the running share crosses a whole number.
+            guard (Double(k + 1) * delivered).rounded(.down) > (Double(k) * delivered).rounded(.down) || delivered >= 1
+            else { continue }
+            let sample = sampleTimes ? Double(k * frames) : nil
+            if let r = check.observe(frames: frames, host: start + Double(k) * step, sampleTime: sample, current: current) {
+                return r
+            }
         }
         return nil
     }
 
     @Test func aWrongRateIsCorrectedFromTheFramesThatArrive() {
-        // The Bose case: 16 kHz IO read as 48 kHz.
+        // The Bose case: 16 kHz IO read as 48 kHz, with and without sample times.
         var check = TapRateCheck()
-        #expect(feed(&check, rate: 16_000, current: 48_000, seconds: 3) == 16_000)
+        #expect(feed(&check, rate: 16_000, current: 48_000, seconds: 4) == 16_000)
+        check = TapRateCheck()
+        #expect(feed(&check, rate: 16_000, current: 48_000, seconds: 4, sampleTimes: true) == 16_000)
         // The other way round, and at 44.1 kHz.
         check = TapRateCheck()
-        #expect(feed(&check, rate: 48_000, current: 16_000, frames: 512, seconds: 3) == 48_000)
+        #expect(feed(&check, rate: 48_000, current: 16_000, frames: 512, seconds: 4) == 48_000)
         check = TapRateCheck()
-        #expect(feed(&check, rate: 44_100, current: 48_000, frames: 441, seconds: 3) == 44_100)
+        #expect(feed(&check, rate: 44_100, current: 48_000, frames: 441, seconds: 4, sampleTimes: true) == 44_100)
     }
 
     @Test func aRightRateIsLeftAlone() {
@@ -272,9 +283,22 @@ struct TapRingTests {
         // Clock drift of a fraction of a percent is not a different rate.
         check = TapRateCheck()
         #expect(feed(&check, rate: 48_100, current: 48_000, frames: 512, seconds: 20) == nil)
-        // Not before `window` seconds of IO.
+        // Not before two windows of IO agree.
         check = TapRateCheck()
-        #expect(feed(&check, rate: 16_000, current: 48_000, seconds: 1.2) == nil)
+        #expect(feed(&check, rate: 16_000, current: 48_000, seconds: 2.9) == nil)
+    }
+
+    @Test func skippedCyclesAreLostAudioNotAnotherRate() {
+        // Bose headphones turning on call mode (2026-11-27): about 70% of the 16 kHz IO cycles arrive for seconds.
+        // With sample times that is never another rate, and the skipped frames are counted.
+        var check = TapRateCheck()
+        #expect(feed(&check, rate: 16_000, current: 16_000, seconds: 8, sampleTimes: true, delivered: 0.69) == nil)
+        let expected = Int(8 * 16_000 * 0.31)
+        #expect(abs(check.skippedFrames - expected) < 2_000, "skipped \(check.skippedFrames)")
+        // Without sample times, one short burst of skipped cycles is not enough: two windows must agree.
+        check = TapRateCheck()
+        #expect(feed(&check, rate: 16_000, current: 16_000, seconds: 1.6, delivered: 0.69) == nil)
+        #expect(feed(&check, rate: 16_000, current: 16_000, seconds: 6, start: 101.6) == nil)
     }
 
     @Test func aStallStartsTheCountAgain() {
@@ -285,6 +309,11 @@ struct TapRingTests {
         // A count that matches no standard rate changes nothing.
         check = TapRateCheck()
         #expect(feed(&check, rate: 37_000, current: 48_000, frames: 512, seconds: 5) == nil)
+        // A sample time that goes back (IO restarted) starts again too.
+        check = TapRateCheck()
+        _ = check.observe(frames: 160, host: 1, sampleTime: 1_000, current: 16_000)
+        #expect(check.observe(frames: 160, host: 1.01, sampleTime: 0, current: 16_000) == nil)
+        #expect(check.skippedFrames == 0)
     }
 
     @Test func anUnexpectedLayoutIsRefused() {

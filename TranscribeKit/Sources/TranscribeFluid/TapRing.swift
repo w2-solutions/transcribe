@@ -25,6 +25,8 @@ final class TapRing: @unchecked Sendable {
     private let byteCounts: UnsafeMutablePointer<Int>
     private let hostTimes: UnsafeMutablePointer<UInt64>
     private let hostValid: UnsafeMutablePointer<Bool>
+    private let sampleTimes: UnsafeMutablePointer<Double>
+    private let sampleValid: UnsafeMutablePointer<Bool>
     /// Slots written and read so far (monotonic; the slot is the count modulo `slotCount`).
     private let written = Atomic<Int>(0)
     private let read = Atomic<Int>(0)
@@ -44,6 +46,10 @@ final class TapRing: @unchecked Sendable {
         hostTimes.initialize(repeating: 0, count: slotCount)
         hostValid = .allocate(capacity: slotCount)
         hostValid.initialize(repeating: false, count: slotCount)
+        sampleTimes = .allocate(capacity: slotCount)
+        sampleTimes.initialize(repeating: 0, count: slotCount)
+        sampleValid = .allocate(capacity: slotCount)
+        sampleValid.initialize(repeating: false, count: slotCount)
     }
 
     deinit {
@@ -51,6 +57,8 @@ final class TapRing: @unchecked Sendable {
         byteCounts.deallocate()
         hostTimes.deallocate()
         hostValid.deallocate()
+        sampleTimes.deallocate()
+        sampleValid.deallocate()
     }
 
     /// Buffers dropped so far (log-only).
@@ -63,8 +71,9 @@ final class TapRing: @unchecked Sendable {
     var pending: Int { written.load(ordering: .acquiring) - read.load(ordering: .acquiring) }
 
     /// Real-time safe. Copies buffers `firstIndex ..< firstIndex + bufferCount` of `list` into the next slot with the
-    /// host time. Returns whether a slot was written.
-    func write(_ list: UnsafePointer<AudioBufferList>, firstIndex: Int, hostTime: UInt64?) -> Bool {
+    /// host time and the device's sample time. Returns whether a slot was written.
+    func write(_ list: UnsafePointer<AudioBufferList>, firstIndex: Int, hostTime: UInt64?,
+               sampleTime: Double? = nil) -> Bool {
         let w = written.load(ordering: .relaxed)
         guard w - read.load(ordering: .acquiring) < slotCount else { return drop() }
         let buffers = UnsafeMutableAudioBufferListPointer(UnsafeMutablePointer(mutating: list))
@@ -84,6 +93,8 @@ final class TapRing: @unchecked Sendable {
         }
         hostTimes[slot] = hostTime ?? 0
         hostValid[slot] = hostTime != nil
+        sampleTimes[slot] = sampleTime ?? 0
+        sampleValid[slot] = sampleTime != nil
         written.store(w + 1, ordering: .releasing)
         return true
     }
@@ -92,6 +103,13 @@ final class TapRing: @unchecked Sendable {
     /// its host time), then frees it. Returns the number of slots read.
     @discardableResult
     func drain(_ body: (_ buffers: [UnsafeRawBufferPointer], _ hostTime: UInt64?) -> Void) -> Int {
+        drainStamped { buffers, hostTime, _ in body(buffers, hostTime) }
+    }
+
+    /// `drain`, also handing over each slot's sample time.
+    @discardableResult
+    func drainStamped(_ body: (_ buffers: [UnsafeRawBufferPointer], _ hostTime: UInt64?, _ sampleTime: Double?) -> Void)
+        -> Int {
         var r = read.load(ordering: .relaxed)
         let w = written.load(ordering: .acquiring)
         var count = 0
@@ -101,7 +119,7 @@ final class TapRing: @unchecked Sendable {
                 let index = slot * bufferCount + b
                 return UnsafeRawBufferPointer(start: storage + index * bytesPerBuffer, count: byteCounts[index])
             }
-            body(buffers, hostValid[slot] ? hostTimes[slot] : nil)
+            body(buffers, hostValid[slot] ? hostTimes[slot] : nil, sampleValid[slot] ? sampleTimes[slot] : nil)
             r += 1
             count += 1
             read.store(r, ordering: .releasing)
@@ -225,48 +243,74 @@ enum TapStreamFormat {
 }
 
 /// Mac audio's rate, measured (2026-11-27): Core Audio's rate properties have been wrong for a Bluetooth headset in
-/// call mode, and a wrong rate stretches or squeezes every buffer, which the aligner then pads with silence (a robot
-/// voice). So the receiver counts the frames that arrive against their host times and, once `window` seconds of
-/// steady IO disagree with the rate in use by more than `tolerance`, switches to the standard rate the count is
-/// nearest to (it must be within `snap` of one). A gap in the host times longer than `maxGap` (IO stalled or
-/// restarted) starts the count again; so does a switch.
+/// call mode, and a wrong rate stretches or squeezes every buffer, which the aligner then pads with silence or trims (a
+/// robot voice). So the receiver measures the rate the IO runs at over consecutive `window`s of steady IO: from the
+/// device's sample time against host time when the IO reports it, else from the frames that arrive. Only after
+/// `agreeingWindows` windows in a row are more than `tolerance` off the rate in use, and each within `snap` of the same
+/// standard rate, does it switch. A gap in the host times longer than `maxGap` (IO stalled or restarted), or a sample
+/// time that goes back, starts again.
+///
+/// Why the sample time (found 2026-11-27, Bose headphones turning on call mode at the start of a recording): for some
+/// seconds the HAL skipped IO cycles, so fewer frames arrived (about 11 kHz worth) while the device still ran at
+/// 16 kHz. Counting frames read that as an 11,025 Hz device and stretched the audio until the next window. Skipped
+/// cycles are lost audio, which the aligner fills with silence; they never mean another rate. `skippedFrames` counts
+/// them (sample time that advanced with no frames delivered), for the log.
 struct TapRateCheck {
     static let standardRates: [Double] = [8_000, 11_025, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000]
     static let window = 1.5
+    static let agreeingWindows = 2
     static let maxGap = 0.25
     static let tolerance = 0.08
     static let snap = 0.03
 
+    private(set) var skippedFrames = 0
     private var startHost: Double?
+    private var startSample: Double?
     private var lastHost: Double?
+    private var lastSample: Double?
     private var lastFrames = 0
     private var frames = 0
+    private var candidate: Double?
+    private var agreeing = 0
 
-    /// One delivered buffer of `count` frames that started at `host` seconds. Returns the rate to switch to, if the
-    /// count says `current` is wrong.
-    mutating func observe(frames count: Int, host: Double, current: Double) -> Double? {
-        guard let lastHost, host > lastHost, host - lastHost <= Self.maxGap, let startHost else {
-            reset(at: host, frames: count)
+    /// One delivered buffer of `count` frames that started at `host` seconds and, if the IO reports it, at the
+    /// device's `sampleTime`. Returns the rate to switch to, once the measurements say `current` is wrong.
+    mutating func observe(frames count: Int, host: Double, sampleTime: Double? = nil, current: Double) -> Double? {
+        guard let lastHost, host > lastHost, host - lastHost <= Self.maxGap, let startHost,
+              (sampleTime == nil) == (lastSample == nil), (sampleTime ?? 1) > (lastSample ?? 0) else {
+            restart(at: host, sampleTime: sampleTime, frames: count)
+            candidate = nil; agreeing = 0
             return nil
         }
+        if let sampleTime, let lastSample {
+            skippedFrames += Swift.max(0, Int((sampleTime - lastSample).rounded()) - lastFrames)
+        }
         frames += lastFrames          // the previous buffer's frames all arrived before this one started
-        self.lastHost = host; lastFrames = count
+        self.lastHost = host; lastSample = sampleTime; lastFrames = count
         let elapsed = host - startHost
         guard elapsed >= Self.window else { return nil }
-        let measured = Double(frames) / elapsed
+        let measured: Double
+        if let sampleTime, let startSample {
+            measured = (sampleTime - startSample) / elapsed
+        } else {
+            measured = Double(frames) / elapsed
+        }
+        restart(at: host, sampleTime: sampleTime, frames: count)
         guard abs(measured - current) / current > Self.tolerance,
               let nearest = Self.standardRates.min(by: { abs($0 - measured) < abs($1 - measured) }),
               abs(nearest - measured) / nearest <= Self.snap, nearest != current else {
-            // Agrees with the rate in use (or matches nothing standard): keep a sliding count, not an ever-longer one.
-            if elapsed >= 4 * Self.window { reset(at: host, frames: count) }
+            candidate = nil; agreeing = 0     // agrees with the rate in use, or matches nothing standard
             return nil
         }
-        reset(at: host, frames: count)
+        if nearest == candidate { agreeing += 1 } else { candidate = nearest; agreeing = 1 }
+        guard agreeing >= Self.agreeingWindows else { return nil }
+        candidate = nil; agreeing = 0
         return nearest
     }
 
-    private mutating func reset(at host: Double, frames count: Int) {
-        startHost = host; lastHost = host; lastFrames = count; frames = 0
+    private mutating func restart(at host: Double, sampleTime: Double?, frames count: Int) {
+        startHost = host; lastHost = host; startSample = sampleTime; lastSample = sampleTime
+        lastFrames = count; frames = 0
     }
 }
 
