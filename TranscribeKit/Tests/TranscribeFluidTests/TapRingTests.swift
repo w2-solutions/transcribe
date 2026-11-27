@@ -133,6 +133,40 @@ struct TapRingTests {
         receiver.finish()
     }
 
+    @Test func theReceiverSwitchesToTheRateTheIORunsAt() throws {
+        // The Bose case end to end: built for 48 kHz, fed 3 s of 16 kHz IO in 10 ms buffers.
+        let format = try #require(AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1))
+        let converter = try #require(TapConverter(inputFormat: format))
+        let ring = TapRing(slotCount: 64, bufferCount: 1, bytesPerBuffer: 4 * 4_800, expectedBufferCount: 1)
+        let got = Mutex<[Int]>([])
+        let corrections = Mutex<[(Double, Double)]>([])
+        let receiver = TapReceiver(format: format, converter: converter, ring: ring, firstIndex: 0, bytesPerFrame: 4,
+                                   queue: DispatchQueue(label: "test.tap.rate"), deliver: { input in
+                                       if case .audio(let samples, _) = input { got.withLock { $0.append(samples.count) } }
+                                   }, silentFrames: 80_000, onLongSilence: {},
+                                   onRateCorrected: { from, to in corrections.withLock { $0.append((from, to)) } })
+        let start = AVAudioTime.seconds(forHostTime: mach_absolute_time())
+        for k in 0..<300 {
+            let tone = (0..<160).map { Float(0.25 * sin(2 * Double.pi * 440 * Double(k * 160 + $0) / 16_000)) }
+            var stamp = AudioTimeStamp()
+            stamp.mHostTime = AVAudioTime.hostTime(forSeconds: start + Double(k) * 0.01)
+            stamp.mFlags = .hostTimeValid
+            var none = AudioTimeStamp()
+            withList([tone]) { list in
+                receiver.ioBlock(&none, list, &stamp, UnsafeMutablePointer(mutating: list), &none)
+            }
+            if k % 8 == 7 { receiver.flush() }
+        }
+        receiver.flush()
+        let fixes = corrections.withLock { $0 }
+        #expect(fixes.count == 1 && fixes.first?.0 == 48_000 && fixes.first?.1 == 16_000)
+        // From the switch on, 160 frames in give about 160 samples out (at 48 kHz they gave about 53).
+        let counts = got.withLock { $0 }
+        let tail = counts.suffix(50).reduce(0, +)
+        #expect(abs(tail - 50 * 160) < 200, "last 50 buffers gave \(tail) samples")
+        receiver.finish()
+    }
+
     // MARK: Layout
 
     @Test func theTapIsFoundBesideTheOutputDevicesInputs() {
@@ -198,13 +232,59 @@ struct TapRingTests {
         tap.mSampleRate = 48_000; tap.mFormatID = kAudioFormatLinearPCM
         tap.mFormatFlags = kAudioFormatFlagIsFloat | kAudioFormatFlagIsPacked
         tap.mBytesPerPacket = 4; tap.mFramesPerPacket = 1; tap.mBytesPerFrame = 4; tap.mChannelsPerFrame = 1; tap.mBitsPerChannel = 32
-        var stream = tap; stream.mSampleRate = 16_000
-        #expect(TapStreamFormat.ioFormat(tap: tap, streamFormat: stream, aggregateRate: 24_000).mSampleRate == 16_000)
-        #expect(TapStreamFormat.ioFormat(tap: tap, streamFormat: nil, aggregateRate: 16_000).mSampleRate == 16_000)
+        var stream = tap; stream.mSampleRate = 48_000
+        // Bose headphones in call mode (2026-11-27): the tap and its stream said 48 kHz, the aggregate ran at 16 kHz.
+        #expect(TapStreamFormat.ioFormat(tap: tap, streamFormat: stream, aggregateRate: 16_000).mSampleRate == 16_000)
+        stream.mSampleRate = 16_000
+        #expect(TapStreamFormat.ioFormat(tap: tap, streamFormat: stream, aggregateRate: nil).mSampleRate == 16_000)
         #expect(TapStreamFormat.ioFormat(tap: tap, streamFormat: nil, aggregateRate: nil).mSampleRate == 48_000)
         let io = TapStreamFormat.ioFormat(tap: tap, streamFormat: stream, aggregateRate: nil)
         #expect(io.mBytesPerFrame == 4 && io.mChannelsPerFrame == 1 && io.mFormatFlags == tap.mFormatFlags)
         #expect(!TapResumePlan.sameFormat(tap, io))      // a rate change means a rebuild, not a restart in place
+    }
+
+    /// Feeds `seconds` of IO at `rate` in buffers of `frames`, starting at `start`; returns the first correction.
+    func feed(_ check: inout TapRateCheck, rate: Double, current: Double, frames: Int = 160, seconds: Double,
+              start: Double = 100) -> Double? {
+        let step = Double(frames) / rate
+        var host = start
+        while host < start + seconds {
+            if let r = check.observe(frames: frames, host: host, current: current) { return r }
+            host += step
+        }
+        return nil
+    }
+
+    @Test func aWrongRateIsCorrectedFromTheFramesThatArrive() {
+        // The Bose case: 16 kHz IO read as 48 kHz.
+        var check = TapRateCheck()
+        #expect(feed(&check, rate: 16_000, current: 48_000, seconds: 3) == 16_000)
+        // The other way round, and at 44.1 kHz.
+        check = TapRateCheck()
+        #expect(feed(&check, rate: 48_000, current: 16_000, frames: 512, seconds: 3) == 48_000)
+        check = TapRateCheck()
+        #expect(feed(&check, rate: 44_100, current: 48_000, frames: 441, seconds: 3) == 44_100)
+    }
+
+    @Test func aRightRateIsLeftAlone() {
+        var check = TapRateCheck()
+        #expect(feed(&check, rate: 48_000, current: 48_000, frames: 512, seconds: 20) == nil)
+        // Clock drift of a fraction of a percent is not a different rate.
+        check = TapRateCheck()
+        #expect(feed(&check, rate: 48_100, current: 48_000, frames: 512, seconds: 20) == nil)
+        // Not before `window` seconds of IO.
+        check = TapRateCheck()
+        #expect(feed(&check, rate: 16_000, current: 48_000, seconds: 1.2) == nil)
+    }
+
+    @Test func aStallStartsTheCountAgain() {
+        // IO that stops for a second (a device switch) must not read as a slower rate.
+        var check = TapRateCheck()
+        #expect(feed(&check, rate: 48_000, current: 48_000, frames: 512, seconds: 1.0) == nil)
+        #expect(feed(&check, rate: 48_000, current: 48_000, frames: 512, seconds: 1.0, start: 102) == nil)
+        // A count that matches no standard rate changes nothing.
+        check = TapRateCheck()
+        #expect(feed(&check, rate: 37_000, current: 48_000, frames: 512, seconds: 5) == nil)
     }
 
     @Test func anUnexpectedLayoutIsRefused() {

@@ -207,18 +207,66 @@ enum TapBufferLayout {
 
 /// The format Mac audio's IO block delivers (2026-11-27): the tap's sample layout at the rate the aggregate runs at. The
 /// aggregate runs at its main sub-device's (the output's) rate, which is not always the tap's own: a Bluetooth headset
-/// in call mode runs at 16 kHz while `kAudioTapPropertyFormat` still says 48 kHz. The tap stream's virtual format wins,
-/// then the aggregate's nominal rate, then the tap's.
+/// in call mode runs at 16 kHz while `kAudioTapPropertyFormat` still says 48 kHz. The aggregate's nominal rate wins
+/// (an aggregate runs every stream at its one rate), then the tap stream's virtual format, then the tap's. Measured on
+/// Bose headphones in call mode (2026-11-27): the tap and its stream in the aggregate both said 48 kHz while the
+/// aggregate ran at 16 kHz, and 16 kHz was right. `TapRateCheck` corrects whatever these properties get wrong.
 enum TapStreamFormat {
     static func ioFormat(tap: AudioStreamBasicDescription, streamFormat: AudioStreamBasicDescription?,
                          aggregateRate: Float64?) -> AudioStreamBasicDescription {
         var io = tap
-        if let rate = streamFormat?.mSampleRate, rate > 0 {
-            io.mSampleRate = rate
-        } else if let aggregateRate, aggregateRate > 0 {
+        if let aggregateRate, aggregateRate > 0 {
             io.mSampleRate = aggregateRate
+        } else if let rate = streamFormat?.mSampleRate, rate > 0 {
+            io.mSampleRate = rate
         }
         return io
+    }
+}
+
+/// Mac audio's rate, measured (2026-11-27): Core Audio's rate properties have been wrong for a Bluetooth headset in
+/// call mode, and a wrong rate stretches or squeezes every buffer, which the aligner then pads with silence (a robot
+/// voice). So the receiver counts the frames that arrive against their host times and, once `window` seconds of
+/// steady IO disagree with the rate in use by more than `tolerance`, switches to the standard rate the count is
+/// nearest to (it must be within `snap` of one). A gap in the host times longer than `maxGap` (IO stalled or
+/// restarted) starts the count again; so does a switch.
+struct TapRateCheck {
+    static let standardRates: [Double] = [8_000, 11_025, 16_000, 22_050, 24_000, 32_000, 44_100, 48_000, 88_200, 96_000]
+    static let window = 1.5
+    static let maxGap = 0.25
+    static let tolerance = 0.08
+    static let snap = 0.03
+
+    private var startHost: Double?
+    private var lastHost: Double?
+    private var lastFrames = 0
+    private var frames = 0
+
+    /// One delivered buffer of `count` frames that started at `host` seconds. Returns the rate to switch to, if the
+    /// count says `current` is wrong.
+    mutating func observe(frames count: Int, host: Double, current: Double) -> Double? {
+        guard let lastHost, host > lastHost, host - lastHost <= Self.maxGap, let startHost else {
+            reset(at: host, frames: count)
+            return nil
+        }
+        frames += lastFrames          // the previous buffer's frames all arrived before this one started
+        self.lastHost = host; lastFrames = count
+        let elapsed = host - startHost
+        guard elapsed >= Self.window else { return nil }
+        let measured = Double(frames) / elapsed
+        guard abs(measured - current) / current > Self.tolerance,
+              let nearest = Self.standardRates.min(by: { abs($0 - measured) < abs($1 - measured) }),
+              abs(nearest - measured) / nearest <= Self.snap, nearest != current else {
+            // Agrees with the rate in use (or matches nothing standard): keep a sliding count, not an ever-longer one.
+            if elapsed >= 4 * Self.window { reset(at: host, frames: count) }
+            return nil
+        }
+        reset(at: host, frames: count)
+        return nearest
+    }
+
+    private mutating func reset(at host: Double, frames count: Int) {
+        startHost = host; lastHost = host; lastFrames = count; frames = 0
     }
 }
 

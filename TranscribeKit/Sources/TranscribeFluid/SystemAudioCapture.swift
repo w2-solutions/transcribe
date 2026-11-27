@@ -311,7 +311,10 @@ actor SystemAudioCapture: StampedCaptureSource {
                                    bytesPerFrame: bytesPerFrame, queue: processQueue, deliver: deliver,
                                    silentFrames: Int(Self.silentNoticeSeconds * TapConverter.outputSampleRate),
                                    onLongSilence: { [weak self] in Task { await self?.longSilence() } },
-                                   onLayoutMismatch: { [weak self] in Task { await self?.layoutMismatch() } })
+                                   onLayoutMismatch: { [weak self] in Task { await self?.layoutMismatch() } },
+                                   onRateCorrected: { [log] from, to in
+                                       log.notice("Mac audio arrives at \(to, privacy: .public) Hz, not \(from, privacy: .public) Hz; converting from \(to, privacy: .public) Hz")
+                                   })
         self.receiver = receiver
         var proc: AudioDeviceIOProcID?
         status = AudioDeviceCreateIOProcIDWithBlock(&proc, aggregate, ioQueue, receiver.ioBlock)
@@ -693,8 +696,11 @@ public enum SystemOutputRoute {
 /// delivers it. An IO cycle whose input list has another length than the aggregate was built with is dropped by the
 /// ring and reported once (`onLayoutMismatch`), so the capture can rebuild.
 final class TapReceiver: @unchecked Sendable {
-    private let format: AVAudioFormat
-    private let converter: TapConverter
+    // Replaced on `queue` when `TapRateCheck` finds the IO running at another rate.
+    private var format: AVAudioFormat
+    private var converter: TapConverter
+    private var rateCheck = TapRateCheck()
+    private let onRateCorrected: @Sendable (Double, Double) -> Void
     private let ring: TapRing
     private let firstIndex: Int
     private let bytesPerFrame: Int
@@ -712,7 +718,9 @@ final class TapReceiver: @unchecked Sendable {
 
     init(format: AVAudioFormat, converter: TapConverter, ring: TapRing, firstIndex: Int, bytesPerFrame: Int,
          queue: DispatchQueue, deliver: @escaping @Sendable (StampedInput) -> Void, silentFrames: Int,
-         onLongSilence: @escaping @Sendable () -> Void, onLayoutMismatch: @escaping @Sendable () -> Void = {}) {
+         onLongSilence: @escaping @Sendable () -> Void, onLayoutMismatch: @escaping @Sendable () -> Void = {},
+         onRateCorrected: @escaping @Sendable (Double, Double) -> Void = { _, _ in }) {
+        self.onRateCorrected = onRateCorrected
         self.format = format; self.converter = converter; self.ring = ring; self.firstIndex = firstIndex
         self.bytesPerFrame = Swift.max(1, bytesPerFrame); self.queue = queue; self.deliver = deliver
         self.silentFrames = silentFrames; self.onLongSilence = onLongSilence; self.onLayoutMismatch = onLayoutMismatch
@@ -762,6 +770,9 @@ final class TapReceiver: @unchecked Sendable {
         ring.drain { buffers, hostTime in
             guard let first = buffers.first, first.count >= bytesPerFrame else { return }
             let frames = first.count / bytesPerFrame
+            if let hostTime {
+                correctRate(frames: frames, host: AVAudioTime.seconds(forHostTime: hostTime))
+            }
             // A fresh buffer each time: the converter may keep reading its last input until the next call.
             guard let pcm = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: AVAudioFrameCount(frames)) else { return }
             // The length first: a fresh buffer's byte sizes are 0 until it is set, and the copy is bounded by them.
@@ -787,6 +798,20 @@ final class TapReceiver: @unchecked Sendable {
             }
             deliver(.audio(samples, hostSeconds: host))
         }
+    }
+
+    /// Switches the format and converter to the rate the IO really runs at, when `TapRateCheck` says so. Only the
+    /// rate changes: the sample layout, and so the copy, stay as built.
+    private func correctRate(frames: Int, host: Double) {
+        let current = format.sampleRate
+        guard let rate = rateCheck.observe(frames: frames, host: host, current: current) else { return }
+        var asbd = format.streamDescription.pointee
+        asbd.mSampleRate = rate
+        guard let newFormat = AVAudioFormat(streamDescription: &asbd),
+              let newConverter = TapConverter(inputFormat: newFormat) else { return }
+        format = newFormat
+        converter = newConverter
+        onRateCorrected(current, rate)
     }
 }
 #endif
