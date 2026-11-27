@@ -1,0 +1,1 @@
+Transcribe now has a menu bar item. Start or stop a recording from any app, open Transcribe or Settings, or quit. While a recording runs, a dot shows beside the icon. To hide it, use System Settings → Menu Bar.

@@ -23,7 +23,8 @@ import TranscribeKit
         self.dictation = dictation; self.hud = hud; self.settings = settings
     }
 
-    func toggle() {
+    /// `fromMenuBar`: the menu bar's New Recording, whose HUD names no shortcut.
+    func toggle(fromMenuBar: Bool = false) {
         if dictation.isBusy {
             hud.show(DictationHUD.meetingRefusedBusy)
             return
@@ -35,11 +36,11 @@ import TranscribeKit
         case .recording, .paused:
             stop()
         case .idle:
-            start()
+            start(fromMenuBar: fromMenuBar)
         }
     }
 
-    private func start() {
+    private func start(fromMenuBar: Bool) {
         isStarting = true
         env.player.stop()
         Task {
@@ -51,7 +52,8 @@ import TranscribeKit
                     // The main window may be closed, and it is what turns `isRecordingPresented` into a window.
                     opener.open("recording")
                 } else {
-                    hud.show(DictationHUD.meetingStarted(bindings: settings.bindings))
+                    hud.show(fromMenuBar ? MenuBarCopy.recordingStarted
+                                         : DictationHUD.meetingStarted(bindings: settings.bindings))
                 }
             } catch EngineError.microphoneDenied {
                 hud.show(DictationHUD.micDenied)

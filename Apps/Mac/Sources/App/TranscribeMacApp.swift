@@ -157,6 +157,13 @@ import TranscribeMCPHost
                                            shortcuts: shortcuts))
                 .task { updater.startIfNeeded() }
         }
+
+        // The menu bar item: start or stop a recording from any app, open Transcribe or Settings, quit (MacMenuBar).
+        MenuBarExtra {
+            MacMenuBarMenu(env: env, shortcuts: shortcuts)
+        } label: {
+            MacMenuBarLabel(env: env, dictation: shortcuts.dictation)
+        }
     }
 
     /// Debug builds never run the updater, whatever their Info.plist says (D10).
