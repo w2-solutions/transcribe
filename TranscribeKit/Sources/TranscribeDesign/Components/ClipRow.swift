@@ -4,8 +4,8 @@ import TranscribeCore
 public struct ClipRow: View {
     /// Name sheet "Listen" row: 48 tall plainCapsule; 36 pt disc (slot fill, slot-text play icon / pause when playing),
     /// 9 MiniBars (20 tall, slot dot), quote 15 one line truncating, duration mono 13.
-    /// Without local audio (`canPlay` false, a recording synced from another device) the row is a quote: a quote mark
-    /// in the disc, no button.
+    /// Without local audio (`canPlay` false: audio not on this device, because it is not in iCloud, not downloaded yet,
+    /// or not syncing here) the row is a quote: a quote mark in the disc, no button.
     let quote: String
     let duration: TimeInterval
     let slot: Int

@@ -61,16 +61,26 @@ struct TranscriptView: View {
         let state = TranscriptViewState(recording: recording, document: cache.document(recording.transcriptData),
                                         profileNames: profileNames)
         let isProcessingLayout = state.phase == .processing || state.phase == .capturing || completing
+        // Where the audio is (§3.5): here, downloading, in iCloud, or only on the device that recorded it. Reading it
+        // observes audio sync's `revision`, so the player appears when a download lands while this screen is open.
+        let audio = env.audioState(recording)
         Group {
             if isProcessingLayout {
                 processingShell(recording, state)
             } else {
-                ready(recording, state)
+                ready(recording, state, audio: audio)
             }
         }
         .onAppear {
             loadAudio(recording)
             markSeenIfNeeded(recording)
+            // Opening a transcript puts its audio first in line (on the automatic network rules).
+            env.sync?.audio?.transcriptOpened(recordingID)
+        }
+        .onChange(of: audio.canPlay) { _, canPlay in
+            // The download landed while this screen is open. Never cut off another recording that is playing: the
+            // player bar loads this file itself when the user presses play.
+            if canPlay, !env.player.isPlaying { loadAudio(recording) }
         }
         .onDisappear {
             if env.player.loadedURL == audioURL(recording) { env.player.pause() }
@@ -173,18 +183,19 @@ struct TranscriptView: View {
 
     // MARK: Ready / failed (§6.4–§6.6)
 
-    private func ready(_ recording: Recording, _ state: TranscriptViewState) -> some View {
+    private func ready(_ recording: Recording, _ state: TranscriptViewState, audio: RecordingAudioState) -> some View {
         let removeFillers = env.settings.removeFillers
         let hits = isSearching ? state.searchHits(query, removeFillers: removeFillers) : []
         let current = hits.isEmpty ? nil : hits[Swift.min(hitIndex, hits.count - 1)]
         let url = audioURL(recording)
-        // A recording synced from another device has no audio here (§8.5): no player, no clips, no audio to share.
-        let hasAudio = env.store.hasLocalAudio(recording)
+        // Audio not on this device (not in iCloud, not downloaded yet, or not syncing here): no player, no clips, no
+        // audio to share; the banner says where it is and what happens next.
+        let hasAudio = audio.canPlay
         return ScrollViewReader { proxy in
             ScrollView {
                 VStack(alignment: .leading, spacing: 14) {
                     if !hasAudio {
-                        AudioElsewhereBanner(channel: recording.captureChannel)
+                        AudioBanner(state: audio, recordingID: recording.id)
                     }
                     banner(recording, state, hasAudio: hasAudio)
                     TranscriptMetaLine(date: recording.createdAt, duration: recording.duration)
@@ -231,7 +242,7 @@ struct TranscriptView: View {
         .navigationTitle(recording.title ?? "Transcript")
         .navigationSubtitle(DisplayFormat.cardDate(recording.createdAt))
         .inlineNavigationTitle()
-        .toolbar { toolbar(recording, state) }
+        .toolbar { toolbar(recording, state, hasAudio: hasAudio) }
         .alert("Rename recording", isPresented: $isRenaming) {
             TextField("Title", text: $renameText)
                 .inputCapitalization(.sentences)
@@ -253,7 +264,7 @@ struct TranscriptView: View {
     }
 
     @ToolbarContentBuilder
-    private func toolbar(_ recording: Recording, _ state: TranscriptViewState) -> some ToolbarContent {
+    private func toolbar(_ recording: Recording, _ state: TranscriptViewState, hasAudio: Bool) -> some ToolbarContent {
         ToolbarItemGroup(placement: .trailingBar) {
             Button {
                 withAnimation(reduceMotion ? nil : .snappy) {
@@ -272,7 +283,7 @@ struct TranscriptView: View {
                 folderID: recording.folder?.id,
                 folders: folders,
                 shareText: { shareText(recording, state) },
-                audioURL: env.store.hasLocalAudio(recording) ? audioURL(recording) : nil,
+                audioURL: hasAudio ? audioURL(recording) : nil,
                 shareTitle: recording.displayTitle,
                 onRename: {
                     renameText = recording.title ?? ""
@@ -295,7 +306,7 @@ struct TranscriptView: View {
                 Task { await env.coordinator.retry(recordingID) }
             }
         case .noSpeech:
-            NoSpeechCard()
+            NoSpeechCard(canPlay: hasAudio)
         case .ask(let speaker):
             AskBanner(speaker: speaker, detail: askDetail(speaker, recording: recording), canPlay: hasAudio,
                       isPlaying: env.player.playingClipID == askClipID(speaker.key),

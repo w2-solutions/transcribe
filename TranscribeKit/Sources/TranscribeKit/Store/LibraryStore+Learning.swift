@@ -10,23 +10,33 @@ extension LibraryStore {
     /// channel are included. `excludingSpeaker` leaves out samples that speaker fed.
     static func candidate(_ p: VoiceProfile, excludingSpeaker: UUID? = nil, policy: MatchPolicy = .default) -> ProfileCandidate {
         var vectors: [VoiceVector] = [], trusted: [Bool] = [], channels: [String?] = []
+        var ids: [UUID] = [], added: [Int64] = []
         for sample in p.sortedSamples where sample.embeddingModelKey == p.embeddingModelKey {
             if let excludingSpeaker, sample.sourceSpeakerID == excludingSpeaker { continue }
             guard let v = sample.vector else { continue }
             vectors.append(v)
             trusted.append(SampleTrust.isTrusted(origin: sample.origin, speechSeconds: sample.speechSeconds, policy: policy))
             channels.append(sample.captureChannel)
+            ids.append(sample.id)
+            added.append(SyncMillis.millis(sample.addedAt))
         }
         let negatives = sortedNegatives(p).compactMap(\.vector)
+        // Sample ids and dates let the matcher group the samples by sound (decision D3) as the voice screen does.
         return ProfileCandidate(id: p.id, name: p.name, samples: vectors, trusted: trusted, channels: channels,
                                 negatives: negatives, modelKey: p.embeddingModelKey, autoLabel: p.autoLabel,
-                                needsResample: p.needsResample)
+                                needsResample: p.needsResample, sampleIDs: ids, addedAtMillis: added)
     }
 
     /// The capture input of a speaker's recording (`CaptureDetail.input`), copied onto samples and negatives for the
     /// matching log only.
     static func captureInput(of r: Recording?) -> String? {
         CaptureDetail.decode(r?.captureDetailJSON)?.input
+    }
+
+    /// The capture input of a speaker's voice: `systemAudio` for a speaker heard through Mac audio (decision D2: the
+    /// screen titles a group of such samples "Heard through Mac audio"), else its recording's input.
+    static func captureInput(of s: RecordingSpeaker) -> String? {
+        s.source == .system ? CaptureDetail.Input.systemAudio : captureInput(of: s.recording)
     }
 
     /// The profile's negatives on its own model, oldest first (ties by id).
@@ -41,7 +51,8 @@ extension LibraryStore {
     /// apply per channel (D12): the negative is heard on the speaker's recording's channel, and never evicts a
     /// negative from another channel.
     func addNegative(to p: VoiceProfile, from s: RecordingSpeaker) {
-        guard let vector = s.vector, let key = s.embeddingModelKey, key == p.embeddingModelKey,
+        // A voice heard on both streams is not one voice: nothing is learned from it (decision D2).
+        guard s.source != .mixed, let vector = s.vector, let key = s.embeddingModelKey, key == p.embeddingModelKey,
               s.cleanSeconds >= policy.minLearnSeconds else { return }
         let channel = s.recording?.captureChannel
         let existing: [CuratedNegative] = Self.sortedNegatives(p).compactMap { n in
@@ -58,7 +69,7 @@ extension LibraryStore {
         negative.sourceRecordingID = s.recording?.id
         negative.sourceSpeakerID = s.id
         negative.captureChannel = channel
-        negative.captureInput = Self.captureInput(of: s.recording)
+        negative.captureInput = Self.captureInput(of: s)
         negative.profile = p
         deleteNegatives(Set(result.evicted), of: p)
     }
@@ -69,6 +80,7 @@ extension LibraryStore {
                        remember: Bool) -> (stored: Bool, skip: SampleSkipReason?) {
         deleteNegatives(Set(p.negatives.filter { $0.sourceSpeakerID == s.id }.map(\.id)), of: p)
         guard remember else { return (false, .rememberOff) }
+        guard s.source != .mixed else { return (false, .mixedSource) }
         if let vector = s.vector, s.embeddingModelKey == p.embeddingModelKey, s.cleanSeconds >= policy.minLearnSeconds {
             let negatives = Self.sortedNegatives(p).compactMap { n in n.vector.map { (id: n.id, vector: $0) } }
             let conflicting = VoiceMatcher.conflictingNegatives(vector, profile: Self.candidate(p, excludingSpeaker: s.id, policy: policy),
@@ -150,7 +162,8 @@ extension LibraryStore {
             recordingsTaken[channel, default: 0] += 1
             for s in r.sortedSpeakers {
                 guard vectorsTaken[channel, default: 0] < cap else { break }
-                guard s.label == .unnamed || (s.label == .named && s.profile == nil),
+                // A mixed voice (heard on both streams) is left out: it is not one voice.
+                guard s.label == .unnamed || (s.label == .named && s.profile == nil), s.source != .mixed,
                       s.vectorData != nil, s.embeddingModelKey == modelKey,
                       s.cleanSeconds >= policy.minLearnSeconds, let v = s.vector else { continue }
                 cohort.append(v)

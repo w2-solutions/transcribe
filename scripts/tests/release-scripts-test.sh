@@ -5,11 +5,13 @@
 #
 #   scripts/tests/release-scripts-test.sh
 #
-# Sections: lint (bash -n, shellcheck, actionlint); release-mac.sh --print-version; then, on macOS only,
-# ed25519.swift (with a cross-check against Sparkle's sign_update when $DERIVED holds it), sign-mac-release.sh --test
-# and publish-mac.sh --dest dir:, delta updates (make-mac-delta.sh with Sparkle's BinaryDelta when $DERIVED holds it,
-# sign and publish with --delta, fetch-published-mac.sh against a local server); finally release-gate.sh against a local server. On Linux (release-checks.yml) the
-# macOS-only sections are skipped.
+# Sections: lint (bash -n, shellcheck, actionlint, a .DS_Store round trip); release-mac.sh --print-version; the Mac
+# audio privacy string (project.yml everywhere, release-mac.sh --check-info-plist on macOS); then, on macOS only,
+# ed25519.swift (with a cross-check against Sparkle's sign_update when $DERIVED holds it),
+# sign-mac-release.sh --test and publish-mac.sh --dest dir:, delta updates (make-mac-delta.sh with Sparkle's
+# BinaryDelta when $DERIVED holds it, sign and publish with --delta, fetch-published-mac.sh against a local server),
+# make-dmg.sh (a styled DMG from a stub app, mounted and checked); finally release-gate.sh against a local server.
+# On Linux (release-checks.yml) the macOS-only sections are skipped.
 # Exit: 0 all passed; 1 a test failed.
 # shellcheck disable=SC2016  # jq programs and sh -c scripts are single-quoted on purpose
 set -uo pipefail
@@ -19,14 +21,16 @@ cd "$ROOT" || exit 1
 FIXTURES="$ROOT/scripts/tests/fixtures"
 SCRIPTS="scripts/release-mac.sh scripts/sign-mac-release.sh scripts/publish-mac.sh scripts/release-gate.sh
   scripts/make-mac-delta.sh scripts/fetch-published-mac.sh scripts/ci-mac-delta.sh scripts/testflight-gate.sh
-  tools/update-e2e/run.sh"
+  scripts/make-dmg.sh tools/update-e2e/run.sh"
 T="$(mktemp -d "${TMPDIR:-/tmp}/release-scripts-test.XXXXXX")"
 SERVER=""
+DMG_MOUNT=""
 cleanup() {
   if [ -n "$SERVER" ]; then
     kill "$SERVER" 2>/dev/null
     wait "$SERVER" 2>/dev/null
   fi
+  [ -z "$DMG_MOUNT" ] || hdiutil detach -quiet -force "$DMG_MOUNT" 2>/dev/null
   rm -rf "$T"
 }
 trap cleanup EXIT
@@ -102,6 +106,18 @@ expect_rc "actionlint" 0 actionlint .github/workflows/*.yml
 expect_rc "bash -n and shellcheck tools/r2-uploader/upload.sh" 0 sh -c 'bash -n "$1" && shellcheck "$1"' _ tools/r2-uploader/upload.sh
 # Under bash -e a failing $(...) inside echo's arguments is ignored: the output would be written empty.
 expect_rc "no command substitution in an echo to GITHUB_OUTPUT" 1 grep -nE 'echo .*\$\(.*>> *"?\$GITHUB_OUTPUT' .github/workflows/*.yml
+# The .DS_Store writer's file format, without a volume (runs on Linux too): what it writes, it reads back.
+expect_rc "dmg-dsstore.py: a .DS_Store round trip" 0 python3 -I -B -c 'import importlib.util, plistlib, struct, sys
+spec = importlib.util.spec_from_file_location("ds", sys.argv[1]); ds = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(ds)
+recs = [("Transcribe.app", "Iloc", "blob", struct.pack(">IIII", 165, 185, 0xffffffff, 0xffff0000)),
+        (".", "vSrn", "long", 1), ("Applications", "Iloc", "blob", struct.pack(">IIII", 495, 185, 0xffffffff, 0xffff0000)),
+        (".", "bwsp", "blob", plistlib.dumps({"ShowToolbar": False}, fmt=plistlib.FMT_BINARY))]
+data = ds.build_ds_store(recs)
+assert data[:8] == b"\0\0\0\1Bud1" and len(data) == 8196, len(data)
+got = ds.parse_ds_store(data)
+assert got == sorted(recs, key=lambda r: (r[0].lower(), r[1])), got
+assert ds.decode_value("Iloc", "blob", got[2][3]) == {"x": 495, "y": 185}' scripts/dmg-dsstore.py
 if command -v node >/dev/null; then
   expect_rc "tools/r2-uploader/worker.js (node --test)" 0 node --test tools/r2-uploader/worker.test.mjs
 else
@@ -126,6 +142,50 @@ expect_rc "TRANSCRIBE_FEED_URL without a test key is refused" 2 \
   ./scripts/release-mac.sh --print-version
 expect_out "a TEST build honours TRANSCRIBE_TEST_VERSION" "0.3.1 301" \
   env TRANSCRIBE_ED_PUBLIC_KEY="$K" TRANSCRIBE_TEST_VERSION=0.3.1 PROJECT="$P300" ./scripts/release-mac.sh --print-version
+
+# ---------------------------------------------------------------------------------------------------------------
+section "Mac audio privacy string"
+# info_key TARGET KEY: TARGET's block in project.yml has KEY (the Info.plist properties live inside the target).
+info_key() {
+  awk -v target="$1" -v key="$2" '
+    /^  [^ #]/ { t = ($0 ~ ("^  " target ":")) }
+    t && $1 == key ":" { found = 1 }
+    END { exit !found }
+  ' project.yml
+}
+expect_rc "project.yml: TranscribeMac has NSAudioCaptureUsageDescription" 0 info_key TranscribeMac NSAudioCaptureUsageDescription
+expect_rc "project.yml: the iPhone app (no Mac audio) does not" 1 info_key Transcribe NSAudioCaptureUsageDescription
+expect_rc "project.yml: no system-audio entitlement anywhere" 1 grep -rn 'system-audio' project.yml Apps/Mac/TranscribeMac.entitlements \
+  Apps/Mac/TranscribeMac.local.entitlements
+expect_rc "release-mac.sh --check-info-plist needs a file" 2 ./scripts/release-mac.sh --check-info-plist
+if [ "$(uname -s)" = Darwin ]; then
+  # info_plist FILE KEY=VALUE...: a minimal Info.plist with string values ("KEY=" is an empty string).
+  info_plist() {
+    local file="$1" kv
+    shift
+    {
+      printf '<?xml version="1.0" encoding="UTF-8"?>\n<plist version="1.0">\n<dict>\n'
+      for kv in "$@"; do printf '<key>%s</key><string>%s</string>\n' "${kv%%=*}" "${kv#*=}"; done
+      printf '</dict>\n</plist>\n'
+    } >"$file"
+  }
+  info_plist "$T/info-ok.plist" NSMicrophoneUsageDescription=mic NSAudioCaptureUsageDescription="Mac audio"
+  info_plist "$T/info-missing.plist" NSMicrophoneUsageDescription=mic
+  info_plist "$T/info-empty.plist" NSMicrophoneUsageDescription=mic NSAudioCaptureUsageDescription=
+  info_plist "$T/info-nomic.plist" NSAudioCaptureUsageDescription="Mac audio"
+  cp "$T/info-ok.plist" "$T/info-bool.plist"
+  plutil -replace NSAudioCaptureUsageDescription -bool true "$T/info-bool.plist"
+  expect_rc "--check-info-plist accepts both privacy strings" 0 ./scripts/release-mac.sh --check-info-plist "$T/info-ok.plist"
+  expect_rc "--check-info-plist refuses a missing NSAudioCaptureUsageDescription" 1 \
+    ./scripts/release-mac.sh --check-info-plist "$T/info-missing.plist"
+  expect_rc "--check-info-plist refuses an empty NSAudioCaptureUsageDescription" 1 \
+    ./scripts/release-mac.sh --check-info-plist "$T/info-empty.plist"
+  expect_rc "--check-info-plist refuses a NSAudioCaptureUsageDescription that is not a string" 1 \
+    ./scripts/release-mac.sh --check-info-plist "$T/info-bool.plist"
+  expect_rc "--check-info-plist refuses a missing NSMicrophoneUsageDescription" 1 \
+    ./scripts/release-mac.sh --check-info-plist "$T/info-nomic.plist"
+  expect_rc "--check-info-plist refuses a missing file" 1 ./scripts/release-mac.sh --check-info-plist "$T/nothing.plist"
+fi
 
 # ---------------------------------------------------------------------------------------------------------------
 if [ "$(uname -s)" = Darwin ]; then
@@ -464,8 +524,76 @@ if [ "$(uname -s)" = Darwin ]; then
     s3 "$S3B" ./scripts/publish-mac.sh --resume-check "$T/rc-s3/latest.json"
   FAIL_GET=""
   expect_rc "  and leaves no file to sign" 0 test ! -e "$T/rc-s3/latest.json"
+
+  # -------------------------------------------------------------------------------------------------------------
+  section "make-dmg.sh (the styled DMG, from a stub app)"
+  # A stub Transcribe.app (another bundle id) with the real app icon, so the volume gets an icon too.
+  STUB="$T/stub/Transcribe.app"
+  mkdir -p "$STUB/Contents/MacOS" "$STUB/Contents/Resources" "$T/stub/AppIcon.iconset"
+  ICONS=Apps/Mac/Resources/Assets.xcassets/AppIcon.appiconset
+  for pair in 16x16:16 16x16@2x:32 32x32:32 32x32@2x:64 128x128:128 128x128@2x:256 256x256:256 256x256@2x:512 \
+    512x512:512 512x512@2x:1024; do
+    cp "$ICONS/icon_${pair#*:}.png" "$T/stub/AppIcon.iconset/icon_${pair%:*}.png"
+  done
+  iconutil -c icns -o "$STUB/Contents/Resources/AppIcon.icns" "$T/stub/AppIcon.iconset"
+  printf '#!/bin/sh\nexit 0\n' >"$STUB/Contents/MacOS/Transcribe"
+  chmod +x "$STUB/Contents/MacOS/Transcribe"
+  plutil -create xml1 "$STUB/Contents/Info.plist"
+  for kv in CFBundleIdentifier=ai.example.dmg-stub CFBundleExecutable=Transcribe CFBundleIconFile=AppIcon \
+    CFBundlePackageType=APPL; do
+    plutil -insert "${kv%%=*}" -string "${kv#*=}" "$STUB/Contents/Info.plist"
+  done
+  SDMG="$T/styled/Transcribe-TEST.dmg"
+  mkdir -p "$T/styled"
+  expect_rc "make-dmg.sh builds a DMG from the stub" 0 ./scripts/make-dmg.sh "$STUB" "$SDMG"
+  SMNT="$T/styled/mnt"
+  mkdir -p "$SMNT"
+  if hdiutil attach -quiet -readonly -nobrowse -noautoopen -mountpoint "$SMNT" "$SDMG"; then
+    DMG_MOUNT="$SMNT"
+    expect_out "its root holds the app, the link and only hidden helpers" \
+      ".DS_Store .VolumeIcon.icns .background Applications Transcribe.app " sh -c 'LC_ALL=C ls -A "$1" | tr "\n" " "' _ "$SMNT"
+    expect_rc "  the app is the stub" 0 cmp "$STUB/Contents/Info.plist" "$SMNT/Transcribe.app/Contents/Info.plist"
+    expect_out "  Applications links to /Applications" /Applications readlink "$SMNT/Applications"
+    expect_out "  .background and .VolumeIcon.icns are hidden" "hidden hidden" \
+      sh -c 'stat -f %Sf "$1/.background" "$1/.VolumeIcon.icns" | tr "\n" " " | sed "s/ $//"' _ "$SMNT"
+    expect_out "  the volume has the custom-icon flag" "0400" \
+      sh -c 'xattr -px com.apple.FinderInfo "$1" | tr -d " \n" | cut -c 17-20' _ "$SMNT"
+    expect_out "background.tiff holds the 1x and 2x pictures" "660x400 1320x800 " \
+      sh -c 'tiffutil -info "$1" | awk "/Image Width:/ { printf \"%sx%s \", \$3, \$6 }"' _ "$SMNT/.background/background.tiff"
+    expect_rc ".DS_Store parses" 0 sh -c 'python3 -I scripts/dmg-dsstore.py dump "$1" >"$2"' _ "$SMNT/.DS_Store" "$T/styled/ds.json"
+    DS="$T/styled/ds.json"
+    expect "  the window: 660 x 400 of content under a 32-point title bar, no bars" jq -e \
+      '.["."].bwsp | .WindowBounds == "{{240, 320}, {660, 432}}" and ([.ShowToolbar, .ShowSidebar, .ShowStatusBar,
+        .ShowPathbar, .ShowTabView, .ContainerShowSidebar] | all(. == false))' "$DS"
+    expect "  icon view: icons 128, text 13, labels below, a picture background" jq -e \
+      '.["."].icvp | .iconSize == 128 and .textSize == 13 and .labelOnBottom == true and .backgroundType == 2
+        and .arrangeBy == "none"' "$DS"
+    expect "  the app at (165, 185) and Applications at (495, 185)" jq -e \
+      '.["Transcribe.app"].Iloc == {"x": 165, "y": 185} and .Applications.Iloc == {"x": 495, "y": 185}' "$DS"
+    expect "  the background alias names this volume and file" jq -e \
+      --argjson id "$(stat -f %i "$SMNT/.background/background.tiff")" \
+      --argjson vd "$(python3 -I -c 'import os, sys; print(int(os.stat(sys.argv[1]).st_birthtime) + 2082844800)' "$SMNT")" \
+      '.["."].icvp.backgroundImageAlias | .volname == "Transcribe" and .file_id == $id and .voldate == $vd
+        and .tags["18"] == "/.background/background.tiff" and .tags["19"] == "/Volumes/Transcribe"' "$DS"
+    jq -r '.["."].pBBk' "$DS" | xxd -r -p >"$T/styled/bookmark"
+    expect_out "  the background bookmark resolves to the picture" "$(cd "$SMNT/.background" && pwd -P)/background.tiff" \
+      sh -c 'p="$(xcrun swift scripts/dmg-bookmark.swift resolve "$1")" && echo "$(cd "$(dirname "$p")" && pwd -P)/$(basename "$p")"' \
+      _ "$T/styled/bookmark"
+    hdiutil detach -quiet "$SMNT"
+    DMG_MOUNT=""
+  else
+    failed "attach the styled DMG"
+  fi
+  mkdir -p "$T/art-small"
+  sips -z 300 500 Apps/Mac/DMG/background.png --out "$T/art-small/background.png" >/dev/null
+  cp Apps/Mac/DMG/background@2x.png "$T/art-small/"
+  expect_rc "art of the wrong size is refused" 1 ./scripts/make-dmg.sh "$STUB" "$T/styled/small.dmg" --art "$T/art-small"
+  expect_rc "  and nothing is written" 0 test ! -e "$T/styled/small.dmg"
+  expect_rc "missing art is refused" 1 ./scripts/make-dmg.sh "$STUB" "$T/styled/none.dmg" --art "$T/stub"
+  expect_rc "a folder that is not an .app is refused" 1 ./scripts/make-dmg.sh "$T/stub" "$T/styled/x.dmg"
+  expect_rc "no arguments exits 2" 2 ./scripts/make-dmg.sh
 else
-  section "ed25519.swift, sign-mac-release.sh, publish-mac.sh"
+  section "ed25519.swift, sign-mac-release.sh, publish-mac.sh, make-dmg.sh"
   echo "  skip  (macOS only)"
 fi
 

@@ -17,6 +17,7 @@ private struct Card {
     var clipStates: [UUID: SampleClipState] = [:]
     var titles: [UUID: String] = [:]
     var sources: [UUID: UUID] = [:]
+    var inputs: [UUID: String] = [:]
 
     /// A grouped sample of `axis`, one second after the previous sample.
     @discardableResult
@@ -51,7 +52,8 @@ private struct Card {
         VoiceSampleGroups.build(profileID: profileID, sortedSampleIDs: ids,
                                 split: GroupingInput.Split(items: items, ungrouped: ungrouped),
                                 anchors: labels, labelTexts: labelTexts, dimension: SyntheticVoices.dimension,
-                                localChannel: local, clipStates: clipStates, recordingTitles: titles, sampleSource: sources)
+                                localChannel: local, clipStates: clipStates, recordingTitles: titles, sampleSource: sources,
+                                captureInputs: inputs)
     }
 }
 
@@ -213,8 +215,60 @@ struct VoiceSampleGroupsTests {
         card.add(far, 34, channel: CaptureChannel.iphone)
         #expect(card.build().showsNote)
         #expect(VoiceSampleGroups.groupedNote
-                == "Samples that sound alike are grouped. Play one to hear it, and label it if you like.")
+                == "Samples that sound alike are grouped. Each group is recognised on its own, and Transcribe keeps at least one sample from every group.")
         #expect(VoiceSampleGroups.defaultNote == "More samples make recognition more reliable.")
+    }
+}
+
+/// Mac audio (decision D2): call audio stays on the "mac" channel and forms its own sound groups; a group whose samples
+/// were mostly heard through Mac audio says so.
+@Suite("Voice sample groups: groups heard through Mac audio")
+struct VoiceSampleGroupsMacAudioTests {
+    let close = GroupVoices.close, far = GroupVoices.far, speaker = GroupVoices.speaker
+    let mac = CaptureChannel.mac, tap = CaptureDetail.Input.systemAudio
+
+    @Test func aGroupMostlyHeardThroughMacAudioIsMarked() throws {
+        var card = Card()
+        let c0 = card.add(close, 30, channel: mac), c1 = card.add(close, 31, channel: mac)
+        let s0 = card.add(speaker, 36, channel: mac), s1 = card.add(speaker, 37, channel: mac), s2 = card.add(speaker, 38, channel: mac)
+        card.inputs[c0] = CaptureDetail.Input.builtInMic
+        card.inputs[c1] = CaptureDetail.Input.micAndSystem   // a microphone speaker of a Both recording
+        card.inputs[s0] = tap; card.inputs[s1] = tap
+        card.inputs[s2] = CaptureDetail.Input.builtInMic
+        let groups = try #require(card.build(local: mac).channels.first).groups
+        #expect(groups.map(\.sampleIndexes) == [[0, 1], [2, 3, 4]])
+        #expect(groups.map(\.heardThroughMacAudio) == [false, true], "two of three is most")
+        #expect(VoiceSampleGroups.macAudioNote == "Heard through Mac audio")
+    }
+
+    @Test func halfIsNotMost() throws {
+        var card = Card()
+        let a = card.add(speaker, 36, channel: mac)
+        card.add(speaker, 37, channel: mac)
+        card.inputs[a] = tap
+        let group = try #require(card.build(local: mac).channels.first?.groups.first)
+        #expect(!group.heardThroughMacAudio)
+        #expect(!group.showsHeader, "a sole plain group still looks as it did")
+    }
+
+    @Test func aSoleMacAudioGroupShowsItsHeader() throws {
+        var card = Card()
+        let a = card.add(speaker, 36, channel: mac)
+        card.inputs[a] = tap
+        let group = try #require(card.build(local: mac).channels.first?.groups.first)
+        #expect(group.heardThroughMacAudio && group.showsHeader, "the note needs the header")
+        #expect(group.title == "Group 1" && !group.isLabelled, "a label stays the user's: the note never retitles")
+    }
+
+    @Test func inputsChangeNoGrouping() {
+        var card = Card()
+        let ids = [card.add(close, 30, channel: mac), card.add(far, 33, channel: mac), card.add(close, 31, channel: mac)]
+        let before = card.build(local: mac)
+        for id in ids { card.inputs[id] = tap }
+        let after = card.build(local: mac)
+        #expect(before.channels.map { $0.groups.map(\.ref) } == after.channels.map { $0.groups.map(\.ref) })
+        let marked = after.channels.flatMap(\.groups).map(\.heardThroughMacAudio)
+        #expect(!marked.isEmpty && !marked.contains(false))
     }
 }
 
@@ -277,5 +331,77 @@ struct VoiceSampleGroupsProfileTests {
         let close = try #require(view.channels.first?.groups.first)
         #expect(close.playSampleID == sample.id && close.subtitle == "From \u{201C}Standup\u{201D}")
         #expect(view.clipStates[sample.id] == playable)
+    }
+
+    /// With audio sync, a sample whose recording's audio is in iCloud or downloading says so, and its group plays once
+    /// the recording's copy lands (audio sync §5.2).
+    @Test func aGroupPlaysOnceItsRecordingsCopyLands() throws {
+        let h = try WP3Harness()
+        defer { h.cleanup() }
+        let tom = try h.tom()
+        let id = UUID()
+        let recording = Recording(id: id, createdAt: Seeds.Dates.c, audioFileName: h.paths.newAudioFileName(for: id),
+                                  source: .microphone)
+        recording.captureChannel = CaptureChannel.mac
+        h.context.insert(recording)
+        let sample = tom.close[0]
+        sample.sourceRecordingID = id
+        sample.clipStart = 10.8
+        sample.clipEnd = 14.8
+        try h.context.save()
+        let byID = [id: recording]
+        var state: RecordingAudioState = .inICloud(bytes: 14_000_000, wait: .network)
+        let build = {
+            VoiceSampleGroups.build(profile: tom.profile, recordingsByID: byID, localChannel: h.store.localChannel,
+                                    paths: h.paths, audioState: { byID[$0] == nil ? nil : state })
+        }
+
+        // In iCloud, not downloaded: no play button, and the row says where the audio is.
+        var view = build()
+        var close = try #require(view.channels.first?.groups.first)
+        #expect(view.clipStates[sample.id] == .audioInICloud && close.playSampleID == nil)
+        #expect(VoiceSampleGroups.clipState(sample, recordingsByID: byID, paths: h.paths, audioState: { _ in state })
+                == .audioInICloud)
+        state = .downloading(fraction: 0.5)
+        #expect(build().clipStates[sample.id] == .audioDownloading)
+        state = .notInICloud(channel: CaptureChannel.mac)
+        #expect(build().clipStates[sample.id] == .audioElsewhere(channel: CaptureChannel.mac))
+
+        // The copy lands: the row points at it and the group plays it.
+        let landed = id.uuidString + ".m4a"
+        try Data([0]).write(to: h.paths.audioURL(fileName: landed))
+        recording.audioFileName = landed
+        try h.context.save()
+        state = .local
+        view = build()
+        close = try #require(view.channels.first?.groups.first)
+        let playable = SampleClipState.playable(fileName: landed, range: TimeRange(start: 10.8, end: 14.8))
+        #expect(view.clipStates[sample.id] == playable && close.playSampleID == sample.id)
+    }
+
+    /// Without an audio state (no audio sync), every result is what it was before audio sync.
+    @Test func noAudioStateKeepsTheOldResults() throws {
+        let h = try WP3Harness()
+        defer { h.cleanup() }
+        let tom = try h.tom()
+        let id = UUID()
+        let recording = Recording(id: id, createdAt: Seeds.Dates.c, audioFileName: h.paths.newAudioFileName(for: id),
+                                  source: .microphone)
+        recording.captureChannel = CaptureChannel.ipad
+        h.context.insert(recording)
+        let sample = tom.close[0]
+        sample.sourceRecordingID = id
+        sample.clipStart = 1
+        sample.clipEnd = 4
+        try h.context.save()
+        let byID = [id: recording]
+        let plain = VoiceSampleGroups.build(profile: tom.profile, recordingsByID: byID, localChannel: h.store.localChannel,
+                                            paths: h.paths)
+        let none = VoiceSampleGroups.build(profile: tom.profile, recordingsByID: byID, localChannel: h.store.localChannel,
+                                           paths: h.paths, audioState: { _ in nil })
+        #expect(plain == none)
+        #expect(plain.clipStates[sample.id] == .audioElsewhere(channel: CaptureChannel.ipad))
+        #expect(VoiceSampleGroups.clipState(sample, recordingsByID: byID, paths: h.paths)
+                == .audioElsewhere(channel: CaptureChannel.ipad))
     }
 }

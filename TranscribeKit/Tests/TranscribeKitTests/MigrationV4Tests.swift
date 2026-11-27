@@ -6,11 +6,12 @@ import TranscribeCore
 @testable import TranscribeFakes
 @testable import TranscribeKit
 
-/// Opens the committed V3 library (`Fixtures/V3Library`, written by `V3FixtureWriter`; 0.3.x runs V3 on the iPhone and
-/// the Mac), the V2 library and the V1 library under schema V4. Nothing may be lost, the sync state must come through
-/// byte for byte so the upgrade sends nothing, there are no group labels yet, and the one-time pre-V4 backup is taken
-/// exactly once.
-@Suite("Store migration to V4")
+/// Opens the committed V3 library (`Fixtures/V3Library`, written by `V3FixtureWriter`; 0.3.0 to 0.3.2 run V3 on the
+/// iPhone and the Mac), the V2 library and the V1 library under the current schema, through V4. Nothing may be lost,
+/// the sync state must come through byte for byte so the upgrade sends nothing, there are no group labels yet, and
+/// the one-time backup is taken exactly once. The current version's own checks (the marker, a fresh install) are in
+/// `MigrationV5Tests`.
+@Suite("Store migration through V4")
 @MainActor
 struct MigrationV4Tests {
     typealias Manifest = V3FixtureWriter.Manifest
@@ -49,7 +50,7 @@ struct MigrationV4Tests {
             let container = try ModelContainerFactory.make(inMemory: false, url: storeURL)
             let context = container.mainContext
 
-            // Every manifest row round-trips through the current (V4) types, sync rows and account included.
+            // Every manifest row round-trips through the current types, sync rows and account included.
             let readBack = try Self.manifest(context)
             #expect(readBack.counts == expected.counts)
             #expect(readBack.stages == expected.stages)
@@ -78,16 +79,16 @@ struct MigrationV4Tests {
             #expect(try store(context, root: root).stampCaptureChannels() == 0)
         }
 
-        // The store on disk is now a V4 store, and reopening it changes nothing.
-        #expect(try MigrationTests.versionHashes(at: storeURL) == (try Self.v4VersionHashes()))
+        // The store on disk is now a store of the current schema, and reopening it changes nothing.
+        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV5Tests.v5VersionHashes()))
         let reopened = try ModelContainerFactory.make(inMemory: false, url: storeURL)
         let again = try Self.manifest(reopened.mainContext)
         #expect(again.syncRecords == expected.syncRecords && again.samples == expected.samples)
         #expect(again.recordings == expected.recordings && again.speakers == expected.speakers)
     }
 
-    /// Trap T1: V4 adds no synced field, so every record's projected hashes still equal the base hashes the V3 build
-    /// agreed with the server. A full scan right after the upgrade queues only what was already pending.
+    /// Trap T1: V4 and V5 add no synced value a V3 record holds, so every record's projected hashes still equal the
+    /// base hashes the V3 build agreed with the server. A full scan right after the upgrade queues only what was already pending.
     @Test func upgradeQueuesNothingToSync() async throws {
         let (root, storeURL, _) = try copyV3Fixture()
         defer { try? FileManager.default.removeItem(at: root) }
@@ -130,13 +131,14 @@ struct MigrationV4Tests {
         }
     }
 
-    @Test func onDiskHashesAreV4() throws {
+    @Test func v4AddsOnlyTheLabelEntity() throws {
         let (root, storeURL, _) = try copyV3Fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         do { _ = try ModelContainerFactory.make(inMemory: false, url: storeURL) }
-        let hashes = try MigrationTests.versionHashes(at: storeURL)
+        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV5Tests.v5VersionHashes()))
+        // The frozen V4 schema against the frozen V3 schema.
+        let hashes = try Self.v4VersionHashes()
         let v3 = try V3FixtureWriter.v3VersionHashes()
-        #expect(hashes == (try Self.v4VersionHashes()))
         #expect(Set(hashes.keys) == Set(v3.keys).union(["VoiceGroupLabel"]))
         // Only the profile (a new relationship) changed shape; every other V3 entity is exactly as it was.
         for (entity, hash) in v3 where entity != "VoiceProfile" { #expect(hashes[entity] == hash, "\(entity)") }
@@ -158,7 +160,7 @@ struct MigrationV4Tests {
             #expect(try context.fetch(FetchDescriptor<VoiceProfile>()).allSatisfy { $0.groupLabels.isEmpty })
             #expect(try context.fetchCount(FetchDescriptor<SyncRecordState>()) == 0)
         }
-        #expect(try MigrationTests.versionHashes(at: storeURL) == (try Self.v4VersionHashes()))
+        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV5Tests.v5VersionHashes()))
     }
 
     @Test func v1ToV4() throws {
@@ -173,12 +175,13 @@ struct MigrationV4Tests {
             #expect(try context.fetchCount(FetchDescriptor<VoiceGroupLabel>()) == 0)
             #expect(try context.fetch(FetchDescriptor<VoiceProfile>()).allSatisfy { $0.groupLabels.isEmpty })
         }
-        #expect(try MigrationTests.versionHashes(at: storeURL) == (try Self.v4VersionHashes()))
+        #expect(try MigrationTests.versionHashes(at: storeURL) == (try MigrationV5Tests.v5VersionHashes()))
     }
 
     // MARK: Backup and marker
 
-    @Test func backupOnceAndMarkerV4() throws {
+    /// A V3 store (a device that never ran a V4 build) is backed up once, as the current version's backup.
+    @Test func v3BackupIsTakenOnceBeforeTheFirstOpen() throws {
         let (root, storeURL, _) = try copyV3Fixture()
         defer { try? FileManager.default.removeItem(at: root) }
         let fm = FileManager.default
@@ -193,8 +196,9 @@ struct MigrationV4Tests {
 
         let backup = ModelContainerFactory.backupURL(storeURL: storeURL)
         let marker = ModelContainerFactory.markerURL(storeURL: storeURL)
-        #expect(backup.lastPathComponent == "Library.pre-v4-backup.store" && marker.lastPathComponent == "Library.schema-v4")
-        #expect(ModelContainerFactory.currentVersion == 4)
+        let current = ModelContainerFactory.currentVersion
+        #expect(backup.lastPathComponent == "Library.pre-v\(current)-backup.store" && marker.lastPathComponent == "Library.schema-v\(current)")
+        #expect(!fm.fileExists(atPath: root.appendingPathComponent("Library.schema-v4").path))
         #expect(!fm.fileExists(atPath: backup.path) && !fm.fileExists(atPath: marker.path))
 
         do {
@@ -206,10 +210,10 @@ struct MigrationV4Tests {
         #expect(fm.fileExists(atPath: ModelContainerFactory.backupURL(storeURL: storeURL, suffix: "-shm").path))
         // The backup is the V3 store as it was, still openable by a V3 build.
         #expect(try MigrationTests.versionHashes(at: backup) == (try V3FixtureWriter.v3VersionHashes()))
-        #expect(try String(contentsOf: marker, encoding: .utf8) == "4.0.0\n")
+        #expect(try String(contentsOf: marker, encoding: .utf8) == "\(current).0.0\n")
         let backupAfterFirst = try Data(contentsOf: backup)
 
-        // Opening again (now a V4 store) takes no new backup.
+        // Opening again (now a store of the current schema) takes no new backup.
         do {
             let container = try ModelContainerFactory.make(inMemory: false, url: storeURL)
             #expect(try container.mainContext.fetchCount(FetchDescriptor<Recording>()) == 3)
@@ -217,19 +221,6 @@ struct MigrationV4Tests {
         #expect(try Data(contentsOf: backup) == backupAfterFirst)
         #expect(fm.fileExists(atPath: marker.path))
         for (name, bytes) in leftAlone { #expect(try Data(contentsOf: root.appendingPathComponent(name)) == bytes, "\(name)") }
-    }
-
-    @Test func freshInstallTakesNoBackup() throws {
-        let fm = FileManager.default
-        let root = fm.temporaryDirectory.appendingPathComponent("v4-fresh-\(UUID().uuidString)", isDirectory: true)
-        defer { try? fm.removeItem(at: root) }
-        let paths = AppPaths(root: root)
-        try paths.prepare()
-        do { _ = try ModelContainerFactory.make(inMemory: false, url: paths.storeURL) }
-        #expect(try String(contentsOf: ModelContainerFactory.markerURL(storeURL: paths.storeURL), encoding: .utf8) == "4.0.0\n")
-        #expect(!fm.fileExists(atPath: ModelContainerFactory.backupURL(storeURL: paths.storeURL).path))
-        #expect(!fm.fileExists(atPath: ModelContainerFactory.backupURL(storeURL: paths.storeURL, suffix: "-wal").path))
-        #expect(try MigrationTests.versionHashes(at: paths.storeURL) == (try Self.v4VersionHashes()))
     }
 
     // MARK: The new entity
@@ -297,7 +288,7 @@ struct MigrationV4Tests {
 
     // MARK: Manifest read with the current types
 
-    /// The same rows `V3FixtureWriter.readManifest` reads with the V3 types, read through the current (V4) aliases.
+    /// The same rows `V3FixtureWriter.readManifest` reads with the V3 types, read through the current aliases.
     static func manifest(_ context: ModelContext) throws -> Manifest {
         let recordings = try context.fetch(FetchDescriptor<Recording>()).sorted { $0.id.uuidString < $1.id.uuidString }
         let speakers = try context.fetch(FetchDescriptor<RecordingSpeaker>()).sorted { $0.id.uuidString < $1.id.uuidString }

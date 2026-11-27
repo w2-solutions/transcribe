@@ -10,6 +10,8 @@ struct MacRootView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(Router.self) private var router
     @Environment(MacSelection.self) private var selection
+    @Environment(MacWindowOpener.self) private var opener
+    @Environment(MacShortcuts.self) private var shortcuts
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openSettings) private var openSettings
@@ -18,10 +20,19 @@ struct MacRootView: View {
     @State private var isImporterPresented = false
     @State private var isShowingMicDenied = false
     @State private var importAfterMicSheet = false
+    /// The microphone was denied while recording both: the sheet also offers to record Mac audio only.
+    @State private var micDeniedDuringBoth = false
+    @State private var macAudioAfterMicSheet = false
+    /// The sources waiting for the Mac audio explainer's Continue (first use of Mac audio on this Mac).
+    @State private var explainerSources: CaptureSources?
     @State private var isStarting = false
     @State private var alert: MacAlert?
 
     private struct MacAlert: Identifiable { let id = UUID(); let title: String; let message: String }
+    private struct ExplainerRequest: Identifiable {
+        let sources: CaptureSources
+        var id: String { sources.rawValue }
+    }
 
     var body: some View {
         @Bindable var router = router
@@ -52,8 +63,25 @@ struct MacRootView: View {
         }
         .sheet(isPresented: $isShowingMicDenied, onDismiss: {
             if importAfterMicSheet { importAfterMicSheet = false; isImporterPresented = true }
+            if macAudioAfterMicSheet {
+                macAudioAfterMicSheet = false
+                env.settings.recordingSource = .macAudio
+                startRecording(sources: .macAudio)
+            }
         }) {
-            MicDeniedSheet { importAfterMicSheet = true }.sheetSizing(minWidth: 480, minHeight: 360)
+            MicDeniedSheet(onImportInstead: { importAfterMicSheet = true },
+                           onMacAudioOnly: micDeniedDuringBoth ? { macAudioAfterMicSheet = true } : nil)
+                .sheetSizing(minWidth: 480, minHeight: 360)
+        }
+        .sheet(item: Binding(get: { explainerSources.map(ExplainerRequest.init) },
+                             set: { if $0 == nil { explainerSources = nil } })) { request in
+            MacAudioExplainerSheet(
+                onContinue: {
+                    env.settings.macAudioExplained = true
+                    explainerSources = nil
+                    startRecording(sources: request.sources)
+                },
+                onCancel: { explainerSources = nil })
         }
         .fileImporter(isPresented: $isImporterPresented, allowedContentTypes: [.audio, .movie],
                       allowsMultipleSelection: true) { result in
@@ -80,6 +108,10 @@ struct MacRootView: View {
         } message: { stop in
             Text(RecordingStatus.systemStopMessage(stop.reason))
         }
+        .onAppear { opener.fill(open: openWindow, dismiss: dismissWindow, settings: openSettings) }
+        #if DEBUG
+        .background { lastDeliveredProbe }
+        #endif
         .modifier(AutoCopyObserver())
         .modifier(GoneModelObserver())
         .syncPrompts()
@@ -103,6 +135,12 @@ struct MacRootView: View {
             selection.recordRequested = false
             record()
         }
+        // File → Record From: the chosen source, already saved as this Mac's setting.
+        .onChange(of: selection.recordSourceRequest, initial: true) { _, source in
+            guard let source else { return }
+            selection.recordSourceRequest = nil
+            startRecording(sources: source)
+        }
         .task {
             await env.onLaunch()
             if let route = env.config.route {
@@ -111,6 +149,20 @@ struct MacRootView: View {
             }
         }
     }
+
+    #if DEBUG
+    /// Simulated shortcuts only: the text the last dictation delivered, as a hidden element's value, so UI tests never
+    /// read a pasteboard.
+    @ViewBuilder private var lastDeliveredProbe: some View {
+        if let output = shortcuts.simulatedOutput {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityIdentifier(AX.Dictation.lastDelivered)
+                .accessibilityValue(output.lastDelivered)
+        }
+    }
+    #endif
 
     // MARK: Columns
 
@@ -214,25 +266,64 @@ struct MacRootView: View {
             Button("Import Audio…", systemImage: "square.and.arrow.down") { isImporterPresented = true }
                 .help("Import an audio file")
                 .accessibilityIdentifier(AX.Mac.toolbarImport)
-            Button("New Recording", systemImage: "record.circle") { record() }
-                .help("Start a new recording")
-                .accessibilityIdentifier(AX.Mac.toolbarRecord)
+            if env.macAudioAvailable {
+                // A click records with the current source; the menu picks another (and remembers it).
+                Menu {
+                    Section(RecordingSourceCopy.recordFromTitle) {
+                        ForEach(CaptureSources.allCases, id: \.self) { source in
+                            Toggle(isOn: Binding(get: { env.settings.recordingSource == source },
+                                                 set: { if $0 { pick(source) } })) {
+                                Label(RecordingSourceCopy.title(source), systemImage: RecordingSourceCopy.symbol(source))
+                            }
+                            .accessibilityIdentifier(AX.Mac.toolbarRecordSource(source.rawValue))
+                        }
+                    }
+                    .disabled(env.recorder.isActive)
+                } label: {
+                    Label("New Recording", systemImage: "record.circle")
+                } primaryAction: {
+                    record()
+                }
+                .help("Start a new recording (\(RecordingSourceCopy.title(env.recordingSource)))")
+                .accessibilityIdentifier(AX.Mac.toolbarRecordSourceMenu)
+            } else {
+                Button("New Recording", systemImage: "record.circle") { record() }
+                    .help("Start a new recording")
+                    .accessibilityIdentifier(AX.Mac.toolbarRecord)
+            }
         }
+    }
+
+    /// Chooses a source from the toolbar menu: remembered as this Mac's setting, then recorded with.
+    private func pick(_ source: CaptureSources) {
+        guard !env.recorder.isActive else { return }
+        env.settings.recordingSource = source
+        startRecording(sources: source)
     }
 
     // MARK: Actions
 
-    private func record() {
+    /// New Recording (toolbar, sidebar, ⌘N, an empty list): records with this Mac's current source.
+    private func record() { startRecording(sources: env.recordingSource) }
+
+    /// Starts a recording of `sources`. The first recording of Mac audio on this Mac shows the explainer first (macOS
+    /// then asks for access itself).
+    private func startRecording(sources: CaptureSources) {
         if env.recorder.isActive { router.presentRecording(); return }
         guard !isStarting else { return }
+        if sources.includesSystemAudio && !env.settings.macAudioExplained {
+            explainerSources = sources
+            return
+        }
         isStarting = true
         env.player.stop()
         Task {
             defer { isStarting = false }
             do {
-                try await env.recorder.start()
+                try await env.recorder.start(sources: sources)
                 router.isRecordingPresented = true
             } catch EngineError.microphoneDenied {
+                micDeniedDuringBoth = sources == .both
                 isShowingMicDenied = true
             } catch {
                 alert = MacAlert(title: "Can't record", message: LibraryErrors.message(for: error))

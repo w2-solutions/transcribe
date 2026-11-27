@@ -43,8 +43,12 @@ struct NameSpeakerSheet: View {
 
     private var audioURL: URL? { recording.map { env.paths.audioURL(fileName: $0.audioFileName) } }
 
-    /// Without local audio (a recording synced from another device) the listen clips are quotes (§8.5).
-    private var hasLocalAudio: Bool { recording.map(env.store.hasLocalAudio) ?? false }
+    /// Without local audio (not in iCloud, not downloaded yet, or not syncing here) the listen clips are quotes (§8.5).
+    /// Reads audio sync's `revision`, so the clips become playable when a download lands while the sheet is open.
+    private var hasLocalAudio: Bool {
+        _ = env.sync?.audio?.revision
+        return recording.map(env.store.hasLocalAudio) ?? false
+    }
 
     private func makeModel() -> NameSpeakerModel? {
         guard let recording else { return nil }
@@ -106,6 +110,22 @@ private struct NameSpeakerForm: View {
                 }
                 if model.showsRemember {
                     rememberCard.padding(.top, 14)
+                }
+                if let note = model.notLearnedNote {
+                    // Heard on both the microphone and Mac audio: named, but not learned from this recording.
+                    Label {
+                        Text(note).fixedSize(horizontal: false, vertical: true)
+                    } icon: {
+                        Image(systemName: RecordingSourceCopy.heardThroughMacAudioSymbol)
+                    }
+                    .scaledFont(size: 14, relativeTo: .subheadline)
+                    .foregroundStyle(DS.Colour.secondary)
+                    .padding(.top, 14)
+                    .padding(.leading, 2)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel(note)
+                    .accessibilityValue(note)
+                    .accessibilityIdentifier(AX.NameSpeaker.notLearned)
                 }
             }
             .padding(.horizontal, 20)

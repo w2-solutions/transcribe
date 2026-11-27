@@ -5,16 +5,30 @@ public enum SeedName: String, Sendable, CaseIterable {
     case shortKaran        // library + G: an unnamed 6.2 s voice that is Karan in another setting
     case karanFromIPhone   // library, with Karan's samples and his source recordings heard on an iPhone (§7)
     case voiceGroups       // library + Tom: three sound groups on this device, one on an iPad, a saved label
+    case voiceGroupsCalls  // voiceGroups + a Teams call recorded with Mac audio: Tom's call group, labelled "Teams"
 }
 public enum FakeScriptName: String, Sendable, CaseIterable {
     case newVoices, knownVoices, askKaran, noSpeech, failSeparation, holdAtSeparating
     case longTalk          // 90 s of unbroken speech: fills the live transcript on the recording screen
+    case callVoices        // a call: Liam on the microphone, Karan through Mac audio, and a voice heard on both
 }
 /// A fake sync scenario for UI tests (`TRANSCRIBE_SYNC=fake:<scenario>`, §8.6). UI tests never touch CloudKit.
 public enum FakeSyncScenario: String, Sendable, CaseIterable {
-    case fresh, remoteLibrary, signedOut, accountSwitched, zoneRemoved, duplicateKaran, massDelete
+    case fresh, remoteLibrary
+    /// `remoteLibrary` with the iPhone's audio in iCloud too: each recording's blob and its marker.
+    case remoteLibraryWithAudio
+    case signedOut, accountSwitched, zoneRemoved, duplicateKaran, massDelete
+}
+/// The network a fake-engine or UI-test run pretends to be on (`TRANSCRIBE_NETWORK`), for audio sync's network rules.
+public enum FakeNetwork: String, Sendable {
+    case wifi, cellular, lowData, offline
 }
 public enum FakeSpeed: String, Sendable, CaseIterable { case instant, demo, frozen }
+/// How Mac audio behaves in a fake-engine recording (`TRANSCRIBE_MAC_AUDIO`): it records (`granted`), delivers only
+/// silence so the "No sound from Mac audio" notice comes after 5 s (`silent`, as when access is off), stops after 3 s
+/// (`lost`: a notice in a Both recording, a pause when Mac audio is all there is), or does not exist (`unavailable`,
+/// as on an iPhone).
+public enum FakeMacAudio: String, Sendable, CaseIterable { case granted, silent, lost, unavailable }
 public enum FakeModelState: String, Sendable, CaseIterable { case installed, missing }
 
 public enum LaunchRoute: Sendable, Equatable {
@@ -57,6 +71,12 @@ public struct LaunchConfig: Sendable, Equatable {
     public static let envMCPAutoAllow = "TRANSCRIBE_MCP_AUTO_ALLOW" // on (fake engine and UI tests only)
     public static let envMCPTestPort = "TRANSCRIBE_MCP_TEST_PORT"  // 1–65535
     public static let envUpdateAvailable = "TRANSCRIBE_UPDATE_AVAILABLE" // a version, e.g. 9.9.9 (fake engine and UI tests only)
+    public static let envSource = "TRANSCRIBE_SOURCE"              // microphone | both | macAudio (fake engine and UI tests only)
+    public static let envMacAudio = "TRANSCRIBE_MAC_AUDIO"         // granted | silent | lost | unavailable (fake engine only)
+    public static let envNetwork = "TRANSCRIBE_NETWORK"    // wifi | cellular | lowData | offline (fake engine and UI tests only)
+    public static let envSyncAudio = "TRANSCRIBE_SYNC_AUDIO"  // "off": the switch starts off; "intro": the one-time
+                                                              // notice may show (fake engine and UI tests only)
+    public static let envShortcuts = "TRANSCRIBE_SHORTCUTS"        // sim (fake engine and UI tests only)
 
     public var useFakeEngine: Bool
     public var uiTesting: Bool
@@ -83,6 +103,27 @@ public struct LaunchConfig: Sendable, Equatable {
     /// (`TRANSCRIBE_UPDATE_AVAILABLE=9.9.9`, digits and dots). Read only with the fake engine or `-uiTesting`, like
     /// `channel`; the Mac app honours it only in DEBUG builds, never starts Sparkle for it and never saves it.
     public var updateAvailable: String?
+    /// What to record from (`TRANSCRIBE_SOURCE`), as if picked in Settings → Recording; nil leaves the saved choice.
+    /// Read only with the fake engine or `-uiTesting`, like `channel`; the app applies it only in UI tests, whose
+    /// settings are a fresh suite of their own, so it never changes this Mac's defaults.
+    public var source: CaptureSources?
+    /// How the fake engine's Mac audio behaves (`TRANSCRIBE_MAC_AUDIO`; default `granted`). Read only with the fake
+    /// engine or `-uiTesting`; the real engine ignores it.
+    public var macAudio: FakeMacAudio
+    /// The network audio sync sees (`TRANSCRIBE_NETWORK`); nil = the real one. Read only with the fake engine or
+    /// `-uiTesting`, like `channel`.
+    public var network: FakeNetwork?
+    /// "Sync audio" starts off for this run (`TRANSCRIBE_SYNC_AUDIO=off`). Read only with the fake engine or
+    /// `-uiTesting`, like `channel`.
+    public var syncAudioOff: Bool
+    /// The one-time "Audio now syncs with iCloud" notice may show in this run (`TRANSCRIBE_SYNC_AUDIO=intro`), for the
+    /// notice's UI tests. Read only with the fake engine or `-uiTesting`, like `channel`.
+    public var syncAudioIntro: Bool
+    /// The Mac's global shortcuts simulated for this session (`TRANSCRIBE_SHORTCUTS=sim`): a Shortcut Simulation menu
+    /// stands in for the keys. Read only with the fake engine or `-uiTesting`, like `channel`, and never saved; the Mac
+    /// app honours it only in DEBUG builds. A simulated session never registers system shortcuts, never posts events
+    /// and never touches the general pasteboard.
+    public var shortcutSimulation: Bool
 
     public init(arguments: [String], environment: [String: String]) {
         useFakeEngine = arguments.contains(Self.argUseFakeEngine) || environment["TRANSCRIBE_ENGINE"] == "fake"
@@ -102,6 +143,19 @@ public struct LaunchConfig: Sendable, Equatable {
         mcpAutoAllow = testRun && Self.isOn(environment[Self.envMCPAutoAllow])
         mcpTestPort = testRun ? environment[Self.envMCPTestPort].flatMap { UInt16($0) }.flatMap { $0 == 0 ? nil : $0 } : nil
         updateAvailable = testRun ? Self.parseVersion(environment[Self.envUpdateAvailable]) : nil
+        network = testRun ? environment[Self.envNetwork].flatMap {
+            FakeNetwork(rawValue: $0.trimmingCharacters(in: .whitespaces))
+        } : nil
+        let syncAudio = environment[Self.envSyncAudio]?.trimmingCharacters(in: .whitespaces).lowercased()
+        syncAudioOff = testRun && syncAudio == "off"
+        syncAudioIntro = testRun && syncAudio == "intro"
+        shortcutSimulation = testRun && environment[Self.envShortcuts]?.trimmingCharacters(in: .whitespaces).lowercased() == "sim"
+        source = testRun ? Self.trimmed(environment[Self.envSource]).flatMap(CaptureSources.init(rawValue:)) : nil
+        macAudio = (testRun ? Self.trimmed(environment[Self.envMacAudio]).flatMap(FakeMacAudio.init(rawValue:)) : nil) ?? .granted
+    }
+    /// The value with spaces around it removed; nil when absent.
+    private static func trimmed(_ raw: String?) -> String? {
+        raw?.trimmingCharacters(in: .whitespaces)
     }
     /// "1.2.3": digits and dots, starting and ending with a digit; anything else → nil.
     private static func parseVersion(_ raw: String?) -> String? {

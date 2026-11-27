@@ -21,6 +21,9 @@ public final class SyncCoordinator {
     public private(set) var heldDeleteCount = 0
     /// The last failed fetch or send, or records the server did not take; cleared by a sync round that goes through.
     public private(set) var lastError: SyncProblem?
+    /// Audio sync (§3.5); nil without `AudioSyncDependencies`. A `var` set after phase-one initialisation (a `let`
+    /// cannot take `self`); `AudioSync` holds the coordinator weakly, so there is no retain cycle.
+    public private(set) var audio: AudioSync?
 
     @ObservationIgnored let store: LibraryStore
     @ObservationIgnored let transport: any SyncTransport
@@ -59,6 +62,8 @@ public final class SyncCoordinator {
     @ObservationIgnored private var refreshing = false
     /// `start` or `enable` is between its first await and running: a refresh then would start sync a second time.
     @ObservationIgnored private var starting = false
+    /// A fetch succeeded since the last `clearSyncState()` (or launch): the server-truth orphan sweep needs one.
+    @ObservationIgnored private(set) var fetchSucceededSinceReset = false
     /// Counts `noteProblem` calls, so a round can tell whether it went through.
     @ObservationIgnored private var problemCount = 0
     /// Hashes of the projection handed to the transport, by record name, until its send result arrives.
@@ -79,7 +84,9 @@ public final class SyncCoordinator {
     }
 
     /// `modelKey`: this build's embedding model key, used only to notice another device on a different build.
-    public init(store: LibraryStore, transport: any SyncTransport, settings: AppSettings, clock: AppClock, modelKey: String?) {
+    /// `audio`: with dependencies, audio sync runs beside the record sync (`audio`); without, there is no `AudioSync`.
+    public init(store: LibraryStore, transport: any SyncTransport, settings: AppSettings, clock: AppClock, modelKey: String?,
+                audio: AudioSyncDependencies? = nil) {
         self.store = store
         self.transport = transport
         self.settings = settings
@@ -95,6 +102,9 @@ public final class SyncCoordinator {
             status = .idle(lastSync: Self.accountRow(store.context, create: false)?.lastSendAt)
         }
         detector.onCollected = { [weak self] in self?.scheduleFlush() }
+        if let audio {
+            self.audio = AudioSync(store: store, settings: settings, clock: clock, dependencies: audio, coordinator: self)
+        }
     }
 
     var context: ModelContext { store.context }
@@ -139,6 +149,9 @@ public final class SyncCoordinator {
     public func enable() async {
         guard !crashed else { return }
         settings.syncEnabled = true
+        // Turning sync on says audio syncs (the explanation under the switch), so the one-time notice for existing
+        // sync users is never needed after it (decision 24). A coordinator without audio sync has nothing to say.
+        if audio != nil { settings.syncAudioIntroShown = true }
         starting = true
         defer { starting = false }
         ensureEventLoop()
@@ -172,11 +185,35 @@ public final class SyncCoordinator {
     /// The zone is deleted only on the Apple Account this library synced with. Signed in to another account (paused
     /// for an account change), signed out, or after the copy was removed elsewhere, "remove" only forgets this
     /// device's sync state: the zone of whoever is signed in now belongs to that account's devices.
+    ///
+    /// With audio sync, removing the copy first deletes the audio from iCloud (after the transfer in flight has ended);
+    /// if that fails, it throws and the zone, the sync state and the switch stay as they were, and this device
+    /// uploads no audio until a removal succeeds or the app relaunches.
     public func disable(removeCloudCopy: Bool) async throws {
+        var removedAudio = false
         if removeCloudCopy, await ownsSignedInZone() {
+            if let audio {
+                audio.beginRemoval()
+                await audio.stopAndWait()
+                do {
+                    try await audio.removeAllFromICloud()
+                } catch {
+                    audio.endRemoval(failed: true)
+                    throw error
+                }
+                removedAudio = true
+            }
             deletedZoneItself = true
             if !running { await transport.start(state: account.engineState, provider: provider) }
-            try await transport.deleteZone()
+            do {
+                try await transport.deleteZone()
+            } catch {
+                if removedAudio { audio?.endRemoval(failed: true) }
+                throw error
+            }
+            // Another device's upload whose marker landed between the listing and the zone delete: with the zone
+            // gone no marker can land any more, so one more listing closes that window (best effort).
+            if removedAudio { await audio?.removeListedAfterZoneDelete() }
         }
         stopRunning()
         await transport.stop()
@@ -185,6 +222,7 @@ public final class SyncCoordinator {
         account.pausedReason = nil
         try? context.save()
         status = .off
+        if removedAudio { audio?.endRemoval(failed: false) }
     }
 
     /// After `.paused(.accountChanged)`: merge adds this library to the new account's iCloud; otherwise sync stays
@@ -233,6 +271,7 @@ public final class SyncCoordinator {
 
     /// Fetch, scan everything, send. Also retries after a full quota or a missing account.
     public func syncNow() async {
+        audio?.clearBackoff()
         await sync(fullScan: true)
     }
 
@@ -254,6 +293,7 @@ public final class SyncCoordinator {
     public func setForeground(_ active: Bool) {
         pollTask?.cancel()
         pollTask = nil
+        audio?.setForeground(active)
         guard active else { return }
         Task { await self.refresh(fullScan: true) }
         pollTask = Task { [weak self] in
@@ -329,6 +369,7 @@ public final class SyncCoordinator {
     // MARK: Running
 
     func sync(fullScan: Bool) async {
+        defer { audio?.pump() }
         guard settings.syncEnabled, !crashed else { return }
         if case .paused(let reason) = status {
             switch reason {
@@ -355,6 +396,7 @@ public final class SyncCoordinator {
     }
 
     private func run(hash: String, joining: Bool) async {
+        defer { audio?.pump() }
         account.pausedReason = nil
         try? context.save()
         ignoreStateUpdates = false
@@ -380,6 +422,7 @@ public final class SyncCoordinator {
     private func fetch() async {
         do {
             try await transport.fetchChanges()
+            fetchSucceededSinceReset = true
         } catch {
             log.error("Fetch failed: \(String(describing: error), privacy: .public)")
             noteProblem("Couldn't check iCloud for changes: \(error.localizedDescription)")
@@ -396,7 +439,9 @@ public final class SyncCoordinator {
                 pause(.massDelete)
                 return false
             }
-            await enqueue(outcome.saves, outcome.deletes)
+            // Audio markers waiting to go are handed over again too (a lost engine pending list is restored).
+            await enqueue(outcome.saves + (audio?.pendingMarkerSaves ?? []),
+                          outcome.deletes + (audio?.pendingMarkerDeletes ?? []))
             return true
         } catch {
             log.error("Full scan failed: \(error.localizedDescription, privacy: .public)")
@@ -459,7 +504,13 @@ public final class SyncCoordinator {
                 return holdSpeakers == false
             }
             return true
-        }.count
+        }.count + audioPendingCount
+    }
+
+    /// Audio markers waiting to go (0 without audio sync), so `sendAll` sends them and "Up to date" waits for them.
+    private var audioPendingCount: Int {
+        guard let audio else { return 0 }
+        return audio.pendingMarkerSaves.count + audio.pendingMarkerDeletes.count
     }
 
     private func stopRunning() {
@@ -473,6 +524,7 @@ public final class SyncCoordinator {
         followUpAttempt = 0
         detector.stopObserving()
         inFlight = [:]
+        audio?.stop()
     }
 
     private func pause(_ reason: SyncPauseReason) {
@@ -491,7 +543,34 @@ public final class SyncCoordinator {
         a.lastFetchAt = nil
         a.lastSendAt = nil
         inFlight = [:]
+        fetchSucceededSinceReset = false
         try? context.save()
+        audio?.reset()   // its rows went with the rest
+    }
+
+    // MARK: Audio
+
+    /// Audio work may run: sync is on, running, not crashed and not paused.
+    var audioMayRun: Bool { settings.syncEnabled && running && !crashed && !status.isPaused }
+
+    /// The signed-in account is the one this library syncs with (both known and equal). `AudioSync` checks it before
+    /// every job (decision 26).
+    func currentAccountMatches() async -> Bool {
+        guard let stored = Self.accountRow(context, create: false)?.accountHash,
+              let current = await transport.accountHash() else { return false }
+        return stored == current
+    }
+
+    /// Queues the audio markers waiting to go and sends now (used by `AudioSync`).
+    func sendAudioMarkers() async {
+        guard let audio, running, !crashed else { return }
+        await enqueue(audio.pendingMarkerSaves, audio.pendingMarkerDeletes)
+        await sendLocalChanges()
+    }
+
+    /// A problem audio sync wants shown under the status line (until a sync round goes through).
+    func noteAudioProblem(_ message: String) {
+        noteProblem(message)
     }
 
     // MARK: Local changes
@@ -510,6 +589,7 @@ public final class SyncCoordinator {
     /// Sends what a local change just queued, now. `CKSyncEngine` schedules its own send, but on the iPhone that can
     /// wait minutes (2026-11-24: a new recording reached iCloud only after Sync Now), so the app does not wait for it.
     private func sendLocalChanges() async {
+        defer { audio?.pump() }
         guard running, !crashed, !status.isPaused, pendingCount() > 0 else { return }
         log.notice("Sending local changes")
         let mark = problemCount
@@ -544,6 +624,11 @@ public final class SyncCoordinator {
     /// The record for a pending save, built when the transport makes a batch. Nil skips it (gone, frozen, or no
     /// longer pending).
     func provide(_ id: SyncRecordID) -> SyncRecord? {
+        // Audio markers first: their rows share the marker's record name, so no generic lookup may see the id.
+        if id.type == .audio {
+            guard running, !crashed else { return nil }
+            return audio?.markerRecord(for: id.entityID)
+        }
         guard running, !crashed, let row = try? detector.stateRow(named: id.recordName), row.pending == .save,
               let e = RecordProjector(context: context).entity(id), e.isSyncable else { return nil }
         let record = RecordProjector.record(e, unresolved: row.unresolvedLinks, systemFields: row.systemFields)
@@ -585,12 +670,16 @@ public final class SyncCoordinator {
             await handleSent(saved, deleted, failures)
         case .zoneDeleted(let reason):
             guard running else { return }
+            // Blobs uploaded here whose markers never reached the server, and the upload in flight (its blob may be
+            // stored already): captured before the rows go.
+            let unsent = reason == .encryptedDataReset ? [] : (audio?.uploadsToAbandon() ?? [])
             stopRunning()
             clearSyncState()
             switch reason {
             case .deleted, .purged:
                 pause(.zoneRemoved)
                 Task { await self.transport.stop() }
+                if !unsent.isEmpty { Task { await self.audio?.abandonUploadsAfterStop(unsent) } }
             case .encryptedDataReset:
                 Task {
                     await self.transport.stop()
@@ -600,9 +689,22 @@ public final class SyncCoordinator {
         }
     }
 
-    private func handleFetched(_ modifications: [SyncRecord], _ deletions: [SyncRecordID]) async {
-        log.notice("Fetched \(modifications.count, privacy: .public) changed and \(deletions.count, privacy: .public) deleted records: \(Self.names(modifications.map(\.id) + deletions), privacy: .public)")
+    private func handleFetched(_ allModifications: [SyncRecord], _ allDeletions: [SyncRecordID]) async {
+        log.notice("Fetched \(allModifications.count, privacy: .public) changed and \(allDeletions.count, privacy: .public) deleted records: \(Self.names(allModifications.map(\.id) + allDeletions), privacy: .public)")
         await flushAndEnqueue()
+        // Audio markers go to AudioSync before the `sv` check and the applier: the core never sees them, and a
+        // marker from a later build never pauses sync (decision 9).
+        let modifications = allModifications.filter { $0.id.type != .audio }
+        let deletions = allDeletions.filter { $0.type != .audio }
+        let markers = allModifications.filter { $0.id.type == .audio }
+        let markerDeletions = allDeletions.filter { $0.type == .audio }.map(\.entityID)
+        if !markers.isEmpty || !markerDeletions.isEmpty {
+            if let audio {
+                audio.applyFetched(markers: markers, deleted: markerDeletions)
+            } else {
+                log.notice("Dropped \(markers.count + markerDeletions.count, privacy: .public) audio markers (no audio sync)")
+            }
+        }
         if modifications.contains(where: { SyncSchema.recordVersion($0) > SyncSchema.version }) {
             otherDeviceNeedsUpdate = true
             ignoreStateUpdates = true
@@ -626,6 +728,7 @@ public final class SyncCoordinator {
     }
 
     private func handleFetchFinished() async {
+        defer { audio?.pump() }
         do {
             let linked = try applier.finishFetch(touchedProfiles: fetchTouchedProfiles)
             // Chunks already rebuilt the search text of what they touched; links resolved now name new speakers.
@@ -641,15 +744,28 @@ public final class SyncCoordinator {
         await flushAndEnqueue()
     }
 
-    private func handleSent(_ saved: [SyncRecord], _ deleted: [SyncRecordID], _ failures: [SendFailure]) async {
-        log.notice("Sent \(saved.count, privacy: .public) saves and \(deleted.count, privacy: .public) deletes, \(failures.count, privacy: .public) failed. Saved: \(Self.names(saved.map(\.id) + deleted), privacy: .public)")
+    private func handleSent(_ allSaved: [SyncRecord], _ allDeleted: [SyncRecordID], _ allFailures: [SendFailure]) async {
+        log.notice("Sent \(allSaved.count, privacy: .public) saves and \(allDeleted.count, privacy: .public) deletes, \(allFailures.count, privacy: .public) failed. Saved: \(Self.names(allSaved.map(\.id) + allDeleted), privacy: .public)")
+        defer { audio?.pump() }
         await flushAndEnqueue()
+        // Audio markers are split out before any generic lookup (their rows share the markers' record names).
+        let saved = allSaved.filter { $0.id.type != .audio }
+        let deleted = allDeleted.filter { $0.type != .audio }
+        let failures = allFailures.filter { $0.recordID.type != .audio }
+        var audioEffects = AudioSentEffects()
+        if let audio, allSaved.count + allDeleted.count + allFailures.count > saved.count + deleted.count + failures.count {
+            audioEffects = audio.handleSent(saved: allSaved.filter { $0.id.type == .audio },
+                                            deleted: allDeleted.filter { $0.type == .audio },
+                                            failures: allFailures.filter { $0.recordID.type == .audio })
+        }
         var effects = RemoteApplier.Effects()
         let projector = RecordProjector(context: context)
         let names = saved.map(\.id.recordName) + deleted.map(\.recordName) + failures.map(\.recordID.recordName)
         let rows = (try? detector.stateRows(named: names)) ?? [:]
-        var zoneGone = false, quotaFull = false
-        var merged = 0, retry = 0, refused: [String] = []
+        var zoneGone = audioEffects.zoneGone && !deletedZoneItself, quotaFull = audioEffects.quotaFull
+        var merged = 0, retry = audioEffects.retry, refused: [String] = audioEffects.refused
+        effects.saves += audioEffects.saves
+        effects.deletes += audioEffects.deletes
 
         for record in saved {
             let name = record.id.recordName
@@ -726,7 +842,7 @@ public final class SyncCoordinator {
                 if let row = rows[id.recordName], row.pending == .save { row.pending = .none }
             }
         }
-        if !saved.isEmpty || !deleted.isEmpty { account.lastSendAt = clock.now }
+        if !allSaved.isEmpty || !allDeleted.isEmpty { account.lastSendAt = clock.now }
         applier.refreshSearchText(effects.touchedRecordings)
         do {
             try fault?(.beforeSendResultSave)
@@ -736,10 +852,14 @@ public final class SyncCoordinator {
         }
         try? context.save()
         if zoneGone {
+            // Blobs uploaded here whose markers never reached the server, and the upload in flight (its blob may be
+            // stored already): captured before the rows go.
+            let unsent = audio?.uploadsToAbandon() ?? []
             stopRunning()
             clearSyncState()
             pause(.zoneRemoved)
             Task { await self.transport.stop() }
+            if !unsent.isEmpty { Task { await self.audio?.abandonUploadsAfterStop(unsent) } }
             return
         }
         await enqueue(effects.saves, effects.deletes)
@@ -747,7 +867,7 @@ public final class SyncCoordinator {
         if let message = Self.sendProblem(merged: merged, retry: retry, refused: refused) { noteProblem(message) }
         if merged > 0 || retry > 0 {
             scheduleFollowUp()
-        } else if failures.isEmpty, pendingCount() == 0 {
+        } else if allFailures.isEmpty, pendingCount() == 0 {
             // An automatic send by the engine drained everything: the status line says so.
             switch status {
             case .syncing, .joining: status = .idle(lastSync: account.lastSendAt)

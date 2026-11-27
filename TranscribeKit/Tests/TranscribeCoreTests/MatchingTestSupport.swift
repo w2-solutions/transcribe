@@ -108,6 +108,13 @@ extension MatchDecision {
 /// 3. `ChannelFreeMatcher`, the frozen copy from before channels.
 /// Runs 1 and 2 must equal run 3 exactly, decisions and traces, once the version and channel fields are set back to
 /// their pre-channel values. Neither run may count a trusted sample as being on another channel.
+///
+/// Sound groups (decision D3): every call also checks, on the inputs as given, that
+/// 4. the live matcher with `groupScoring` off equals `GrouplessMatcher` (the frozen copy from before groups) exactly,
+///    trace version 2 included, and the same with sample ids attached to every candidate (ids change nothing with
+///    groups off);
+/// 5. with groups on (the test's policy) and candidates without sample ids, as given, run 1 equals run 4 apart from the
+///    trace version: a candidate without ids is scored exactly as before groups.
 enum GoldenMatcher {
     static let channel = "c"
 
@@ -149,6 +156,8 @@ enum GoldenMatcher {
         let oneChannel = VoiceMatcher.decideWithTrace(probes: probes.map { onChannel($0, channel) },
                                                       profiles: profiles.map { onChannel($0, channel) },
                                                       modelKey: modelKey, policy: policy, cohort: cohort)
+        GroupsOff.check(probes: probes, profiles: profiles, modelKey: modelKey, policy: policy, cohort: cohort,
+                        groupsOn: asGiven, sourceLocation: sourceLocation)
         for (run, expectedChannel) in [(asGiven, nil), (oneChannel, Optional(channel))] {
             #expect(run.decisions == frozen.decisions, "decisions on channel \(expectedChannel ?? "nil")", sourceLocation: sourceLocation)
             #expect(run.traces.mapValues(preChannel) == frozen.traces, "traces on channel \(expectedChannel ?? "nil")",
@@ -192,5 +201,37 @@ enum GoldenMatcher {
                                                            probeChannel: channel, policy: policy)
         #expect(asGiven == frozen && oneChannel == frozen, sourceLocation: sourceLocation)
         return asGiven
+    }
+}
+
+/// Checks 4 and 5 of `GoldenMatcher`, also usable on their own.
+enum GroupsOff {
+    /// The same profile with sample ids (and added times) attached: `TV.uuid(0x9000 + profile index * 64 + i)`.
+    static func withIDs(_ p: ProfileCandidate, salt: Int) -> ProfileCandidate {
+        ProfileCandidate(id: p.id, name: p.name, samples: p.samples, trusted: p.trusted, channels: p.channels,
+                         negatives: p.negatives, modelKey: p.modelKey, autoLabel: p.autoLabel,
+                         needsResample: p.needsResample,
+                         sampleIDs: p.samples.indices.map { TV.uuid(0x9000 + salt * 64 + $0) },
+                         addedAtMillis: p.samples.indices.map { Int64($0) * 1_000 })
+    }
+
+    static func check(probes: [SpeakerProbe], profiles: [ProfileCandidate], modelKey: String, policy: MatchPolicy,
+                      cohort: [VoiceVector], groupsOn: MatchRun?, sourceLocation: SourceLocation = #_sourceLocation) {
+        var off = policy
+        off.groupScoring = false
+        let frozen = GrouplessMatcher.decideWithTrace(probes: probes, profiles: profiles, modelKey: modelKey,
+                                                      policy: off, cohort: cohort)
+        let live = VoiceMatcher.decideWithTrace(probes: probes, profiles: profiles, modelKey: modelKey,
+                                                policy: off, cohort: cohort)
+        #expect(live == frozen, "groups off equals the matcher from before groups", sourceLocation: sourceLocation)
+        let identified = profiles.enumerated().map { withIDs($1, salt: $0) }
+        let liveWithIDs = VoiceMatcher.decideWithTrace(probes: probes, profiles: identified, modelKey: modelKey,
+                                                       policy: off, cohort: cohort)
+        #expect(liveWithIDs == frozen, "groups off ignores sample ids", sourceLocation: sourceLocation)
+        if let groupsOn, policy.groupScoring, profiles.allSatisfy({ $0.sampleIDs == nil }) {
+            #expect(groupsOn.decisions == frozen.decisions, sourceLocation: sourceLocation)
+            #expect(groupsOn.traces.mapValues { var t = $0; t.version = 2; return t } == frozen.traces, sourceLocation: sourceLocation)
+            #expect(groupsOn.traces.values.allSatisfy { $0.version == MatchTrace.groupsVersion }, sourceLocation: sourceLocation)
+        }
     }
 }

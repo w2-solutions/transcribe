@@ -647,6 +647,7 @@ public actor CloudKitTransport: SyncTransport, CKSyncEngineDelegate {
         case .userDeletedZone: "userDeletedZone"
         case .serverResponseLost: "serverResponseLost"
         case .accountTemporarilyUnavailable: "accountTemporarilyUnavailable"
+        case .assetNotAvailable: "assetNotAvailable"
         default: "code"
         }
     }

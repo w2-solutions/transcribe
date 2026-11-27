@@ -24,7 +24,8 @@ extension SyncSuites {
             var context: ModelContext { container.mainContext }
             let account = FakeCloud.uiTestAccount
 
-            init(_ scenario: FakeSyncScenario, seed: SeedName) throws {
+            /// `audio`: the Mac runs audio sync over the scenario's `audioTransfer`, as the app does.
+            init(_ scenario: FakeSyncScenario, seed: SeedName, audio: Bool = false) throws {
                 let clock = AppClock.frozen(Seeds.Dates.d)
                 setup = FakeCloud.scenario(scenario, clock: clock)
                 container = try ModelContainerFactory.make(inMemory: true, url: nil)
@@ -37,7 +38,12 @@ extension SyncSuites {
                 settings = AppSettings(defaults: UserDefaults(suiteName: "sync-ui-\(UUID().uuidString)")!)
                 settings.syncEnabled = setup.startsOn
                 sync = SyncCoordinator(store: store, transport: setup.transport, settings: settings, clock: clock,
-                                       modelKey: EmbeddingModelID.fake.key)
+                                       modelKey: EmbeddingModelID.fake.key,
+                                       audio: audio ? AudioSyncDependencies(transfer: setup.audioTransfer,
+                                                                            encoder: CopyAudioEncoder(),
+                                                                            conditions: FakeDeviceConditions(),
+                                                                            platform: .mac) : nil)
+                sync.audio?.prepareOnLaunch()
                 sync.debounce = .seconds(3600)
             }
 
@@ -72,6 +78,24 @@ extension SyncSuites {
             let karan = try #require((try l.context.fetch(FetchDescriptor<VoiceProfile>())).first { $0.name == "Karan" })
             #expect(NameSpeakerModel.askPrompt(suggested: karan, recordingChannel: CaptureChannel.mac, copy: DeviceCopy(platform: .mac))?
                 .hasPrefix("Karan was named on your iPhone") == true)
+        }
+
+        @Test func remoteLibraryWithAudioDownloadsOnTheMac() async throws {
+            let l = try Launch(.remoteLibraryWithAudio, seed: .empty, audio: true)
+            defer { l.cleanup() }
+            let audio = try #require(l.sync.audio)
+            await l.sync.start()
+            await audio.drain()
+            #expect(l.sync.status == .idle(lastSync: Seeds.Dates.d))
+            let recordings = l.recordings()
+            #expect(recordings.count == 3)
+            #expect(recordings.allSatisfy { l.store.hasLocalAudio($0) })
+            #expect(recordings.allSatisfy { audio.state(of: $0) == .local })
+            // The same library as `remoteLibrary`, plus a marker per recording.
+            let markers = await l.cloudRecords().keys.filter { $0.hasPrefix("au.") }
+            #expect(markers.count == 3)
+            #expect(await l.setup.audioTransfer.downloads == 3)
+            #expect(await l.setup.audioTransfer.uploads == 0)
         }
 
         @Test func signedOutPauses() async throws {

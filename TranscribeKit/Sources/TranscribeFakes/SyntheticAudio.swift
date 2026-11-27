@@ -59,6 +59,16 @@ public enum SyntheticAudio {
         return maxPeak > 0 ? peaks.map { $0 / maxPeak } : peaks
     }
 
+    /// The stems of a recording of `script` made with the microphone and Mac audio (`FakeScript.stemSegments`),
+    /// written to `stems` (folders are created). Returns the duration written.
+    @discardableResult
+    public static func writeStems(for script: FakeScript, to stems: CaptureStems) throws -> TimeInterval {
+        for stream in CaptureStream.allCases {
+            _ = try write(to: stems.url(stream), duration: script.duration, segments: script.stemSegments(stream))
+        }
+        return script.duration
+    }
+
     /// Max |table| over absolute sample range [from, to) (the table repeats every second).
     static func maxAbs(_ table: [Float], tableMax: Float, from: Int, to: Int) -> Float {
         if to - from >= sampleRate / 4 { return tableMax }   // a whole 4 Hz syllable is covered

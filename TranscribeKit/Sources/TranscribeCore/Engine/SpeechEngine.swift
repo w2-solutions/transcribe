@@ -38,8 +38,17 @@ public struct RecordingRequest: Sendable {
     public var audioURL: URL          // destination: 16 kHz mono Int16 WAV
     public var liveText: Bool         // false when models not ready
     public var language: LanguageHint
-    public init(audioURL: URL, liveText: Bool, language: LanguageHint) {
+    /// What to capture. Anything but `.microphone` needs `SpeechEngine.systemAudioAvailable`, else
+    /// `EngineError.sourceUnavailable`. With `.both`, `audioURL` gets the mix (live text, playback and separation
+    /// read it as before) and `stems` the per-stream files.
+    public var sources: CaptureSources
+    /// Where a `.both` recording writes its per-stream files; nil means `CaptureStems.beside(audioURL:)`.
+    /// Ignored for the other sources.
+    public var stems: CaptureStems?
+    public init(audioURL: URL, liveText: Bool, language: LanguageHint, sources: CaptureSources = .microphone,
+                stems: CaptureStems? = nil) {
         self.audioURL = audioURL; self.liveText = liveText; self.language = language
+        self.sources = sources; self.stems = stems
     }
 }
 
@@ -54,8 +63,22 @@ public enum PauseReason: Sendable, Equatable { case user, interruption, routeLos
 public enum LiveTextUnavailableReason: Sendable, Equatable { case modelsNotReady, pausedInBackground, failed(String) }
 public enum RecordingEndReason: Sendable, Equatable { case lowStorage, mediaServicesReset, failed(String) }
 
+/// Something about Mac audio the recording window shows while recording goes on.
+public enum RecordingNotice: Sendable, Equatable {
+    /// Mac audio has been exactly silent for a while although another app is playing sound: most likely access to
+    /// Mac audio is off (System Settings → Privacy & Security → Screen & System Audio Recording).
+    case systemAudioSilent
+    /// Mac audio stopped and could not be restarted. In a Both recording the microphone carries on.
+    case systemAudioLost
+    /// Mac audio came back after `systemAudioLost` (a later device change or a retry rebuilt it): the lost note goes.
+    case systemAudioRestored
+}
+
 public enum RecordingEvent: Sendable, Equatable {
-    case tick(elapsed: TimeInterval, level: Float)   // ~20 Hz; elapsed excludes pauses; level 0...1 smoothed
+    /// ~20 Hz; elapsed excludes pauses; level 0...1 smoothed. `systemLevel` is Mac audio's level in a Both
+    /// recording (then `level` is the microphone's), else nil.
+    case tick(elapsed: TimeInterval, level: Float, systemLevel: Float? = nil)
+    case notice(RecordingNotice)
     case liveText(LiveText)
     case liveTextUnavailable(LiveTextUnavailableReason)
     case paused(PauseReason)
@@ -70,8 +93,12 @@ public struct CapturedAudio: Sendable, Equatable {
     public var peaks: [Float]             // <= 200 bins, 0...1
     /// The hardware and input route it was captured with (log-only); nil when unknown.
     public var detail: CaptureDetail?
-    public init(url: URL, duration: TimeInterval, marks: [TimeInterval], peaks: [Float], detail: CaptureDetail? = nil) {
+    /// The per-stream files of a Both recording, on the same timeline as `url`; nil for every other recording.
+    public var stems: CaptureStems?
+    public init(url: URL, duration: TimeInterval, marks: [TimeInterval], peaks: [Float], detail: CaptureDetail? = nil,
+                stems: CaptureStems? = nil) {
         self.url = url; self.duration = duration; self.marks = marks; self.peaks = peaks; self.detail = detail
+        self.stems = stems
     }
 }
 
@@ -93,6 +120,8 @@ public enum EngineError: Error, Sendable, Equatable {
     case noSpeech              // diarizer found no speech (FluidAudio .noSpeechDetected)
     case tooShort              // audio below ASR minimum
     case microphoneDenied
+    /// The recording asked for a source this engine or device cannot capture (Mac audio on an iPhone).
+    case sourceUnavailable
     case cancelled
     case failed(String)
 }
@@ -112,6 +141,9 @@ public protocol SpeechEngine: Sendable {
     // Microphone
     func microphonePermission() async -> MicPermission
     func requestMicrophonePermission() async -> Bool
+    /// Whether `startRecording` can capture Mac audio (`CaptureSources.both` and `.macAudio`). False on iOS and by
+    /// default. macOS has no API that asks for or reads Mac audio access before the first capture.
+    var systemAudioAvailable: Bool { get }
 
     // Capture (works without models; live text only when models are ready and request.liveText)
     func startRecording(_ request: RecordingRequest) async throws -> any LiveRecording
@@ -126,6 +158,9 @@ public protocol SpeechEngine: Sendable {
 }
 
 public extension SpeechEngine {
+    /// Engines that record the microphone only.
+    var systemAudioAvailable: Bool { false }
+
     /// Engines without stage reporting (test doubles): the plain prepare, no events.
     func prepareModels(onEvent: @escaping @Sendable (PrepareEvent) -> Void) async throws {
         try await prepareModels()

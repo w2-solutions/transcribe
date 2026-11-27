@@ -327,7 +327,7 @@ struct VoiceAddSampleSheet: View {
         case .duplicate: return "Already have a sample like this"
         case .tooLittleSpeech: return "Needs about 10 seconds of clear speech"
         case .noVector: return "No voice data in that recording"
-        case .rememberOff, nil: return "Sample not added"
+        case .rememberOff, .mixedSource, nil: return "Sample not added"
         }
     }
 }

@@ -48,6 +48,9 @@ struct MacRecordingList: View {
                 VStack(alignment: .leading, spacing: 12) {
                     header(count: visible.count)
                     searchField
+                    if let audio = env.sync?.audio, audio.introPending {
+                        AudioIntroCard(audio: audio)
+                    }
                     if env.isLaunched, ModelsCard.isShown(env.models) {
                         ModelsCard(waitingCount: ModelsCard.waitingCount(recordings))
                             .transition(reduceMotion ? .opacity : .move(edge: .top).combined(with: .opacity))

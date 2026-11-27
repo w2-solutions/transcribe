@@ -29,6 +29,10 @@ public actor FakeSpeechEngine: SpeechEngine {
     /// 20 s leaves a UI test time to launch, record, stop and still see "Waiting for setup".
     private let firstPrepare: Bool
     private var mic: MicPermission
+    /// How Mac audio behaves (`TRANSCRIBE_MAC_AUDIO`).
+    public nonisolated let macAudio: FakeMacAudio
+    /// Mac audio exists on the Mac only, as with the real engine, unless the launch says it does not.
+    public nonisolated let systemAudioAvailable: Bool
     /// Whether the app is in front (the real start rule); nil: always allowed (tests).
     private let activity: AppActivity?
     /// Tests: runs before each stage starts (after the start rule allowed it).
@@ -56,6 +60,12 @@ public actor FakeSpeechEngine: SpeechEngine {
         self.status = .installed
         self.firstPrepare = config.models == .missing
         self.mic = config.mic
+        self.macAudio = config.macAudio
+        #if os(macOS)
+        self.systemAudioAvailable = config.macAudio != .unavailable
+        #else
+        self.systemAudioAvailable = false
+        #endif
         self.activity = activity
         self.beforeStage = beforeStage
     }
@@ -164,9 +174,12 @@ public actor FakeSpeechEngine: SpeechEngine {
     // MARK: Capture
 
     public func startRecording(_ request: RecordingRequest) async throws -> any LiveRecording {
-        guard mic == .granted else { throw EngineError.microphoneDenied }
+        guard request.sources == .microphone || systemAudioAvailable else { throw EngineError.sourceUnavailable }
+        if request.sources.includesMicrophone {
+            guard mic == .granted else { throw EngineError.microphoneDenied }
+        }
         callCounts["startRecording", default: 0] += 1
-        let session = FakeLiveRecording(script: script, speed: speed, request: request)
+        let session = FakeLiveRecording(script: script, speed: speed, request: request, macAudio: macAudio)
         await session.begin()
         return session
     }
@@ -178,6 +191,9 @@ public actor FakeSpeechEngine: SpeechEngine {
         enter("transcribe"); defer { leave() }
         guard status == .ready else { throw EngineError.modelsMissing }
         try await runSteps(progress: progress)
+        if audio.lastPathComponent.hasPrefix(DictationFiles.prefix) {
+            return script.behaviour == .noSpeech ? [] : FakeScript.dictationWords
+        }
         return script.behaviour == .noSpeech ? [] : script.words
     }
 

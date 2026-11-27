@@ -39,6 +39,7 @@ final class ScriptedCaptureEngine: SpeechEngine, @unchecked Sendable {
     var session: ScriptedLiveRecording?
     init(base: FakeSpeechEngine, failStop: Bool) { self.base = base; self.failStop = failStop }
     var info: EngineInfo { base.info }
+    var systemAudioAvailable: Bool { true }
     func modelStatus() async -> ModelStatus { await base.modelStatus() }
     func prepareModels() async throws { try await base.prepareModels() }
     func microphonePermission() async -> MicPermission { .granted }
@@ -81,12 +82,14 @@ struct RecorderControllerTests {
     }
 
     /// Speed `instant` (`-uiTesting`): a tick every 50 ms; models missing so no pipeline work starts on its own.
-    func makeRig(mic: MicPermission = .granted, models: FakeModelState = .missing, script: FakeScriptName = .newVoices) throws -> Rig {
+    func makeRig(mic: MicPermission = .granted, models: FakeModelState = .missing, script: FakeScriptName = .newVoices,
+                 speed: FakeSpeed = .instant, macAudio: FakeMacAudio = .granted) throws -> Rig {
         let env = [
             LaunchConfig.envMic: mic.rawValue,
             LaunchConfig.envModels: models.rawValue,
             LaunchConfig.envScript: script.rawValue,
-            LaunchConfig.envSpeed: FakeSpeed.instant.rawValue,
+            LaunchConfig.envSpeed: speed.rawValue,
+            LaunchConfig.envMacAudio: macAudio.rawValue,
         ]
         let config = LaunchConfig(arguments: [LaunchConfig.argUseFakeEngine, LaunchConfig.argUITesting], environment: env)
         let paths = AppPaths(root: FileManager.default.temporaryDirectory
@@ -146,6 +149,33 @@ struct RecorderControllerTests {
         let row = try #require(try rig.recording(id))
         #expect(row.stage == .queued && abs(row.duration - 4) < 0.01)
         await #expect(throws: EngineError.self) { try await rig.recorder.stop() }   // "Not recording"
+    }
+
+    /// Review 2026-11-26: what a recording captures is saved with its row, so a Both or Mac-audio-only capture
+    /// salvaged after a failed stop (or a crash) is still processed as what it captured, not as the microphone.
+    @Test(arguments: [CaptureSources.both, .macAudio])
+    func aSalvagedCaptureKeepsItsSources(_ sources: CaptureSources) async throws {
+        let (rig, _) = try makeScriptedRig(failStop: true)
+        defer { rig.cleanUp() }
+        let id = try await rig.recorder.start(sources: sources)
+        // Saved before capture ends.
+        #expect(LibraryStore.captureSources(of: try #require(try rig.recording(id))) == sources)
+        await #expect(throws: EngineError.self) { try await rig.recorder.stop() }
+        let row = try #require(try rig.recording(id))
+        #expect(row.stage == .queued)
+        #expect(LibraryStore.captureSources(of: row) == sources)
+        #expect(try rig.store.snapshot(of: id).captureSources == sources)
+        let detail = try #require(CaptureDetail.decode(row.captureDetailJSON))
+        #expect(detail.input == sources.detailInput)
+    }
+
+    /// A microphone recording's row gets no provisional detail (its capture detail stays as the microphone reports it).
+    @Test func aMicrophoneRowHasNoProvisionalDetail() async throws {
+        let (rig, _) = try makeScriptedRig(failStop: true)
+        defer { rig.cleanUp() }
+        let id = try await rig.recorder.start()
+        #expect(try #require(try rig.recording(id)).captureDetailJSON == nil)
+        await #expect(throws: EngineError.self) { try await rig.recorder.stop() }
     }
 
     /// Polls the main actor until `condition` holds (the fake ticks in real time).
@@ -214,10 +244,14 @@ struct RecorderControllerTests {
         let pausedAt = recorder.elapsed
         try await Task.sleep(for: .milliseconds(400))
         #expect(recorder.elapsed == pausedAt)
+        let resumedAt = Date()
         await recorder.resume()
         #expect(await wait { recorder.elapsed >= pausedAt + 0.15 })
-        // Wall time ≥ 0.2 + 0.52 + 0.15 s, but elapsed only counts the unpaused part.
-        #expect(recorder.elapsed < pausedAt + 0.4)
+        // Wall time ≥ 0.2 + 0.52 + 0.15 s, but elapsed only counts the unpaused part: at most the wall time since
+        // resuming plus one 50 ms tick, never the 0.52 s pause. (Measured against the wall time, not a fixed 0.4 s, so
+        // a busy machine that polls late cannot fail it.)
+        let sinceResume = Date().timeIntervalSince(resumedAt)
+        #expect(recorder.elapsed < pausedAt + sinceResume + 0.1)
         await recorder.discard()
     }
 

@@ -9,7 +9,7 @@ struct TranscriptMoreMenu: View {
     let folderID: UUID?
     let folders: [Folder]
     let shareText: () -> String
-    /// Nil when the audio is on another device: no "Share audio".
+    /// Nil when the audio is not on this device (not in iCloud, not downloaded yet, or not syncing here): no "Share audio".
     let audioURL: URL?
     let shareTitle: String
     let onRename: () -> Void

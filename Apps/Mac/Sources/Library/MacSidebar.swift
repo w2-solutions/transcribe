@@ -5,8 +5,8 @@ import TranscribeDesign
 import TranscribeKit
 
 /// The Mac sidebar (§5): Library (All Recordings, Favourites, Unnamed, Folders) and People (Voices, with a dashed
-/// badge counting voices waiting for a name), then the update reminder (only while an update waits), the privacy footer
-/// and a glass New Recording pill.
+/// badge counting voices waiting for a name), then the update reminder (only while an update waits), the shortcuts'
+/// permission note (only until Settings → Shortcuts has been opened), the privacy footer and a glass New Recording pill.
 struct MacSidebar: View {
     let onRecord: () -> Void
 
@@ -103,6 +103,7 @@ struct MacSidebar: View {
     private var footer: some View {
         VStack(alignment: .leading, spacing: 12) {
             if let version = updater.pendingVersion { updateReminder(version) }
+            ShortcutsReminder()
             syncFooter
             Button(action: onRecord) {
                 HStack(spacing: 10) {
@@ -110,16 +111,29 @@ struct MacSidebar: View {
                         .fill(DS.Colour.record)
                         .frame(width: 14, height: 14)
                         .shadow(color: DS.Colour.record.opacity(0.45), radius: 4, y: 2)
-                    Text(env.recorder.isActive ? "Show Recording" : "New Recording")
-                        .font(.system(size: 14, weight: .semibold))
-                        .foregroundStyle(DS.Colour.ink)
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(env.recorder.isActive ? "Show Recording" : "New Recording")
+                            .font(.system(size: 14, weight: .semibold))
+                            .foregroundStyle(DS.Colour.ink)
+                        // Where Mac audio can be recorded, the second line names what New Recording captures (or,
+                        // while recording, what the running recording captures).
+                        if env.macAudioAvailable {
+                            Text(RecordingSourceCopy.title(env.recorder.isActive ? env.recorder.sources : env.recordingSource))
+                                .font(.system(size: 11, weight: .medium))
+                                .foregroundStyle(DS.Colour.secondary)
+                                .lineLimit(1)
+                                .accessibilityIdentifier(AX.Mac.sidebarNewRecordingSource)
+                        }
+                    }
                 }
                 .frame(maxWidth: .infinity)
-                .frame(height: 44)
+                .frame(height: env.macAudioAvailable ? 50 : 44)
                 .contentShape(Capsule())
             }
             .buttonStyle(.plain)
             .glassEffect(.regular.interactive(), in: .capsule)
+            .accessibilityValue(env.macAudioAvailable
+                                ? RecordingSourceCopy.title(env.recorder.isActive ? env.recorder.sources : env.recordingSource) : "")
             .accessibilityIdentifier(AX.Mac.sidebarNewRecording)
         }
         .padding(.horizontal, 12)

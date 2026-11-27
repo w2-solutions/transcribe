@@ -155,6 +155,20 @@ struct LaunchConfigTests {
         }
     }
 
+    @Test func shortcutSimulationReadOnlyInTestRuns() {
+        let env = ["TRANSCRIBE_SHORTCUTS": "sim"]
+        #expect(LaunchConfig.envShortcuts == "TRANSCRIBE_SHORTCUTS")
+        #expect(!LaunchConfig(arguments: [], environment: env).shortcutSimulation)
+        for args in [["-useFakeEngine"], ["-uiTesting"], ["-useFakeEngine", "-uiTesting"]] {
+            #expect(LaunchConfig(arguments: args, environment: env).shortcutSimulation, "\(args)")
+        }
+        #expect(LaunchConfig(arguments: ["-uiTesting"], environment: ["TRANSCRIBE_SHORTCUTS": " SIM "]).shortcutSimulation)
+        #expect(!LaunchConfig(arguments: ["-uiTesting"], environment: [:]).shortcutSimulation)
+        for bad in ["", "on", "simulate", "live"] {
+            #expect(!LaunchConfig(arguments: ["-uiTesting"], environment: ["TRANSCRIBE_SHORTCUTS": bad]).shortcutSimulation, "\(bad)")
+        }
+    }
+
     @Test func mcpTestPortValidated() {
         func config(port: String? = nil) -> LaunchConfig {
             var env: [String: String] = [:]

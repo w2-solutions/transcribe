@@ -14,15 +14,23 @@ public protocol LibraryStoring: AnyObject, Sendable {
     func stampCaptureChannels() throws -> Int
 
     // MARK: Local audio (§8.5)
-    /// Whether this device has the recording's audio. A recording synced from another device never does (audio does
-    /// not sync), and neither does one whose file was lost.
+    /// Whether this device has the recording's audio (the file `audioFileName` names). A recording synced from another
+    /// device has it once its copy is downloaded; until then the audio is not on this device (not in iCloud, not
+    /// downloaded yet, or not syncing here), and neither is the audio of a recording whose file was lost.
     func hasLocalAudio(_ recording: Recording) -> Bool
-    /// Launch sweep: deletes `Audio/*.wav` files that no recording row names, when older than `minimumAge` (so a
-    /// capture that has not saved its row yet is never touched). Returns the number of files deleted.
+    /// Launch sweep: deletes `Audio/*.wav` and `Audio/*.m4a` files that no recording row names, when older than
+    /// `minimumAge` (so a capture that has not saved its row yet is never touched). Returns the number of files deleted.
     @discardableResult func sweepOrphanAudio(minimumAge: TimeInterval, now: Date) throws -> Int
+    /// Launch, before the sweep: a ready row whose named file is missing but a downloaded copy `Audio/<id>.m4a`
+    /// exists is pointed at it. Returns the rows fixed. Stores that keep no audio (test doubles) return 0.
+    @discardableResult func adoptStrayDownloads() throws -> Int
 
     // MARK: Recording lifecycle
-    func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws   // stage .capturing
+    /// Stage .capturing. `captureSources` other than the microphone are saved at once as a provisional capture
+    /// detail (sources and input only), so a capture salvaged after a crash or a failed stop is still processed as
+    /// what it captured; `finishCapture` replaces it with the full detail.
+    func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource,
+                         captureSources: CaptureSources) throws
     func finishCapture(id: UUID, audio: CapturedAudio, language: LanguageHint) throws                         // → .queued
     func discardRecording(id: UUID) throws                                                                   // deletes row + file
     func snapshot(of id: UUID) throws -> RecordingSnapshot
@@ -94,10 +102,19 @@ public protocol LibraryStoring: AnyObject, Sendable {
 }
 
 public extension LibraryStoring {
+    /// A microphone recording (or an import).
+    func createRecording(id: UUID, createdAt: Date, audioFileName: String, source: RecordingSource) throws {
+        try createRecording(id: id, createdAt: createdAt, audioFileName: audioFileName, source: source,
+                            captureSources: .microphone)
+    }
+
     /// Applies decisions without traces.
     func applyMatches(id: UUID, decisions: [SpeakerKey: MatchDecision], policy: MatchPolicy) throws -> ProcessingOutcome {
         try applyMatches(id: id, decisions: decisions, traces: [:], policy: policy)
     }
+
+    /// Stores that keep no downloaded audio (test doubles) have nothing to adopt.
+    @discardableResult func adoptStrayDownloads() throws -> Int { 0 }
 
     /// Stores that do not keep labels (test doubles) throw.
     @discardableResult func setGroupLabel(_ ref: SampleGroupRef, text: String) throws -> UUID? {

@@ -14,6 +14,12 @@ struct MatchLog: Codable, Equatable {
         var minAutoSampleCoherence: Float
         var maxSamplesPerProfile: Int
         var minLearnSeconds: Double
+        /// v3: sound-group scoring and group-preserving curation (decisions D3, D4).
+        var groupScoring: Bool?
+        var groupJoinCosine: Float?
+        var sampleCeilingPerChannel: Int?
+        /// v3: the Mac audio stream attribution constants (untested starting values).
+        var attribution: SourceAttributionPolicy?
     }
     struct SampleCounts: Codable, Equatable {
         var trusted: Int
@@ -32,6 +38,13 @@ struct MatchLog: Codable, Equatable {
         var samplesByChannel: [String: Int]?
         /// v2: trusted samples per capture channel; only these can be first place for a probe on that channel.
         var trustedByChannel: [String: Int]?
+        /// v3: the sizes of the sound groups per capture channel, largest first (`SampleGrouping` at the policy's join
+        /// value). Sizes only: never a group's samples, key or label.
+        var groupSizesByChannel: [String: [Int]]?
+        /// v3: groups per capture channel with at least one trusted sample (the groups that can auto-label).
+        var trustedGroupsByChannel: [String: Int]?
+        /// v3: samples per capture channel taken from a speaker heard through Mac audio (`captureInput` systemAudio).
+        var macAudioByChannel: [String: Int]?
     }
     struct Speaker: Codable, Equatable {
         var key: String
@@ -43,6 +56,9 @@ struct MatchLog: Codable, Equatable {
         var suggestedProfileID: UUID?
         var rejectedProfileIDs: [UUID]
         var trace: MatchTrace?
+        /// v3: the stream the speaker was heard on (`RecordingSpeaker.captureSource`); nil for the microphone before
+        /// Mac audio and in microphone-only recordings.
+        var source: String?
     }
     struct RecordingRow: Codable, Equatable {
         var id: UUID
@@ -50,13 +66,19 @@ struct MatchLog: Codable, Equatable {
         /// v2: the capture channel and input route (`CaptureDetail.input`). Never the device name.
         var channel: String?
         var input: String?
+        /// v3: what the recording captured (`CaptureDetail.sources`: "mic", "system" or "both"; nil = microphone)
+        /// and, with Mac audio, where the Mac's sound played (`CaptureDetail.outputRoute`).
+        var sources: String?
+        var outputRoute: String?
         var speakers: [Speaker]
         /// Speakers "Same as Speaker N" removed: the speaker they became is `movedTo`.
         var movedSpeakers: [MovedSpeakerTrace]
     }
 
     /// 2: channels per profile and recording, and v2 match traces (§7).
-    static let currentVersion = 2
+    /// 3: sound-group sizes per profile and channel, each recording's sources and output route, each speaker's
+    /// stream, the group and attribution policy, and v3 match traces (Mac audio and sound groups, 2026-11-26).
+    static let currentVersion = 3
     /// The key for samples with no capture channel.
     static let unknownChannel = "unknown"
     /// Newest ready recordings included.
@@ -123,23 +145,29 @@ extension LibraryStore {
             func byChannel(_ rows: [VoiceSample]) -> [String: Int] {
                 rows.reduce(into: [:]) { $0[$1.captureChannel ?? MatchLog.unknownChannel, default: 0] += 1 }
             }
+            let groups = groupSummary(p)
             return MatchLog.Profile(id: p.id, isMe: p.isMe, autoLabel: p.autoLabel, needsResample: p.needsResample,
                                     embeddingModelKey: p.embeddingModelKey,
                                     samples: .init(trusted: trusted, short: samples.count - trusted - automatic, automatic: automatic),
                                     negatives: p.negatives.count,
-                                    samplesByChannel: byChannel(samples), trustedByChannel: byChannel(trustedSamples))
+                                    samplesByChannel: byChannel(samples), trustedByChannel: byChannel(trustedSamples),
+                                    groupSizesByChannel: groups.sizes, trustedGroupsByChannel: groups.trusted,
+                                    macAudioByChannel: byChannel(samples.filter { $0.captureInput == CaptureDetail.Input.systemAudio }))
         }
         let ready = RecordingStage.ready.rawValue
         var descriptor = FetchDescriptor<Recording>(predicate: #Predicate { $0.stageRaw == ready },
                                                     sortBy: [SortDescriptor(\.createdAt, order: .reverse)])
         descriptor.fetchLimit = MatchLog.maxRecordings
         let recordings = try context.fetch(descriptor).map { r in
-            MatchLog.RecordingRow(id: r.id, createdAt: r.createdAt, channel: r.captureChannel,
-                                  input: CaptureDetail.decode(r.captureDetailJSON)?.input, speakers: r.sortedSpeakers.map { s in
+            let detail = CaptureDetail.decode(r.captureDetailJSON)
+            return MatchLog.RecordingRow(id: r.id, createdAt: r.createdAt, channel: r.captureChannel,
+                                         input: detail?.input, sources: detail?.sources, outputRoute: detail?.outputRoute,
+                                         speakers: r.sortedSpeakers.map { s in
                 MatchLog.Speaker(key: s.key, ordinal: s.ordinal, cleanSeconds: s.cleanSeconds, coherence: s.vectorCoherence,
                                  label: s.labelRaw, profileID: s.profile?.id, suggestedProfileID: s.suggestedProfileID,
                                  rejectedProfileIDs: s.rejectedProfileIDs,
-                                 trace: s.matchTraceData.flatMap { try? JSONDecoder().decode(MatchTrace.self, from: $0) })
+                                 trace: s.matchTraceData.flatMap { try? JSONDecoder().decode(MatchTrace.self, from: $0) },
+                                 source: s.captureSource)
             }, movedSpeakers: MovedSpeakerTrace.decode(r.movedSpeakerTracesData))
         }
         let log = MatchLog(
@@ -147,8 +175,30 @@ extension LibraryStore {
             policy: .init(autoLabelMin: policy.autoLabelMin, autoLabelMargin: policy.autoLabelMargin, askMin: policy.askMin,
                           strongMatchMin: policy.strongMatchMin, strongMatchMargin: policy.strongMatchMargin,
                           minAutoSampleCoherence: policy.minAutoSampleCoherence,
-                          maxSamplesPerProfile: policy.maxSamplesPerProfile, minLearnSeconds: policy.minLearnSeconds),
+                          maxSamplesPerProfile: policy.maxSamplesPerProfile, minLearnSeconds: policy.minLearnSeconds,
+                          groupScoring: policy.groupScoring, groupJoinCosine: policy.groupJoinCosine,
+                          sampleCeilingPerChannel: policy.sampleCeilingPerChannel,
+                          attribution: ProcessingCoordinator.attributionPolicy),
             profiles: profiles, recordings: recordings)
         return String(decoding: try MatchLog.encoder().encode(log), as: UTF8.self)
+    }
+
+    /// Group sizes (largest first) and groups with a trusted member, per channel, from the same grouping the voice
+    /// screen draws (`GroupingInput.split`), at the matcher's join value. Counts only.
+    func groupSummary(_ p: VoiceProfile) -> (sizes: [String: [Int]], trusted: [String: Int]) {
+        let split = GroupingInput.split(p, localChannel: localChannel)
+        guard let dimension = GroupingInput.dimension(ofModelKey: p.embeddingModelKey) else { return ([:], [:]) }
+        var groupPolicy = SampleGroupPolicy.default
+        groupPolicy.joinCosine = policy.groupJoinCosine
+        let trustedIDs = Set(p.samples.filter {
+            SampleTrust.isTrusted(origin: $0.origin, speechSeconds: $0.speechSeconds, policy: policy)
+        }.map(\.id))
+        var sizes: [String: [Int]] = [:], trusted: [String: Int] = [:]
+        for g in SampleGrouping.group(split.items, dimension: dimension, policy: groupPolicy) {
+            sizes[g.channel, default: []].append(g.memberIDs.count)
+            if g.memberIDs.contains(where: trustedIDs.contains) { trusted[g.channel, default: 0] += 1 }
+            else if trusted[g.channel] == nil { trusted[g.channel] = 0 }
+        }
+        return (sizes.mapValues { $0.sorted(by: >) }, trusted)
     }
 }

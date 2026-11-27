@@ -17,6 +17,9 @@ final class TestClock: Sendable {
 
 /// One device in a sync test (§8.7): an in-memory store with its capture channel, a `SyncCoordinator`, a
 /// `FakeTransport` on the shared `FakeCloud`, and a clock. `relaunch()` simulates an app restart on the same store.
+///
+/// With `audio`, the coordinator also runs audio sync over a `FakeAudioTransfer`, `CopyAudioEncoder` and
+/// `FakeDeviceConditions` (kept across relaunches); `platform` decides its automatic download window.
 @MainActor
 final class FakeDevice {
     let name: String
@@ -30,49 +33,94 @@ final class FakeDevice {
     private(set) var sync: SyncCoordinator
     var context: ModelContext { container.mainContext }
     let channel: String
+    /// This launch runs audio sync.
+    private(set) var audioOn: Bool
+    let platform: DevicePlatform
+    /// The device's network, power and free space (shared by every launch).
+    let conditions = FakeDeviceConditions()
+    /// The encoder audio sync uses (`CopyAudioEncoder` unless a test passes `AACAudioEncoder`).
+    var encoder: any AudioEncoding
+    /// This launch's audio transfer (nil without audio).
+    private(set) var transfer: FakeAudioTransfer?
+    /// Wraps each launch's `FakeAudioTransfer` before audio sync gets it (from the next `relaunch()`).
+    var wrapTransfer: ((FakeAudioTransfer) -> any AudioTransfer)?
 
     init(_ name: String, cloud: FakeCloud, channel: String = CaptureChannel.iphone, account: String? = "account-1",
-         clock: TestClock = TestClock()) throws {
+         clock: TestClock = TestClock(), audio: Bool = false, platform: DevicePlatform = .iPhone,
+         encoder: any AudioEncoding = CopyAudioEncoder(), defaults: UserDefaults? = nil) throws {
         self.name = name
         self.cloud = cloud
         self.channel = channel
         self.clock = clock
+        self.audioOn = audio
+        self.platform = platform
+        self.encoder = encoder
         container = try ModelContainerFactory.make(inMemory: true, url: nil)
         paths = AppPaths(root: FileManager.default.temporaryDirectory.appendingPathComponent("sync-\(name)-\(UUID().uuidString)"))
         try paths.prepare()
         store = LibraryStore(context: container.mainContext, paths: paths, deviceIdentity: FixedDeviceIdentity(name),
                              clock: clock.appClock, localChannel: channel)
-        settings = AppSettings(defaults: UserDefaults(suiteName: "sync-test-\(UUID().uuidString)")!)
+        settings = AppSettings(defaults: defaults ?? UserDefaults(suiteName: "sync-test-\(UUID().uuidString)")!)
         transport = FakeTransport(cloud: cloud, account: account)
         sync = SyncCoordinator(store: store, transport: transport, settings: settings, clock: clock.appClock,
                                modelKey: EmbeddingModelID.fake.key)
-        sync.debounce = .seconds(3600)   // tests flush explicitly
-        sync.followUpDelays = [.seconds(3600)]   // and sync explicitly; a test that wants the follow-up shortens it
+        configure()
     }
 
-    /// An app restart: unsaved changes are lost; a new transport restarts from the saved engine state.
-    func relaunch(account: String? = nil) async {
+    /// An app restart: unsaved changes are lost; a new transport restarts from the saved engine state. `audio`
+    /// switches audio sync on or off for the new launch (an update from or to a build without it).
+    func relaunch(account: String? = nil, audio: Bool? = nil) async {
+        sync.audio?.stop()
         context.rollback()
+        if let audio { audioOn = audio }
         let previous = await transport.signedInAccount
         transport = FakeTransport(cloud: cloud, account: account ?? previous)
         sync = SyncCoordinator(store: store, transport: transport, settings: settings, clock: clock.appClock,
                                modelKey: EmbeddingModelID.fake.key)
-        sync.debounce = .seconds(3600)
-        sync.followUpDelays = [.seconds(3600)]
+        configure()
     }
+
+    /// Builds this launch's coordinator (with audio sync when on) and runs the launch steps audio sync relies on.
+    private func configure() {
+        if audioOn {
+            let transfer = FakeAudioTransfer(cloud: cloud, transport: transport)
+            self.transfer = transfer
+            sync = SyncCoordinator(store: store, transport: transport, settings: settings, clock: clock.appClock,
+                                   modelKey: EmbeddingModelID.fake.key,
+                                   audio: AudioSyncDependencies(transfer: wrapTransfer?(transfer) ?? transfer, encoder: encoder,
+                                                                conditions: conditions, platform: platform))
+            _ = try? store.adoptStrayDownloads()
+            sync.audio?.prepareOnLaunch()
+        } else {
+            transfer = nil
+        }
+        sync.debounce = .seconds(3600)   // tests flush explicitly
+        sync.followUpDelays = [.seconds(3600)]   // and sync explicitly; a test that wants the follow-up shortens it
+    }
+
+    /// This launch's audio sync (the device must have audio on).
+    var audio: AudioSync { sync.audio! }
 
     func cleanup() { try? FileManager.default.removeItem(at: paths.root) }
 
     // MARK: Building data through the store API
 
-    /// A ready recording with one speaker per vector (S1, S2, … on conversation B), matched like the pipeline.
+    /// A ready recording with one speaker per vector (S1, S2, … on conversation B), matched like the pipeline. Its
+    /// audio is a 4-byte stub, or with `audioSeconds` a real 16 kHz mono WAV of that length (`SyntheticAudio`).
     @discardableResult
-    func record(_ vectors: [VoiceVector?], clean: Double = 12, at date: Date? = nil) throws -> UUID {
+    func record(_ vectors: [VoiceVector?], clean: Double = 12, at date: Date? = nil, audioSeconds: Double? = nil) throws -> UUID {
         let id = UUID()
         let file = paths.newAudioFileName(for: id)
         try store.createRecording(id: id, createdAt: date ?? clock.date, audioFileName: file, source: .microphone)
-        try Data("RIFF".utf8).write(to: paths.audioURL(fileName: file))
-        try store.finishCapture(id: id, audio: CapturedAudio(url: paths.audioURL(fileName: file), duration: 24, marks: [],
+        var duration: TimeInterval = 24
+        if let audioSeconds {
+            _ = try SyntheticAudio.write(to: paths.audioURL(fileName: file), duration: audioSeconds,
+                                         segments: [(TimeRange(start: 0, end: audioSeconds), .karan)])
+            duration = audioSeconds
+        } else {
+            try Data("RIFF".utf8).write(to: paths.audioURL(fileName: file))
+        }
+        try store.finishCapture(id: id, audio: CapturedAudio(url: paths.audioURL(fileName: file), duration: duration, marks: [],
                                                              peaks: [0.1, 0.5, 0.25]), language: .automatic)
         let turns = SeedContent.conversationB
         try store.checkpointTranscript(id: id, document: WP3Docs.paragraphs(turns))
@@ -106,7 +154,7 @@ final class FakeDevice {
         let projector = RecordProjector(context: context)
         let rows = Dictionary(stateRows().map { ($0.recordName, $0) }, uniquingKeysWith: { a, _ in a })
         var out: [String: [String: SyncValue]] = [:]
-        for type in SyncRecordType.allCases {
+        for type in SyncRecordType.libraryCases {
             for e in (try? projector.all(type)) ?? [] where e.isSyncable {
                 out[e.recordID.recordName] = RecordProjector.fields(e, unresolved: rows[e.recordID.recordName]?.unresolvedLinks ?? [:])
             }
@@ -128,6 +176,77 @@ func settle(_ devices: [FakeDevice], account: String = "account-1", rounds: Int 
         let pending = devices.map(\.pending).reduce(0, +)
         if seq == last && pending == 0 { return }
         last = seq
+    }
+}
+
+/// `settle`, then every audio device drains its job loop, until the cloud's records, its audio and every device's
+/// pending count stop changing.
+@MainActor
+func settleAudio(_ devices: [FakeDevice], account: String = "account-1", rounds: Int = 12) async {
+    var last: (Int, [UUID: String], Int)?
+    for _ in 0..<rounds {
+        await settle(devices, account: account)
+        for d in devices where d.audioOn { await d.audio.drain() }
+        let cloud = devices[0].cloud
+        let seq = await cloud.sequence(account: account)
+        let blobs = await cloud.audio(account: account).mapValues(\.descriptor.sha256)
+        let pending = devices.map(\.pending).reduce(0, +)
+        if let last, last.0 == seq, last.1 == blobs, last.2 == pending, pending == 0 { return }
+        last = (seq, blobs, pending)
+    }
+}
+
+/// Audio has converged: every audio device with sync on has the audio of every ready recording that has a marker;
+/// the cloud's blobs are exactly its markers; no marker names a recording no device has.
+///
+/// With `complete` (a settled run where every device has sync and Sync audio on), also: every ready recording that
+/// every device holds has its marker and its blob in iCloud, the blob's sha256 is the marker's, and every audio device
+/// holds its audio (an iPhone within its 30-day window; recordings too long to upload excepted). So audio that never
+/// reached iCloud, or never came down, is caught too.
+@MainActor
+func expectAudioConverged(_ devices: [FakeDevice], account: String = "account-1", complete: Bool = false,
+                          sourceLocation: SourceLocation = #_sourceLocation) async {
+    guard let cloud = devices.first?.cloud else { return }
+    let records = await cloud.records(account: account)
+    var markerSHA: [UUID: String] = [:]
+    for (name, record) in records {
+        guard let id = SyncRecordID(recordName: name), id.type == .audio else { continue }
+        if case .string(let sha)? = record["sha256"] { markerSHA[id.entityID] = sha } else { markerSHA[id.entityID] = "" }
+    }
+    let markers = Set(markerSHA.keys)
+    let stored = await cloud.audio(account: account)
+    let blobs = Set(stored.keys)
+    #expect(blobs == markers, "blobs \(blobs.count) vs markers \(markers.count)", sourceLocation: sourceLocation)
+    var everyRecording: Set<UUID> = []
+    for d in devices {
+        everyRecording.formUnion(((try? d.context.fetch(FetchDescriptor<Recording>())) ?? []).map(\.id))
+    }
+    #expect(markers.isSubset(of: everyRecording), "a marker names a recording no device has", sourceLocation: sourceLocation)
+    for d in devices where d.audioOn && d.settings.syncEnabled && d.settings.syncAudio {
+        for r in (try? d.context.fetch(FetchDescriptor<Recording>())) ?? [] where r.stage == .ready && markers.contains(r.id) {
+            #expect(d.store.hasLocalAudio(r), "\(d.name) lacks the audio of \(r.id)", sourceLocation: sourceLocation)
+        }
+    }
+    guard complete else { return }
+    var readyEverywhere: Set<UUID>?
+    for d in devices {
+        let ready = Set(((try? d.context.fetch(FetchDescriptor<Recording>())) ?? []).filter { $0.stage == .ready }.map(\.id))
+        readyEverywhere = readyEverywhere.map { $0.intersection(ready) } ?? ready
+    }
+    let tooLong = devices.reduce(into: Set<UUID>()) { $0.formUnion($1.audioOn ? $1.audio.tooLong : []) }
+    for id in (readyEverywhere ?? []).subtracting(tooLong).sorted(by: { $0.uuidString < $1.uuidString }) {
+        #expect(markers.contains(id), "no marker for \(id)", sourceLocation: sourceLocation)
+        #expect(blobs.contains(id), "no blob for \(id)", sourceLocation: sourceLocation)
+        if let blob = stored[id], let sha = markerSHA[id] {
+            #expect(blob.descriptor.sha256 == sha, "the marker of \(id) names another blob", sourceLocation: sourceLocation)
+        }
+        for d in devices where d.audioOn {
+            #expect(d.settings.syncEnabled && d.settings.syncAudio, "\(d.name) is not settled with audio on",
+                    sourceLocation: sourceLocation)
+            guard let r = d.recording(id) else { continue }
+            guard AudioPolicy.autoDownloads(platform: d.platform, createdAt: r.createdAt, now: d.clock.date) else { continue }
+            #expect(d.store.hasLocalAudio(r), "\(d.name) never got the audio of \(id)", sourceLocation: sourceLocation)
+        }
     }
 }
 

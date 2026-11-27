@@ -38,20 +38,51 @@ public enum VoiceMatcher {
     /// How `vector`, heard on `probeChannel`, scores against `profile` (§1.3, §1.4, §7). Nil when the profile has no
     /// sample of the vector's dimension. A trusted sample counts as trusted only on the probe's channel (nil equals
     /// nil); negatives count from every channel. `cohortMax` is always nil here; only `decideWithTrace` knows the cohort.
+    ///
+    /// For a profile scored per sound group (`GroupScoring.applies`), the group fields are filled too: the auto score
+    /// A, the best group score G, the winning group's size, trusted count, trusted score and centroid cosine, and the
+    /// S1 shadow.
     public static func evidence(_ vector: VoiceVector, against profile: ProfileCandidate, probeChannel: String? = nil,
                                 policy: MatchPolicy = .default) -> ProfileEvidence? {
+        evidence(vector, against: profile, probeChannel: probeChannel, policy: policy, groups: nil)
+    }
+
+    /// `evidence` with the profile's groups on the probe's channel already made (nil: made here when they apply).
+    private static func evidence(_ vector: VoiceVector, against profile: ProfileCandidate, probeChannel: String?,
+                                 policy: MatchPolicy, groups: [SampleGrouping.Group]?) -> ProfileEvidence? {
         guard let s = scored(vector, against: profile, topK: policy.scoringTopK, channel: .only(probeChannel)) else { return nil }
         let negativeMax = profile.negatives
             .filter { $0.dimension == vector.dimension }
             .map { vector.cosine($0) }
             .max()
         let blocked = negativeMax.map { atLeast($0, s.score) } ?? false
-        return ProfileEvidence(profileID: profile.id, score: s.score, trustedTop: s.trustedTop,
-                               trustedScore: s.trustedScore, trustedCount: s.trustedCount,
-                               untrustedCount: s.untrustedCount, askOnly: s.trustedCount == 0,
-                               negativeMax: negativeMax, blocked: blocked, cohortMax: nil,
-                               otherChannelTrustedCount: s.otherChannelTrustedCount)
+        var e = ProfileEvidence(profileID: profile.id, score: s.score, trustedTop: s.trustedTop,
+                                trustedScore: s.trustedScore, trustedCount: s.trustedCount,
+                                untrustedCount: s.untrustedCount, askOnly: s.trustedCount == 0,
+                                negativeMax: negativeMax, blocked: blocked, cohortMax: nil,
+                                otherChannelTrustedCount: s.otherChannelTrustedCount)
+        if GroupScoring.applies(to: profile, policy: policy),
+           let g = GroupScoring.score(vector, against: profile, channel: probeChannel, groups: groups, policy: policy) {
+            e.groupCount = g.groups.count
+            e.groupBestScore = g.best
+            e.singletonBorrowShadow = g.singletonBorrowShadow
+            if let w = g.winner {
+                e.autoScore = w.score
+                e.groupSize = w.size
+                e.groupTrustedCount = w.trustedCount
+                e.autoTrustedScore = w.trustedScore ?? s.trustedScore
+                e.autoCentroidCosine = w.centroidCosine
+            }
+        }
+        return e
     }
+
+    /// Whether `evidence` was scored per sound group (its group count is set).
+    static func usesGroups(_ e: ProfileEvidence) -> Bool { e.groupCount != nil }
+
+    /// The score auto-labelling is decided on: A for a profile scored per group, else the whole score W.
+    /// Nil when the profile is scored per group and no group on the probe's channel has a trusted member.
+    static func autoScore(_ e: ProfileEvidence) -> Float? { usesGroups(e) ? e.autoScore : e.score }
 
     /// One decision per probe key. Pure, deterministic, order-independent. Same as `decideWithTrace(...).decisions`.
     public static func decide(probes: [SpeakerProbe], profiles: [ProfileCandidate], modelKey: String,
@@ -68,6 +99,13 @@ public enum VoiceMatcher {
     /// Each probe is scored on its own `channel` (§7): trusted samples from another channel only fill second place,
     /// so a profile with none on the probe's channel can be asked about but never auto-labelled. With every sample
     /// and probe on one channel, the decisions are exactly those from before channels.
+    ///
+    /// Sound groups (decision D3, with `policy.groupScoring` and candidates that carry sample ids): auto-labelling is
+    /// decided on the auto score A (`GroupScoring`), not the whole score W. It needs A ≥ `autoLabelMin`, A minus the
+    /// runner-up ≥ `autoLabelMargin`, and every negative below A. The runner-up is symmetric: the best of 0, the cohort
+    /// and, for every other profile, the larger of its W and its best group score G. Asking, blocking and the greedy
+    /// order stay on W. An `askOnly` probe (a mixed speaker) is never auto-labelled. With groups off, or with no
+    /// candidate carrying sample ids, the decisions are exactly those from before groups.
     /// Probe keys and profile ids are expected to be unique; if one repeats, its first occurrence is used.
     public static func decideWithTrace(probes: [SpeakerProbe], profiles: [ProfileCandidate], modelKey: String,
                                        policy: MatchPolicy = .default, cohort: [VoiceVector] = []) -> MatchRun {
@@ -90,8 +128,20 @@ public enum VoiceMatcher {
             }
         }
 
+        let traceVersion = policy.groupScoring ? MatchTrace.groupsVersion : MatchTrace.channelsVersion
+        // Sound groups per (profile, channel, dimension), made once per run.
+        var groupCache: [GroupCacheKey: [SampleGrouping.Group]] = [:]
+        func groups(_ p: ProfileCandidate, _ channel: String?, _ dimension: Int) -> [SampleGrouping.Group]? {
+            guard GroupScoring.applies(to: p, policy: policy) else { return nil }
+            let key = GroupCacheKey(profileID: p.id, channel: channel, dimension: dimension)
+            if let cached = groupCache[key] { return cached }
+            let made = GroupScoring.groups(of: p, channel: channel, dimension: dimension, policy: policy) ?? []
+            groupCache[key] = made
+            return made
+        }
+
         func trace(_ probe: SpeakerProbe, kind: TraceKind, reason: String, stats: CohortStats = .empty) -> MatchTrace {
-            MatchTrace(key: probe.key, cleanSeconds: probe.cleanSeconds, kind: kind, profileID: nil, reason: reason,
+            MatchTrace(version: traceVersion, key: probe.key, cleanSeconds: probe.cleanSeconds, kind: kind, profileID: nil, reason: reason,
                        score: nil, runnerUp: nil, margin: nil, profiles: [], cohortSize: stats.size,
                        cohortTopMean: stats.topMean, cohortTopStd: stats.topStd, autoLabelMin: policy.autoLabelMin,
                        autoLabelMargin: policy.autoLabelMargin, askMin: policy.askMin, probeChannel: probe.channel)
@@ -121,7 +171,8 @@ public enum VoiceMatcher {
             }
             var evidences: [ProfileEvidence] = []
             for p in candidates {
-                guard var e = evidence(vector, against: p, probeChannel: probe.channel, policy: policy) else { continue }
+                guard var e = evidence(vector, against: p, probeChannel: probe.channel, policy: policy,
+                                       groups: groups(p, probe.channel, vector.dimension)) else { continue }
                 e.cohortMax = (cohortFor[p.id] ?? [])
                     .filter { $0.dimension == vector.dimension }
                     .map { vector.cosine($0) }
@@ -150,14 +201,25 @@ public enum VoiceMatcher {
         var topTriple: [SpeakerKey: Triple] = [:]
         for t in triples where topTriple[t.probeKey] == nil { topTriple[t.probeKey] = t }
 
-        // Score per probe over each profile, used for the runner-up (taken and blocked profiles included).
-        var scoresByProbe: [SpeakerKey: [(id: UUID, score: Float)]] = [:]
-        for t in triples { scoresByProbe[t.probeKey, default: []].append((t.profile.id, t.score)) }
+        // Score per probe over each profile, used for the runner-up (taken and blocked profiles included): W, or the
+        // larger of W and G for a profile scored per group, so the runner-up is as strict as the auto score.
+        var scoresByProbe: [SpeakerKey: [(id: UUID, score: Float, whole: Float)]] = [:]
+        for t in triples {
+            scoresByProbe[t.probeKey, default: []].append((t.profile.id, Swift.max(t.score, t.evidence.groupBestScore ?? t.score),
+                                                            t.score))
+        }
 
         func runnerUp(_ t: Triple) -> Float {
             let others = scoresByProbe[t.probeKey, default: []].filter { $0.id != t.profile.id }.map(\.score)
             return Swift.max(0, others.max() ?? 0, t.evidence.cohortMax ?? 0)
         }
+        // The runner-up the matcher without groups used (other profiles' W only): for the "groupScore" reason, so an
+        // ask that only the symmetric runner-up caused is logged as caused by grouping, not as an ordinary margin.
+        func wholeRunnerUp(_ t: Triple) -> Float {
+            let others = scoresByProbe[t.probeKey, default: []].filter { $0.id != t.profile.id }.map(\.whole)
+            return Swift.max(0, others.max() ?? 0, t.evidence.cohortMax ?? 0)
+        }
+        let probeAskOnly = Dictionary(probes.map { ($0.key, $0.askOnly) }, uniquingKeysWith: { first, _ in first })
 
         // 4. Greedy walk.
         var taken = Set<UUID>()
@@ -167,18 +229,30 @@ public enum VoiceMatcher {
             let second = runnerUp(t)
             let margin = best - second
             let downgraded = topTriple[t.probeKey]?.profile.id != t.profile.id
+            let mixed = probeAskOnly[t.probeKey] ?? false
+            let grouped = usesGroups(t.evidence)
+            // The auto score and whether it passes the thresholds; for a profile scored without groups it is W.
+            let auto = autoScore(t.evidence)
+            let autoMargin = auto.map { $0 - second }
+            let autoPasses = auto.map { atLeast($0, policy.autoLabelMin) && atLeast($0 - second, policy.autoLabelMargin) } ?? false
+            let negativeNear = grouped && auto.map { a in t.evidence.negativeMax.map { atLeast($0, a) } ?? false } ?? false
 
-            if !downgraded, !t.evidence.askOnly, t.profile.autoLabel,
-               atLeast(best, policy.autoLabelMin), atLeast(margin, policy.autoLabelMargin) {
-                decisions[t.probeKey] = .autoLabel(profileID: t.profile.id, score: best, margin: margin)
+            if !downgraded, !mixed, !t.evidence.askOnly, t.profile.autoLabel, autoPasses, !negativeNear,
+               let auto, let autoMargin {
+                decisions[t.probeKey] = .autoLabel(profileID: t.profile.id, score: auto, margin: autoMargin)
                 taken.insert(t.profile.id)
                 pending[t.probeKey]?.complete(.auto, profileID: t.profile.id, reason: "auto",
-                                              score: best, runnerUp: second, margin: margin)
+                                              score: auto, runnerUp: second, margin: autoMargin)
             } else if atLeast(best, policy.askMin) {
+                let wholeWouldAuto = atLeast(best, policy.autoLabelMin)
+                    && atLeast(best - wholeRunnerUp(t), policy.autoLabelMargin)
                 let reason = downgraded ? "downgraded"
+                    : mixed ? "mixedSource"
                     : t.evidence.askOnly ? ((t.evidence.otherChannelTrustedCount ?? 0) > 0 ? "otherChannel" : "askOnly")
                     : !t.profile.autoLabel ? "autoLabelOff"
-                    : !atLeast(best, policy.autoLabelMin) ? "belowAuto"
+                    : autoPasses && negativeNear ? "negativeNear"
+                    : grouped && wholeWouldAuto ? "groupScore"
+                    : !atLeast(auto ?? best, policy.autoLabelMin) ? "belowAuto"
                     : "margin"
                 decisions[t.probeKey] = .ask(profileID: t.profile.id, score: best)
                 taken.insert(t.profile.id)
@@ -290,6 +364,12 @@ public enum VoiceMatcher {
         let mean = top.reduce(0, +) / Double(top.count)
         let variance = top.map { ($0 - mean) * ($0 - mean) }.sorted().reduce(0, +) / Double(top.count)
         return CohortStats(size: cosines.count, topMean: Float(mean), topStd: Float(variance.squareRoot()))
+    }
+
+    private struct GroupCacheKey: Hashable {
+        let profileID: UUID
+        let channel: String?
+        let dimension: Int
     }
 
     private struct Triple {

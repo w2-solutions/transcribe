@@ -84,6 +84,26 @@ final class MacVoiceGroupsTests: FlowTestCase {
         Wait.label(play, equals: "Play a clip from Close")
     }
 
+    /// Mac audio (decision D2): Tom's call samples stay on this Mac's channel and form sound groups of their own
+    /// (seed `voiceGroupsCalls`: Tom's microphone groups plus two groups heard through Mac audio, one labelled
+    /// "Teams"). A group heard mostly through Mac audio says so; the others do not.
+    @MainActor func testMacAudioGroupsAreMarked() {
+        let app = UITestApp.launch(seed: "voiceGroupsCalls", route: "voice:Tom", channel: channel)
+        app.waitFor(AX.VoiceDetail.screen, timeout: 20)
+        Wait.label(app.waitFor(AX.VoiceDetail.name), equals: "Tom")
+        Wait.label(app.waitFor(AX.VoiceDetail.samplesNote), contains: "Each group is recognised on its own")
+        XCTAssertFalse(app.element(AX.Voices.sampleGroup("system")).exists, "No channel of its own for Mac audio")
+
+        let positions = (0..<8).filter { app.element(AX.VoiceDetail.group(channel, $0)).exists }
+        let marked = positions.filter { app.element(AX.VoiceDetail.groupMacAudio(channel, $0)).exists }
+        XCTAssertEqual(marked.count, 2, "Two groups heard through Mac audio")
+        XCTAssertLessThan(marked.count, positions.count, "Tom's microphone groups are not marked")
+        for n in marked { Wait.label(app.element(AX.VoiceDetail.groupMacAudio(channel, n)), equals: "Heard through Mac audio") }
+        let teams = positions.first { app.element(AX.VoiceDetail.group(channel, $0)).textValue.hasPrefix("Teams ·") }
+        XCTAssertNotNil(teams, "The labelled call group shows its label")
+        if let teams { XCTAssertTrue(marked.contains(teams), "The Teams group is heard through Mac audio") }
+    }
+
     @MainActor func testHonestStates() {
         let app = launchTom()
         Wait.label(app.waitFor(AX.VoiceDetail.samplePlay(0)), contains: "Play sample: ")
