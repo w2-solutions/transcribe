@@ -112,6 +112,10 @@ final class MacShortcuts {
         opener.showSettings()
     }
 
+    /// The menu bar's New Recording and Stop Recording: what the "Start or stop a recording" shortcut does, with a HUD
+    /// that names no shortcut.
+    func toggleMeeting() { meeting.toggle(fromMenuBar: true) }
+
     /// Registers the shortcuts and starts the followers. Once, from `App.init`'s task.
     func start() {
         guard !started else { return }

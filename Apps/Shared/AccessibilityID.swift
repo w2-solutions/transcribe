@@ -403,6 +403,8 @@ enum AX {
         /// The sidebar New Recording pill's second line naming the source.
         static let sidebarNewRecordingSource = "mac.sidebar.newRecording.source"
         static let toolbarImport = "mac.toolbar.import"
+        /// The menu bar item (`MacMenuBarLabel`).
+        static let menuBarItem = "mac.menuBar.item"
         static let toolbarRecordingPill = "mac.toolbar.recordingPill"
         static let recordingWindow = "mac.recordingWindow"
         static func sidebarFolder(_ i: Int) -> String { "mac.sidebar.folder.\(i)" }
