@@ -81,7 +81,7 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: ai.w2solutions.transcribe
         # TestFlight needs a build number higher than the last upload for this version.
-        MARKETING_VERSION: "0.3.3"
+        MARKETING_VERSION: "0.3.4"
         CURRENT_PROJECT_VERSION: "1"
         SWIFT_DEFAULT_ACTOR_ISOLATION: MainActor
         TARGETED_DEVICE_FAMILY: "1"
@@ -207,7 +207,7 @@ targets:
         # target alone (overriding PRODUCT_BUNDLE_IDENTIFIER there would rename the helper too).
         PRODUCT_BUNDLE_IDENTIFIER: $(TRANSCRIBE_MAC_BUNDLE_ID)
         TRANSCRIBE_MAC_BUNDLE_ID: ai.w2solutions.transcribe.mac
-        MARKETING_VERSION: "0.3.3"
+        MARKETING_VERSION: "0.3.4"
         # Debug builds stay "1"; release-mac.sh sets the real build number (major*10000 + minor*100 + patch).
         CURRENT_PROJECT_VERSION: "1"
         TRANSCRIBE_FEED_URL: https://w2solutions.ai/transcribe/appcast.xml

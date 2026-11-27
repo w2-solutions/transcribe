@@ -1,3 +1,9 @@
 Audio now syncs with iCloud. With Sync with iCloud on, a recording made on your iPhone plays on your Mac, and the other way round, including voice sample clips. Audio is stored as a compressed copy, about 15 MB an hour, in your private iCloud, and moves over Wi-Fi or Ethernet. You can turn it off on each device in Settings → iCloud → Sync audio.
 
 If you already sync with iCloud, Transcribe uploads the audio of your existing recordings once, newest first, after this update. Deleting a recording now also deletes its audio from iCloud. Devices on earlier versions keep syncing transcripts as before but don't upload or download audio.
+
+Your Mac can now record the sound of calls and other apps, not just the microphone. Choose Microphone and Mac audio, or Mac audio only, in Settings → Recording or from the New Recording menu. macOS asks for permission the first time. Transcribe records sound only, never your screen, and works with headphones, including Bluetooth headsets on a call. Voices heard through call audio are learned separately from the same voices in the room.
+
+Global shortcuts start and stop a recording (fn Z) and dictate into any app (fn X), even while Transcribe is in the background. Set them up in Settings → Shortcuts.
+
+Transcribe upgrades its library the first time this version opens. Earlier versions cannot open the library afterwards. Update Transcribe on your iPhone to this version as well.
