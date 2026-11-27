@@ -98,7 +98,9 @@ enum AX {
         static let askYes = "transcript.askBanner.yes"
         static let askNo = "transcript.askBanner.no"
         static let askDetail = "transcript.askBanner.detail"   // "Speaker 2 sounds like Karan." or the other-device copy
-        static let audioElsewhere = "transcript.audioElsewhere" // "Audio is on your iPhone. …" (no player bar then)
+        static let audioElsewhere = "transcript.audioElsewhere" // the audio banner: "Audio is in iCloud …" (no player bar then)
+        static let audioBannerAction = "transcript.audioElsewhere.action"     // Download Now / Try Again
+        static let audioBannerProgress = "transcript.audioElsewhere.progress" // download progress bar
         static let noSpeechCard = "transcript.noSpeechCard"
         static let failedCard = "transcript.failedCard"
         static let retryButton = "transcript.failedCard.retry"
@@ -250,6 +252,14 @@ enum AX {
         static let removeCloud = "settings.sync.removeCloud"
         static let removeCloudConfirm = "settings.sync.removeCloudConfirm"
         static let review = "settings.sync.review"          // reopens the account-change or mass-delete question
+        static let audio = "settings.sync.audio"            // the Sync audio switch
+        static let audioStatus = "settings.sync.audioStatus" // label = value = the audio status line
+        static let audioNow = "settings.sync.audioNow"      // Sync Audio Now
+        static let quotaAudio = "settings.sync.quotaAudio"  // "Synced audio uses about …" under the quota pause
+        static let downloadAudioFirst = "settings.sync.downloadAudioFirst" // button in the remove and leave dialogs
+        static let audioIntro = "library.audioIntro"        // the one-time "Audio now syncs with iCloud" card
+        static let audioIntroTurnOff = "library.audioIntro.turnOff"
+        static let audioIntroOK = "library.audioIntro.ok"
         enum Leave {
             static let keep = "sync.leave.keep"
             static let remove = "sync.leave.remove"
@@ -306,6 +316,38 @@ enum AX {
         static let note = "settings.updates.note"
     }
 
+    /// Settings → Shortcuts (Mac only). `a` is a `ShortcutAction` raw value.
+    enum Shortcuts {
+        static let section = "settings.shortcuts.section"
+        static func recorder(_ a: String) -> String { "settings.shortcuts.\(a).recorder" }
+        static func clear(_ a: String) -> String { "settings.shortcuts.\(a).clear" }
+        static func status(_ a: String) -> String { "settings.shortcuts.\(a).status" }
+        static let reset = "settings.shortcuts.reset"
+        static let problem = "settings.shortcuts.problem"
+        static let accessibility = "settings.shortcuts.accessibility"
+        static let inputMonitoring = "settings.shortcuts.inputMonitoring"
+        static let pasteGuide = "settings.shortcuts.pasteGuide"
+        static let pasteOpenSettings = "settings.shortcuts.pasteGuide.openSettings"
+        static let pasteShowInFinder = "settings.shortcuts.pasteGuide.showInFinder"
+        static let pasteStatus = "settings.shortcuts.pasteGuide.status"
+        static let pasteRelaunch = "settings.shortcuts.pasteGuide.relaunch"
+        static let pasteDone = "settings.shortcuts.pasteGuide.done"
+        static let clipboard = "settings.shortcuts.clipboard"
+        static let clipboardNote = "settings.shortcuts.clipboardNote"
+        static let note = "settings.shortcuts.note"
+        static let keyboardNote = "settings.shortcuts.keyboardNote"
+        static let privacy = "settings.shortcuts.privacy"
+    }
+
+    /// The dictation HUD (Mac only).
+    enum Dictation {
+        static let hud = "dictation.hud"
+        static let hudTitle = "dictation.hud.title"
+        static let hudDetail = "dictation.hud.detail"
+        /// DEBUG, simulated shortcuts only: a hidden element whose value is the text the last dictation delivered.
+        static let lastDelivered = "dictation.lastDelivered"
+    }
+
     enum ModelSettings {
         static let screen = "modelSettings.screen"
         static let speechRow = "modelSettings.speechRow"
@@ -349,6 +391,8 @@ enum AX {
         static let sidebarFooter = "mac.sidebar.footer"
         /// "Update available · 0.3.1" above the footer while an update waits (D23).
         static let sidebarUpdate = "mac.sidebar.update"
+        /// "Shortcuts need permission", below the update reminder.
+        static let sidebarShortcuts = "mac.sidebar.shortcuts"
         static let recordingList = "mac.list.recordings"
         static let voiceList = "mac.list.voices"
         static let detailEmpty = "mac.detail.empty"

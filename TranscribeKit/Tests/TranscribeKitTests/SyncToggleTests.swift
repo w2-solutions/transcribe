@@ -112,6 +112,58 @@ extension SyncSuites {
             #expect(last != nil)
         }
 
+        /// With audio dependencies, `AppEnvironment` gives audio sync its hooks, and the launch adopts a download moved
+        /// into Audio/ before a crash (before the orphan sweep could take it), then cleans audio sync's scratch folders
+        /// and dates the first sweep.
+        @Test func launchWiresAudioSync() async throws {
+            let config = LaunchConfig(arguments: [LaunchConfig.argUseFakeEngine, LaunchConfig.argUITesting],
+                                      environment: [LaunchConfig.envSeed: SeedName.library.rawValue])
+            UserDefaults(suiteName: "uitest-\(ProcessInfo.processInfo.processIdentifier)")?
+                .removeObject(forKey: "sync.audio.lastSweep")
+            let cloud = FakeCloud()
+            let transport = FakeTransport(cloud: cloud)
+            let deps = AudioSyncDependencies(transfer: FakeAudioTransfer(cloud: cloud, transport: transport),
+                                             encoder: CopyAudioEncoder(), conditions: FakeDeviceConditions(), platform: .iPhone)
+            let activity = AppActivity()
+            var moved: UUID?
+            let app = try AppEnvironment(config: config, engine: FakeSpeechEngine(config: config, script: FakeScript.named(config.script)),
+                                         background: NoopBackgroundTaskBridge(), deviceIdentity: FixedDeviceIdentity("ui-test"),
+                                         seeder: { seed, context, paths, clock in
+                                             try Seeds.apply(seed, context: context, paths: paths, clock: clock)
+                                             // A crash after a download's move: the copy is in Audio/, the row still
+                                             // names the old file.
+                                             let r = try #require(try context.fetch(FetchDescriptor<Recording>()).first { $0.stage == .ready })
+                                             try FileManager.default.moveItem(at: paths.audioURL(fileName: r.audioFileName),
+                                                                              to: paths.audioURL(fileName: "\(r.id.uuidString).m4a"))
+                                             moved = r.id
+                                         },
+                                         syncTransport: transport, audio: deps, activity: activity)
+            defer { try? FileManager.default.removeItem(at: app.paths.root) }
+            let audio = try #require(app.sync?.audio)
+            #expect(audio.background != nil)
+            #expect(audio.isInFront())
+            activity.enterBackground()
+            #expect(!audio.isInFront())
+            activity.becomeActive()
+            #expect(!audio.isBusy())
+
+            try app.paths.prepare()
+            let part = app.paths.audioIncomingDirectory.appendingPathComponent("\(UUID().uuidString).m4a.part")
+            let stale = app.paths.audioOutgoingDirectory.appendingPathComponent("\(UUID().uuidString).m4a")
+            try Data("part".utf8).write(to: part)
+            try Data("stale".utf8).write(to: stale)
+            await app.onLaunch()
+            #expect(app.launchError == nil)
+            let id = try #require(moved)
+            let r = try #require(try app.container.mainContext.fetch(FetchDescriptor<Recording>()).first { $0.id == id })
+            #expect(r.audioFileName == "\(id.uuidString).m4a")
+            #expect(app.store.hasLocalAudio(r))
+            #expect(!FileManager.default.fileExists(atPath: part.path))
+            #expect(!FileManager.default.fileExists(atPath: stale.path))
+            let swept = try #require(app.settings.syncAudioLastSweep)   // the first sweep waits a week from now
+            #expect(abs(swept.timeIntervalSinceNow) < 60)
+        }
+
         @Test func withoutATransportThereIsNoSync() throws {
             let config = LaunchConfig(arguments: [LaunchConfig.argUseFakeEngine, LaunchConfig.argUITesting], environment: [:])
             let app = try AppEnvironment(config: config, engine: FakeSpeechEngine(config: config, script: FakeScript.named(config.script)),
@@ -149,7 +201,7 @@ extension SyncSuites {
             #expect(LaunchConfig(arguments: fake, environment: [LaunchConfig.envSync: "fake:nope"]).sync == nil)
             #expect(LaunchConfig(arguments: [], environment: [LaunchConfig.envSync: "fake:fresh"]).sync == nil)   // real engine: ignored
             #expect(Set(FakeSyncScenario.allCases.map(\.rawValue)) ==
-                    ["fresh", "remoteLibrary", "signedOut", "accountSwitched", "zoneRemoved", "duplicateKaran", "massDelete"])
+                    ["fresh", "remoteLibrary", "remoteLibraryWithAudio", "signedOut", "accountSwitched", "zoneRemoved", "duplicateKaran", "massDelete"])
         }
 
         @Test func syncEnabledDefaultsOffAndPersists() {

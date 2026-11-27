@@ -25,7 +25,8 @@ struct TurnRow: View, Equatable {
     let hasMark: Bool
     let highlights: TurnHighlights
     let showsChangeLink: Bool
-    /// False when the audio is on another device: the timestamp is plain text.
+    /// False when the audio is not on this device (not in iCloud, not downloaded yet, or not syncing here): the
+    /// timestamp is plain text.
     var canPlay: Bool = true
     let actions: TurnActionsBox
 

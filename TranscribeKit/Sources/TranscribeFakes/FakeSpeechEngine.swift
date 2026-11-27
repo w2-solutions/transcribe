@@ -191,6 +191,9 @@ public actor FakeSpeechEngine: SpeechEngine {
         enter("transcribe"); defer { leave() }
         guard status == .ready else { throw EngineError.modelsMissing }
         try await runSteps(progress: progress)
+        if audio.lastPathComponent.hasPrefix(DictationFiles.prefix) {
+            return script.behaviour == .noSpeech ? [] : FakeScript.dictationWords
+        }
         return script.behaviour == .noSpeech ? [] : script.words
     }
 

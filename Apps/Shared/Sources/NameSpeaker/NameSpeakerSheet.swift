@@ -43,8 +43,12 @@ struct NameSpeakerSheet: View {
 
     private var audioURL: URL? { recording.map { env.paths.audioURL(fileName: $0.audioFileName) } }
 
-    /// Without local audio (a recording synced from another device) the listen clips are quotes (§8.5).
-    private var hasLocalAudio: Bool { recording.map(env.store.hasLocalAudio) ?? false }
+    /// Without local audio (not in iCloud, not downloaded yet, or not syncing here) the listen clips are quotes (§8.5).
+    /// Reads audio sync's `revision`, so the clips become playable when a download lands while the sheet is open.
+    private var hasLocalAudio: Bool {
+        _ = env.sync?.audio?.revision
+        return recording.map(env.store.hasLocalAudio) ?? false
+    }
 
     private func makeModel() -> NameSpeakerModel? {
         guard let recording else { return nil }

@@ -77,6 +77,8 @@ public struct CKRecordCodec: Sendable {
         case .groupLabel:
             k = ["profileID": .string, "text": .string, "createdAt": .dateMillis, "editedAt": .dateMillis,
                  "embeddingModelKey": .string, "captureChannel": .string, "anchor": .bytes, "anchorDimension": .int]
+        case .audio:
+            k = ["bytes": .int, "sha256": .string, "format": .string, "duration": .double]
         }
         k[SyncSchema.versionField] = .int
         return k

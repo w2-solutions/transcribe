@@ -1,0 +1,3 @@
+Audio now syncs with iCloud. With Sync with iCloud on, a recording made on your iPhone plays on your Mac, and the other way round, including voice sample clips. Audio is stored as a compressed copy, about 15 MB an hour, in your private iCloud, and moves over Wi-Fi or Ethernet. You can turn it off on each device in Settings → iCloud → Sync audio.
+
+If you already sync with iCloud, Transcribe uploads the audio of your existing recordings once, newest first, after this update. Deleting a recording now also deletes its audio from iCloud. Devices on earlier versions keep syncing transcripts as before but don't upload or download audio.

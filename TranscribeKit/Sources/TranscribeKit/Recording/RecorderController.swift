@@ -57,26 +57,31 @@ public final class RecorderController {
     @ObservationIgnored private let paths: AppPaths
     @ObservationIgnored private let settings: AppSettings
     @ObservationIgnored private let clock: AppClock
+    /// Shared with dictation (Mac): claimed in `start()`, given back whenever the recorder is idle again.
+    @ObservationIgnored public let gate: CaptureGate
     @ObservationIgnored private var session: (any LiveRecording)?
     @ObservationIgnored private var eventsTask: Task<Void, Never>?
     /// The running recording started before the speech models were ready, so it has no live text yet.
     @ObservationIgnored private var liveTextWaitsForModels = false
 
     public init(engine: any SpeechEngine, store: any LibraryStoring, coordinator: ProcessingCoordinator,
-                models: ModelManager, paths: AppPaths, settings: AppSettings, clock: AppClock) {
+                models: ModelManager, paths: AppPaths, settings: AppSettings, clock: AppClock,
+                gate: CaptureGate = CaptureGate()) {
         self.engine = engine; self.store = store; self.coordinator = coordinator; self.models = models
-        self.paths = paths; self.settings = settings; self.clock = clock
+        self.paths = paths; self.settings = settings; self.clock = clock; self.gate = gate
     }
 
     /// Asks for mic permission if undetermined (only when `sources` include the microphone). Throws
     /// EngineError.microphoneDenied, or `.sourceUnavailable` for Mac audio on an engine without it.
     /// Creates the Recording row (.capturing), calls coordinator.suspendForCapture(), starts the engine session.
     /// Calling it while a recording is active returns the active id; calling it while another start is in
-    /// flight throws `EngineError.failed("Already starting")`.
+    /// flight throws `EngineError.failed("Already starting")`. During a dictation (the capture gate is taken) it
+    /// throws `EngineError.failed(CaptureGate.dictationBusyMessage)` and creates nothing.
     @discardableResult public func start(sources: CaptureSources = .microphone) async throws -> UUID {
         if let id = recordingID, isActive, state != .starting { return id }
         guard state == .idle else { throw EngineError.failed("Already starting") }
         guard !sources.includesSystemAudio || engine.systemAudioAvailable else { throw EngineError.sourceUnavailable }
+        guard gate.claim(.meeting) else { throw EngineError.failed(CaptureGate.dictationBusyMessage) }
         state = .starting
 
         // 1. Permission (asks once when undetermined).
@@ -85,7 +90,11 @@ public final class RecorderController {
             if permission == .undetermined {
                 permission = await engine.requestMicrophonePermission() ? .granted : .denied
             }
-            guard permission == .granted else { state = .idle; throw EngineError.microphoneDenied }
+            guard permission == .granted else {
+                state = .idle
+                gate.release(.meeting)
+                throw EngineError.microphoneDenied
+            }
         }
 
         // 2–5. Id, row, pre-empt processing, start the engine session.
@@ -119,6 +128,7 @@ public final class RecorderController {
             consume(session)
         } catch {
             state = .idle
+            gate.release(.meeting)
             if created { try? store.discardRecording(id: id) }
             if suspended { await coordinator.resumeAfterCapture() }
             throw error
@@ -282,5 +292,6 @@ public final class RecorderController {
         recordingID = nil
         startedAt = nil
         state = .idle
+        gate.release(.meeting)
     }
 }

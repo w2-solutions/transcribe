@@ -85,10 +85,19 @@ public final class LibraryStore: LibraryStoring {
         return a.name.localizedCaseInsensitiveCompare(b.name) == .orderedAscending
     }
 
-    /// Deletes the recording's audio file and any stems left beside it.
+    /// Deletes the recording's audio file, any other `Audio/<id>.*` (a downloaded copy whose row was not repointed
+    /// before a crash), audio sync's scratch files for it (`AudioOutgoing/<id>.*`, `AudioIncoming/<id>.*`) and any
+    /// Mac audio stems left beside it.
     func removeAudio(of recording: Recording) {
-        try? FileManager.default.removeItem(at: paths.audioURL(fileName: recording.audioFileName))
+        let fm = FileManager.default
+        try? fm.removeItem(at: paths.audioURL(fileName: recording.audioFileName))
         removeStems(of: recording)
+        let prefix = recording.id.uuidString + "."
+        for dir in [paths.audioDirectory, paths.audioOutgoingDirectory, paths.audioIncomingDirectory] {
+            for name in (try? fm.contentsOfDirectory(atPath: dir.path)) ?? [] where name.hasPrefix(prefix) {
+                try? fm.removeItem(at: dir.appendingPathComponent(name, isDirectory: false))
+            }
+        }
     }
 
     /// Deletes the temporary per-stream files of a recording that captured the microphone and Mac audio
@@ -356,7 +365,8 @@ public final class LibraryStore: LibraryStoring {
         // Every stage is at or above .capturing, so every row protects its file.
         let named = Set(try context.fetch(FetchDescriptor<Recording>()).filter { $0.stage >= .capturing }.map(\.audioFileName))
         var removed = 0
-        for url in files where url.pathExtension.lowercased() == "wav" && !named.contains(url.lastPathComponent) {
+        for url in files where Self.sweptExtensions.contains(url.pathExtension.lowercased())
+                                && !named.contains(url.lastPathComponent) {
             let values = try? url.resourceValues(forKeys: Set(keys))
             guard values?.isRegularFile == true, let modified = values?.contentModificationDate,
                   now.timeIntervalSince(modified) >= minimumAge else { continue }
@@ -388,6 +398,63 @@ public final class LibraryStore: LibraryStoring {
             if (try? fm.removeItem(at: url)) != nil { removed += 1 }
         }
         return removed
+    }
+
+    /// Audio files the orphan sweep may delete: recordings' WAVs and downloaded AAC copies.
+    static let sweptExtensions: Set<String> = ["wav", "m4a"]
+
+    // MARK: Downloaded audio
+
+    /// Moves a verified download into Audio/<id>.<ext>, sets iOS file protection, points `audioFileName` at it when it
+    /// differs, saves. False (and the file deleted) when the recording is gone, not ready, or already has its audio.
+    ///
+    /// Never touches the stage, the attempt count or the processing queue: a download is never processed
+    /// (decision 19). `afterMove` runs between the move and the save (tests simulate a crash there by throwing; the
+    /// moved file then stays, and `adoptStrayDownloads` repairs the row at the next launch).
+    func installDownloadedAudio(_ file: URL, for id: UUID, fileExtension: String,
+                                afterMove: () throws -> Void = {}) throws -> Bool {
+        let fm = FileManager.default
+        var d = FetchDescriptor<Recording>(predicate: #Predicate { $0.id == id })
+        d.fetchLimit = 1
+        guard let r = try context.fetch(d).first, r.stage == .ready, !hasLocalAudio(r) else {
+            try? fm.removeItem(at: file)
+            return false
+        }
+        let name = "\(id.uuidString).\(fileExtension.lowercased())"
+        let destination = paths.audioURL(fileName: name)
+        try? fm.removeItem(at: destination)
+        try fm.moveItem(at: file, to: destination)
+        #if os(iOS)
+        try? fm.setAttributes([.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication],
+                              ofItemAtPath: destination.path)
+        #endif
+        try afterMove()
+        if r.audioFileName != name {
+            r.audioFileName = name
+            try context.save()
+        }
+        return true
+    }
+
+    /// Launch: a ready row whose named file is missing but `Audio/<id>.m4a` (or `.wav`) exists is pointed at it (a
+    /// crash between a download's move and its save). Run before the orphan sweep. One save; returns the rows fixed.
+    @discardableResult
+    public func adoptStrayDownloads() throws -> Int {
+        let fm = FileManager.default
+        let ready = RecordingStage.ready.rawValue
+        let rows = try context.fetch(FetchDescriptor<Recording>(predicate: #Predicate { $0.stageRaw == ready }))
+        var fixed = 0
+        for r in rows where !hasLocalAudio(r) {
+            for ext in ["m4a", "wav"] {
+                let name = "\(r.id.uuidString).\(ext)"
+                guard name != r.audioFileName, fm.fileExists(atPath: paths.audioURL(fileName: name).path) else { continue }
+                r.audioFileName = name
+                fixed += 1
+                break
+            }
+        }
+        if fixed > 0 { try context.save() }
+        return fixed
     }
 
     public func discardRecording(id: UUID) throws {

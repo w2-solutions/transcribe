@@ -123,8 +123,10 @@ struct MacAudioFakeTests {
         #expect(await rigs.wait { rig.recorder.elapsed >= 1 })
         #expect(rig.recorder.notice == nil)
         #expect(await rigs.wait(timeout: 6) { rig.recorder.notice == .systemAudioLost })
-        #expect(rig.recorder.elapsed >= FakeLiveRecording.lostAfter)
-        #expect(rig.recorder.systemLevels.last == 0)
+        // The notice and the ticks are separate events: under a loaded parallel run the tick that carries the
+        // elapsed time and the zero level can land just after the notice, so wait briefly instead of sampling once.
+        #expect(await rigs.wait(timeout: 2) { rig.recorder.elapsed >= FakeLiveRecording.lostAfter })
+        #expect(await rigs.wait(timeout: 2) { rig.recorder.systemLevels.last == 0 })
         await rig.recorder.discard()
     }
 

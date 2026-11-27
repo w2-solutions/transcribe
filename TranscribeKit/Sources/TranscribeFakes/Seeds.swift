@@ -341,7 +341,8 @@ struct SeedBuilder {
                          tomVariant: 26)
         let t2 = try tomRecording(id: Seeds.ID.recordingT2, createdAt: Seeds.Dates.t2, title: "Video call",
                                   channel: CaptureChannel.ipad, tomVariant: 27)
-        // Only the row reached this device: the WAV stays on the iPad (the peaks came with the row).
+        // Only the row reached this device: its audio is not on this device (not in iCloud, not downloaded yet, or not
+        // syncing here), and the peaks came with the row.
         try FileManager.default.removeItem(at: paths.audioURL(fileName: t2.audioFileName))
 
         var samples: [VoiceSample] = []

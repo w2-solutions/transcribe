@@ -9,8 +9,9 @@ extension FocusedValues {
     @Entry var macTranscriptID: UUID?
 }
 
-/// The Mac menu commands (§5): Check for Updates… or Update Available… (app menu, after About), New Recording ⌘N, Stop Recording ⌘.,
-/// Import Audio… ⌘O, Copy Transcript ⇧⌘C, Find ⌘F and Play/Pause. Space plays and pauses from the transcript itself
+/// The Mac menu commands (§5): Check for Updates… or Update Available… (app menu, after About), Shortcuts… (app menu,
+/// after Settings), New Recording ⌘N, Stop Recording ⌘.,
+/// Import Audio… ⌘O, Copy Transcript ⇧⌘C, Copy Last Dictation, Find ⌘F and Play/Pause. Space plays and pauses from the transcript itself
 /// (`onKeyPress` in `MacRootView`), so typing a space in a text field never toggles playback. Delete (⌫) is the
 /// recording list's `onDeleteCommand`; Settings (⌘,) is the system's.
 struct MacCommands: Commands {
@@ -18,7 +19,9 @@ struct MacCommands: Commands {
     let router: Router
     let selection: MacSelection
     let updater: AppUpdater
+    let shortcuts: MacShortcuts
     @Environment(\.openWindow) private var openWindow
+    @Environment(\.openSettings) private var openSettings
     @FocusedValue(\.macTranscriptID) private var focusedTranscript
 
     /// The transcript a command acts on.
@@ -30,6 +33,13 @@ struct MacCommands: Commands {
         CommandGroup(after: .appInfo) {
             Button(UpdateCopy.checkTitle(pendingVersion: updater.pendingVersion)) { updater.checkForUpdates() }
                 .disabled(!updater.controlsEnabled)
+        }
+        // Settings at its Shortcuts section: the global shortcuts are otherwise easy to miss.
+        CommandGroup(after: .appSettings) {
+            Button(ShortcutCopy.menuItem) {
+                shortcuts.revealSettingsSection = true
+                openSettings()
+            }
         }
         CommandGroup(replacing: .newItem) {
             Button("New Recording") { newRecording() }
@@ -59,6 +69,10 @@ struct MacCommands: Commands {
             Button("Copy Transcript") { copyTranscript() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
                 .disabled(transcriptID == nil)
+            // The last dictation's text, kept in memory for 10 minutes: a paste into an app that ignored ⌘V, or a
+            // clipboard replaced since, can be recovered.
+            Button(ShortcutCopy.copyLastDictation) { shortcuts.copyLastDictation() }
+                .disabled(shortcuts.dictation.lastText == nil)
         }
         CommandGroup(after: .textEditing) {
             Button("Find") { selection.searchFocusRequest += 1 }
@@ -101,6 +115,8 @@ struct MacCommands: Commands {
         Task {
             guard let id = try? await env.recorder.stop() else { return }
             router.isRecordingPresented = false
+            // With the main window closed, nothing else closes the Recording window.
+            shortcuts.opener.dismiss("recording")
             if selection.sidebar == .voices { selection.sidebar = .all }
             selection.recording = id
         }
@@ -128,8 +144,11 @@ extension AppEnvironment {
         return try? container.mainContext.fetch(descriptor).first
     }
 
-    /// The transcript on screen has its audio on this Mac (a synced recording keeps it on the device that recorded it).
+    /// The transcript on screen has its audio on this Mac (a synced recording's audio may not be: not in iCloud, not
+    /// downloaded yet, or not syncing here). Reads audio sync's `revision`, so Playback → Play turns on when a download
+    /// lands.
     func hasLocalAudio(_ id: UUID?) -> Bool {
+        _ = sync?.audio?.revision
         guard let id, let recording = libraryRecording(id) else { return false }
         return store.hasLocalAudio(recording)
     }

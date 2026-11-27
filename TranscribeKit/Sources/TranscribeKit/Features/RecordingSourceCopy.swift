@@ -35,7 +35,7 @@ public enum RecordingSourceCopy {
     // MARK: First use of Mac audio
 
     public static let explainerTitle = "Record your Mac's audio"
-    public static let explainerBody = "macOS will ask to let Transcribe record your Mac's audio. It's listed under Screen & System Audio Recording. Transcribe records sound only, never your screen, and the audio stays on this Mac."
+    public static let explainerBody = "macOS will ask to let Transcribe record your Mac's audio. It's listed under Screen & System Audio Recording. Transcribe records sound only, never your screen, and keeps it with the recording like the microphone's audio."
     public static let explainerContinue = "Continue"
     public static let explainerCancel = "Cancel"
 

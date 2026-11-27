@@ -20,7 +20,8 @@ let package = Package(
     ],
     targets: [
         .target(name: "TranscribeCore"),
-        .target(name: "TranscribeKit", dependencies: ["TranscribeCore"]),
+        // Network: NWPathMonitor for audio sync's network rules (`LiveDeviceConditions`).
+        .target(name: "TranscribeKit", dependencies: ["TranscribeCore"], linkerSettings: [.linkedFramework("Network")]),
         .target(name: "TranscribeDesign", dependencies: ["TranscribeCore"]),
         .target(name: "TranscribeFluid", dependencies: [
             "TranscribeCore", .product(name: "FluidAudio", package: "FluidAudio"),

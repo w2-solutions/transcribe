@@ -1,3 +1,4 @@
+import CryptoKit
 import Foundation
 import SwiftData
 import TranscribeCore
@@ -11,6 +12,8 @@ import TranscribeKit
 /// CloudKit.
 public struct FakeSyncSetup: Sendable {
     public let transport: FakeTransport
+    /// The device's audio transfer on the same fake cloud and account (`AudioSyncDependencies.transfer`).
+    public let audioTransfer: FakeAudioTransfer
     /// Every scenario but `fresh` starts with the switch on.
     public let startsOn: Bool
     private let prepareStore: @MainActor @Sendable (ModelContext, Date) throws -> Void
@@ -18,6 +21,7 @@ public struct FakeSyncSetup: Sendable {
     init(transport: FakeTransport, startsOn: Bool,
          prepareStore: @escaping @MainActor @Sendable (ModelContext, Date) throws -> Void = { _, _ in }) {
         self.transport = transport
+        self.audioTransfer = FakeAudioTransfer(cloud: transport.cloud, transport: transport)
         self.startsOn = startsOn
         self.prepareStore = prepareStore
     }
@@ -50,11 +54,21 @@ public extension FakeCloud {
                                  startsOn: false)
 
         case .remoteLibrary?:
-            // The iPhone's library (recordings A, B and C, Liam and Karan) is already in iCloud. Run it with the
-            // `empty` seed: the same ids seeded locally would merge with it instead.
+            // The iPhone's library (recordings A, B and C, Liam and Karan) is already in iCloud, without audio. Run it
+            // with the `empty` seed: the same ids seeded locally would merge with it instead.
             let cloud = FakeCloud(accounts: [account: iPhoneRecords(clock: clock) { context, paths in
                 try Seeds.apply(.library, context: context, paths: paths, clock: clock)
             }])
+            return FakeSyncSetup(transport: FakeTransport(cloud: cloud, account: account), startsOn: true)
+
+        case .remoteLibraryWithAudio?:
+            // `remoteLibrary`, plus the iPhone's audio: each recording's WAV as a blob (`pcm16kMono`, its real
+            // SHA-256) and its marker, as an iPhone with Sync audio on would have uploaded them.
+            let library = iPhoneLibrary(clock: clock, withAudio: true) { context, paths in
+                try Seeds.apply(.library, context: context, paths: paths, clock: clock)
+            }
+            let markers = library.audio.map { AudioMarker.record($0.descriptor) }
+            let cloud = FakeCloud(accounts: [account: library.records + markers], audio: [account: library.audio])
             return FakeSyncSetup(transport: FakeTransport(cloud: cloud, account: account), startsOn: true)
 
         case .signedOut?:
@@ -114,6 +128,14 @@ public extension FakeCloud {
     /// stamps it with the iPhone's capture channel, and returns what that iPhone would upload.
     @MainActor private static func iPhoneRecords(clock: AppClock,
                                                  _ build: (ModelContext, AppPaths) throws -> Void) -> [SyncRecord] {
+        iPhoneLibrary(clock: clock, withAudio: false, build).records
+    }
+
+    /// `iPhoneRecords`, and with `withAudio` each ready recording's audio as the iPhone would have uploaded it
+    /// (`CopyAudioEncoder`'s format: the WAV's bytes, `pcm16kMono`, their SHA-256), read before the folder goes.
+    @MainActor private static func iPhoneLibrary(clock: AppClock, withAudio: Bool,
+                                                 _ build: (ModelContext, AppPaths) throws -> Void)
+        -> (records: [SyncRecord], audio: [StoredAudio]) {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("transcribe-fake-iphone-\(UUID().uuidString)", isDirectory: true)
         defer { try? FileManager.default.removeItem(at: root) }
@@ -126,10 +148,22 @@ public extension FakeCloud {
                                      clock: clock, localChannel: CaptureChannel.iphone)
             _ = try store.stampCaptureChannels()
             try container.mainContext.save()
-            return try SyncSnapshot.records(container.mainContext)
+            var audio: [StoredAudio] = []
+            if withAudio {
+                let ready = try container.mainContext.fetch(FetchDescriptor<Recording>())
+                    .filter { $0.stage == .ready }.sorted { $0.id.uuidString < $1.id.uuidString }
+                for r in ready {
+                    guard let data = try? Data(contentsOf: paths.audioURL(fileName: r.audioFileName)) else { continue }
+                    let sha = SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined()
+                    let d = AudioDescriptor(recordingID: r.id, format: .pcm16kMono, bytes: Int64(data.count),
+                                            sha256: sha, duration: r.duration)
+                    audio.append(StoredAudio(descriptor: d, data: data, created: clock.now))
+                }
+            }
+            return (try SyncSnapshot.records(container.mainContext), audio)
         } catch {
             assertionFailure("Building the fake iPhone library failed: \(error)")
-            return []
+            return ([], [])
         }
     }
 

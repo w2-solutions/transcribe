@@ -10,6 +10,8 @@ struct MacRootView: View {
     @Environment(AppEnvironment.self) private var env
     @Environment(Router.self) private var router
     @Environment(MacSelection.self) private var selection
+    @Environment(MacWindowOpener.self) private var opener
+    @Environment(MacShortcuts.self) private var shortcuts
     @Environment(\.openWindow) private var openWindow
     @Environment(\.dismissWindow) private var dismissWindow
     @Environment(\.openSettings) private var openSettings
@@ -106,6 +108,10 @@ struct MacRootView: View {
         } message: { stop in
             Text(RecordingStatus.systemStopMessage(stop.reason))
         }
+        .onAppear { opener.fill(open: openWindow, dismiss: dismissWindow, settings: openSettings) }
+        #if DEBUG
+        .background { lastDeliveredProbe }
+        #endif
         .modifier(AutoCopyObserver())
         .modifier(GoneModelObserver())
         .syncPrompts()
@@ -143,6 +149,20 @@ struct MacRootView: View {
             }
         }
     }
+
+    #if DEBUG
+    /// Simulated shortcuts only: the text the last dictation delivered, as a hidden element's value, so UI tests never
+    /// read a pasteboard.
+    @ViewBuilder private var lastDeliveredProbe: some View {
+        if let output = shortcuts.simulatedOutput {
+            Color.clear
+                .frame(width: 1, height: 1)
+                .accessibilityElement()
+                .accessibilityIdentifier(AX.Dictation.lastDelivered)
+                .accessibilityValue(output.lastDelivered)
+        }
+    }
+    #endif
 
     // MARK: Columns
 

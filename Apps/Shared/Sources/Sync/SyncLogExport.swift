@@ -1,11 +1,12 @@
 import Foundation
 import OSLog
 
-/// The app's own sync, iCloud and push log lines since it was launched, as text for Settings → Copy sync log.
-/// These lines carry record types, record ids, counts and error codes only (never names, text or voice data), so
-/// the text may go through the normal clipboard, including to another of the user's devices.
+/// The app's own sync, iCloud, push and audio sync log lines since it was launched, as text for Settings → Copy sync
+/// log. These lines carry record types, record ids, counts, rounded sizes, times and error codes only (never names,
+/// text, voice data, a recording's duration or an audio hash), so the text may go through the normal clipboard,
+/// including to another of the user's devices.
 enum SyncLogExport {
-    static let categories: Set<String> = ["sync", "cloudkit", "push"]
+    static let categories: Set<String> = ["sync", "cloudkit", "push", "audio"]
 
     static func text(now: Date = .now) -> String {
         var lines = ["Transcribe sync log, \(platform), \(now.formatted(.iso8601))",

@@ -2,10 +2,12 @@ import XCTest
 
 /// iCloud sync on the Mac (§8.6), over the fake iCloud (`TRANSCRIBE_SYNC=fake:<scenario>`; never CloudKit): the switch
 /// and its leave dialog in the Settings window, the sidebar footer, the paused states, a library synced from the
-/// iPhone (no audio here, so no player), and the duplicate-voice banner.
+/// iPhone (its audio not in iCloud, so no player; or in iCloud, so it downloads and plays), Sync audio off, the
+/// one-time audio notice, and the duplicate-voice banner.
 final class MacSyncTests: FlowTestCase {
-    @MainActor private func launch(seed: String = "library", sync: String, route: String? = nil) -> XCUIApplication {
-        let app = UITestApp.launch(seed: seed, route: route, sync: sync)
+    @MainActor private func launch(seed: String = "library", sync: String, route: String? = nil,
+                                   extraEnvironment: [String: String] = [:]) -> XCUIApplication {
+        let app = UITestApp.launch(seed: seed, route: route, sync: sync, extraEnvironment: extraEnvironment)
         app.waitFor(AX.Mac.main, timeout: 20)
         return app
     }
@@ -22,14 +24,20 @@ final class MacSyncTests: FlowTestCase {
         let master = app.scrollTo(AX.Sync.master)
         XCTAssertFalse(master.isOn, "Sync with iCloud is off until the user turns it on")
         let explanation = app.scrollTo(AX.Sync.explanation)
-        Wait.label(explanation, contains: "Transcripts, speaker labels, folders and voice profiles sync")
-        Wait.label(explanation, contains: "Audio stays on the device that recorded it")
+        Wait.label(explanation, contains: "Transcripts, audio, speaker labels, folders and voice profiles sync")
+        Wait.label(explanation, contains: "Audio moves on Wi-Fi or Ethernet")
         Wait.label(explanation, contains: "asked about first")
+        // Sync audio shows its stored value (on) and waits for sync.
+        let audio = app.scrollTo(AX.Sync.audio)
+        Wait.switchState(audio, on: true)
+        Wait.check(audio, "Sync audio disabled while sync is off") { !$0.toggleControl.isEnabled }
 
         master.flipSwitch()
         Wait.switchState(master, on: true)
         Wait.label(app.waitFor(AX.Sync.status), contains: "Up to date", timeout: 15)
         Wait.label(app.element(AX.Mac.sidebarFooter), contains: "synced with iCloud")
+        Wait.check(app.scrollTo(AX.Sync.audio), "Sync audio enabled while sync is on") { $0.toggleControl.isEnabled }
+        app.waitFor(AX.Sync.audioStatus, timeout: 15)
 
         // Off asks whether to keep the iCloud copy; Cancel keeps sync on.
         app.scrollTo(AX.Sync.master).flipSwitch()
@@ -80,7 +88,7 @@ final class MacSyncTests: FlowTestCase {
 
     @MainActor func testRemoteLibraryShowsWhereTheAudioIs() {
         let app = launch(seed: "empty", sync: "remoteLibrary")
-        // The iPhone's three recordings arrive; their audio stays on the iPhone.
+        // The iPhone's three recordings arrive; their audio is not in iCloud, so it is only on the iPhone.
         app.assertCount(3, of: AX.Library.card, timeout: 20)
         app.openCard(1)
         app.waitFor(AX.Transcript.screen)
@@ -94,6 +102,61 @@ final class MacSyncTests: FlowTestCase {
         app.element(AX.Mac.sidebarVoices).click()
         app.waitFor(AX.Voices.profile("karan")).click()
         Wait.label(app.waitFor(AX.Voices.sampleGroup("iphone")), contains: "On your iPhone · 2")
+    }
+
+    /// The iPhone's audio is in iCloud: the Mac downloads it by itself, then the player, Playback → Play and Karan's
+    /// voice samples all play it.
+    @MainActor func testRemoteAudioDownloadsAndPlays() {
+        let app = launch(seed: "empty", sync: "remoteLibraryWithAudio")
+        app.assertCount(3, of: AX.Library.card, timeout: 20)
+        app.openCard(1)
+        app.waitFor(AX.Transcript.screen)
+        app.waitFor(AX.Player.bar, timeout: 20)
+        app.waitForGone(AX.Transcript.audioElsewhere)
+        Wait.label(app.element(AX.Transcript.turnChip(1)), equals: "Karan")
+
+        app.menuBars.menuBarItems["Playback"].click()
+        let play = app.menuBars.menuItems["Play"]
+        XCTAssertTrue(play.waitForExistence(timeout: 5), "No Playback → Play")
+        XCTAssertTrue(play.isEnabled, "Playback → Play works once the audio is here")
+        app.typeKey(.escape, modifierFlags: [])
+
+        let playButton = app.waitFor(AX.Player.playButton)
+        playButton.click()
+        Wait.label(playButton, equals: "Pause", timeout: 3)
+        playButton.click()
+        Wait.label(playButton, equals: "Play", timeout: 3)
+
+        // Karan's samples come from the iPhone's recordings, whose audio is here now.
+        app.element(AX.Mac.sidebarVoices).click()
+        app.waitFor(AX.Voices.profile("karan")).click()
+        let sample = app.scrollTo(AX.VoiceDetail.samplePlay(0))
+        Wait.label(sample, contains: "Play sample: ", timeout: 15)
+        sample.click()
+        Wait.label(sample, contains: "Pause sample", timeout: 3)
+    }
+
+    /// Sync audio off on this Mac: the iPhone's audio is in iCloud, and the transcript says how to play it here.
+    @MainActor func testSyncAudioOffSaysTurnItOn() {
+        let app = launch(seed: "empty", sync: "remoteLibraryWithAudio", extraEnvironment: ["TRANSCRIBE_SYNC_AUDIO": "off"])
+        app.assertCount(3, of: AX.Library.card, timeout: 20)
+        app.openCard(1)
+        app.waitFor(AX.Transcript.screen)
+        Wait.label(app.waitFor(AX.Transcript.audioElsewhere, timeout: 15), contains: "Turn on Sync audio", timeout: 15)
+        XCTAssertFalse(app.element(AX.Player.bar).exists, "Nothing downloads with Sync audio off")
+        XCTAssertFalse(app.element(AX.Transcript.audioBannerAction).exists)
+    }
+
+    /// A Mac that already synced before audio sync came in is told once that its audio now syncs; OK keeps Sync audio
+    /// on and the notice does not come back.
+    @MainActor func testAudioIntroOK() {
+        let app = launch(seed: "empty", sync: "remoteLibraryWithAudio", extraEnvironment: ["TRANSCRIBE_SYNC_AUDIO": "intro"])
+        let card = app.waitFor(AX.Sync.audioIntro, timeout: 20)
+        Wait.label(card, contains: "Audio now syncs with iCloud")
+        app.waitFor(AX.Sync.audioIntroOK).click()
+        app.waitForGone(AX.Sync.audioIntro)
+        openSettings(app)
+        Wait.switchState(app.scrollTo(AX.Sync.audio), on: true)
     }
 
     @MainActor func testDuplicateVoiceBannerOpensTheMergeSheet() {

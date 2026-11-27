@@ -105,6 +105,21 @@ struct DeviceCopyMacAudioTests {
                     + " Voice profiles are never synced or shared.")
     }
 
+    /// With Sync audio on, the recording's audio (Mac audio mixed in) goes through iCloud, so the line must not say it
+    /// stays on the Mac.
+    @Test func withSyncAudioOnTheLineSaysMacAudioSyncs() {
+        let synced = " When you record Mac audio, the sound of calls and other apps is recorded too and syncs with the recording's audio."
+        for claude in [false, true] {
+            let on = DeviceCopy(platform: .mac, syncOn: true, claudeOn: claude, audioSyncOn: true, macAudio: true)
+            let off = DeviceCopy(platform: .mac, syncOn: true, claudeOn: claude, audioSyncOn: true)
+            #expect(on.privacyDetail.contains(synced), "\(on.privacyDetail)")
+            #expect(!on.privacyDetail.contains("stays on this Mac"), "\(on.privacyDetail)")
+            #expect(on.privacyDetail.replacingOccurrences(of: synced, with: "") == off.privacyDetail)
+        }
+        // Sync on with Sync audio off keeps the local line.
+        #expect(DeviceCopy(platform: .mac, syncOn: true, audioSyncOn: false, macAudio: true).privacyDetail.contains(Self.line))
+    }
+
     @Test func voicesFooter() {
         #expect(DeviceCopy(platform: .mac, macAudio: true).voicesFooter
                 == "Voice profiles are stored on this Mac only, including how voices sound through call audio.")

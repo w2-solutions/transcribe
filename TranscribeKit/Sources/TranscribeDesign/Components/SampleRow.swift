@@ -4,7 +4,9 @@ import TranscribeCore
 public struct SampleRow: View {
     /// VoiceDetail sample: 56 tall; 44 pt plain circle play button; quote in curly quotes 15 truncating; MiniBars 14 tall
     /// slot colour; duration mono 13. A non-nil `unavailableCaption` ("Recording deleted", "No clip saved", "Audio is on
-    /// your iPad") disables play and replaces the bars, in caption type and secondary colour; nil = playable.
+    /// your iPad", "Downloading audio…", "Audio is in iCloud": audio not on this device, because it is not in iCloud,
+    /// not downloaded yet, or not syncing here) disables play and replaces the bars, in caption type and secondary
+    /// colour; nil = playable.
     let quote: String
     let duration: TimeInterval
     let slot: Int
